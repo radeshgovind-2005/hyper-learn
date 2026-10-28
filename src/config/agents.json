@@ -47,7 +47,7 @@
       ],
       "constraints": [
         "Use target_node_id = null when the action has no target.",
-        "Cite the numbers from the data in your reason."
+        "In your reason, cite the node's fail_rate and the misconception share you relied on, exactly as they appear in the data."
       ],
       "templates": {
         "retry": "Your previous proposal was REJECTED by the reviewer.\nRejected proposal: {mutation}\nReviewer critique: {critique}\nPropose a different or corrected mutation that addresses the critique."
@@ -72,7 +72,7 @@
         },
         {
           "name": "EVIDENCE",
-          "rule": "every number in the reason matches the data."
+          "rule": "the reason cites the evidence it relies on (at least the node's fail_rate and the deciding misconception share), and every number in it matches the data. A reason with no numbers FAILS."
         }
       ],
       "constraints": [

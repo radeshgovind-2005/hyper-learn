@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { checkMutation } from "./mutations.js";
+import { checkMutation, citesRate } from "./mutations.js";
 import type { Mutation, NodePerformance } from "./state.js";
 
 const node = (node_id: string, prerequisites: string[]): NodePerformance => ({
@@ -18,7 +18,7 @@ const m = (action: Mutation["action"], node_id: string, target_node_id: string |
   action,
   node_id,
   target_node_id,
-  reason: "",
+  reason: `${node_id} fails 0.5 of attempts`,
 });
 
 describe("checkMutation", () => {
@@ -38,10 +38,31 @@ describe("checkMutation", () => {
     assert.match(checkMutation(m("split_node", "c", "a"), DATA).join(), /must have target_node_id = null/);
   });
 
+  it("rejects a reason that doesn't cite the target's fail rate", () => {
+    const vague = { ...m("split_node", "b", null), reason: "Root cause upstream of the failing chain." };
+    assert.match(checkMutation(vague, DATA).join(), /reason must cite b's fail_rate from the data \(0\.5\)/);
+  });
+
   it("rejects self-loops, duplicate edges, cycles and removing missing edges", () => {
     assert.match(checkMutation(m("add_prerequisite", "b", "b"), DATA).join(), /must differ/);
     assert.match(checkMutation(m("add_prerequisite", "b", "a"), DATA).join(), /already a prerequisite/);
     assert.match(checkMutation(m("add_prerequisite", "a", "c"), DATA).join(), /would create a cycle/);
     assert.match(checkMutation(m("remove_prerequisite", "c", "a"), DATA).join(), /not a prerequisite/);
+  });
+});
+
+describe("citesRate", () => {
+  it("accepts the rate as a decimal or a percentage", () => {
+    for (const text of ["fail_rate 0.6", "fails 0.60 of the time", "60% fail", "60 % fail", "(0.6)"]) {
+      assert.ok(citesRate(text, 0.6), text);
+    }
+  });
+
+  it("doesn't count a longer number that starts or ends the same way", () => {
+    for (const text of ["fail_rate 0.65", "0.6123", "160%", "10.6"]) {
+      assert.equal(citesRate(text, 0.6), false, text);
+    }
+    assert.equal(citesRate("fail_rate 0.5", 0), false, "a rate of 0 must not match inside 0.5");
+    assert.ok(citesRate("fail_rate 0 everywhere", 0));
   });
 });

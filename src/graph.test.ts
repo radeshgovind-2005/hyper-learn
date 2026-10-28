@@ -46,11 +46,12 @@ const PERFORMANCE_DATA: NodePerformance[] = [
   lessonData("n2", 0.68, ["n0", "n1"]),
 ];
 
+/** A valid split; its reason cites the lesson's fail rate, as the code checks require. */
 const mutation = (node_id: string): Mutation => ({
   action: "split_node",
   node_id,
   target_node_id: null,
-  reason: `${node_id} fails too often`,
+  reason: `${node_id} fails ${PERFORMANCE_DATA.find((n) => n.node_id === node_id)?.fail_rate ?? 0} of attempts`,
 });
 
 const APPROVE: ReflectionVerdict = { approved: true, critique: "1 TARGET: PASS — ok" };

@@ -18,7 +18,7 @@ Backend for **HyperLearn**, an adaptive learning platform built on a self-correc
 - **Supervisor** routes on `input_type`: `cron` goes to the Curator, `user_question` goes to the Assistant.
 - **Curator** (high autonomy) reads performance data and proposes exactly one Zod-validated mutation.
 - **Reflection** reviews each proposal. A rejected proposal goes back to the Curator, which gets the critique. The loop allows at most 2 attempts.
-- **Reflection runs code checks first** (ids exist, target set correctly, no cycles or duplicate edges). An invalid proposal is rejected instantly, without a model call.
+- **Reflection runs code checks first**: ids exist, the target is set correctly, no cycles or duplicate edges, and the reason cites the lesson's real fail rate. An invalid proposal is rejected instantly, without a model call.
 - **Learner Assistant** (low autonomy) calls `query_hypergraph`, `read_lesson`, `generate_diagram` and `navigate_ui` through a `ToolNode` loop.
 
 | Path | Purpose |
@@ -99,7 +99,8 @@ npm run eval                            # everything (slow on a local model)
 
 Scores: `exact` (the planted fault's fix), `right_lesson` (right lesson, wrong action or target), `miss`.
 The report shows both what would be applied (only if Reflection approved) and the Curator's last proposal,
-which separates Curator mistakes from Reflection mistakes. Each run writes `reports/eval-<timestamp>.json`
+which separates Curator mistakes from Reflection mistakes. If a step fails (say, Reflection runs out of context), the
+Curator's proposal is still recorded and scored. Each run writes `reports/eval-<timestamp>.json`
 after every scenario, so a long run that is cut off keeps its finished results.
 
 The Curator's instructions describe the same root-cause procedure the reference follows, so the evaluation

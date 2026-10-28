@@ -4,12 +4,25 @@ import type { Mutation, NodePerformance } from "./state.js";
 
 const NEEDS_TARGET: ReadonlySet<Mutation["action"]> = new Set(["merge_nodes", "add_prerequisite", "remove_prerequisite"]);
 
+const escapeRegExp = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/**
+ * True if `text` states `rate` as a decimal ("0.6" or "0.60") or a percentage ("60%"),
+ * not merely as part of a longer number ("0.65", "160%"; for a rate of 0, "0.5").
+ */
+export function citesRate(text: string, rate: number): boolean {
+  const forms = [String(rate), rate.toFixed(2)].map((form) => `(?<![\\d.])${escapeRegExp(form)}(?!\\.?\\d)`);
+  forms.push(`(?<![\\d.])${Math.round(rate * 100)}\\s?%`);
+  return new RegExp(forms.join("|")).test(text);
+}
+
 export const graphFromPerformance = (data: readonly NodePerformance[]): PrereqGraph =>
   Object.fromEntries(data.map((node) => [node.node_id, node.prerequisites]));
 
 /**
  * Deterministic checks a mutation must pass before any model reviews it: ids exist, the target is
- * set exactly when the action needs one, and the graph stays valid. Returns the problems (empty = valid).
+ * set exactly when the action needs one, the graph stays valid, and the reason cites the target
+ * lesson's real fail rate. Returns the problems (empty = valid).
  */
 export function checkMutation(mutation: Mutation, data: readonly NodePerformance[]): string[] {
   const graph = graphFromPerformance(data);
@@ -36,6 +49,11 @@ export function checkMutation(mutation: Mutation, data: readonly NodePerformance
     } else if (action === "remove_prerequisite" && !isPrereq) {
       problems.push(`"${target_node_id}" is not a prerequisite of "${node_id}"`);
     }
+  }
+
+  const target = data.find((node) => node.node_id === node_id);
+  if (target && !citesRate(mutation.reason, target.fail_rate)) {
+    problems.push(`reason must cite ${node_id}'s fail_rate from the data (${target.fail_rate})`);
   }
 
   return problems;
