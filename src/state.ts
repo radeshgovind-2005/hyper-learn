@@ -9,6 +9,7 @@ export const NodePerformanceSchema = z.object({
   title: z.string(),
   attempts: z.number().int().nonnegative(),
   fail_rate: z.number().min(0).max(1).describe("Fraction of failed attempts, 0–1"),
+  prerequisites: z.array(z.string()).describe("Node ids this node depends on"),
 });
 export type NodePerformance = z.infer<typeof NodePerformanceSchema>;
 
