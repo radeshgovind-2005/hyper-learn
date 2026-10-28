@@ -1,6 +1,7 @@
 import type { BaseMessage } from "@langchain/core/messages";
 import type { InteropZodType } from "@langchain/core/utils/types";
 import { ChatOpenAI } from "@langchain/openai";
+import { Agent, fetch as undiciFetch } from "undici";
 
 /**
  * Model factory.
@@ -39,6 +40,19 @@ function numberFromEnv(name: string, fallback: number): number {
   return Number.isFinite(value) && value >= 0 ? value : fallback;
 }
 
+const timeoutMs = () => numberFromEnv("MODEL_TIMEOUT_MS", 600_000);
+
+/**
+ * Node's fetch gives up if no response headers arrive within 5 minutes. A non-streaming local model
+ * sends nothing until its whole answer is generated, so long calls would fail at 5 minutes whatever
+ * MODEL_TIMEOUT_MS says. This connection waits as long as the configured timeout instead.
+ */
+let dispatcher: Agent | undefined;
+const patientDispatcher = () => {
+  dispatcher ??= new Agent({ headersTimeout: timeoutMs(), bodyTimeout: timeoutMs() });
+  return dispatcher;
+};
+
 const cache = new Map<ModelType, ChatOpenAI>();
 
 export function getModel(type: ModelType): ChatOpenAI {
@@ -52,10 +66,13 @@ export function getModel(type: ModelType): ChatOpenAI {
     apiKey: process.env.MODEL_API_KEY ?? "not-needed-locally",
     // Fail a stuck call instead of hanging. LangChain otherwise retries up to 6 times,
     // which turns one timeout into an hour-long wait on a slow local model.
-    timeout: numberFromEnv("MODEL_TIMEOUT_MS", 600_000),
+    timeout: timeoutMs(),
     maxRetries: numberFromEnv("MODEL_MAX_RETRIES", 1),
     configuration: {
       baseURL: process.env.MODEL_BASE_URL ?? "http://localhost:9931/v1",
+      // undici's own fetch, so the dispatcher below is guaranteed to be compatible with it.
+      fetch: undiciFetch as unknown as typeof globalThis.fetch,
+      fetchOptions: { dispatcher: patientDispatcher() },
     },
   });
 
