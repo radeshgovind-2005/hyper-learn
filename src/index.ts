@@ -1,8 +1,9 @@
 import "dotenv/config";
 import { HumanMessage } from "@langchain/core/messages";
-import { app } from "./graph.js";
+import { buildGraph } from "./graph.js";
 import type { NodePerformance, State, StateUpdate } from "./state.js";
 
+const app = buildGraph();
 const INVOKE_CONFIG = { recursionLimit: 15 };
 
 interface Scenario {
