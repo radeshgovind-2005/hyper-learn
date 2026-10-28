@@ -35,8 +35,10 @@ export type Mutation = z.infer<typeof MutationSchema>;
 
 /** Structured output of the Reflection node. */
 export const ReflectionVerdictSchema = z.object({
-  approved: z.boolean().describe("true if the mutation should be applied as-is"),
-  critique: z.string().describe("Why it was approved, or what must change"),
+  approved: z.boolean().describe("true only if every check passed"),
+  critique: z
+    .string()
+    .describe("One 'n NAME: PASS|FAIL — evidence' line per check, plus a 'FIX:' line if any failed"),
 });
 export type ReflectionVerdict = z.infer<typeof ReflectionVerdictSchema>;
 
