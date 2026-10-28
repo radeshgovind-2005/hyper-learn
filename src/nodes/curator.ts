@@ -1,7 +1,7 @@
 import { HumanMessage, SystemMessage } from "@langchain/core/messages";
 import { getAgent, getSystemPrompt, renderTemplate } from "../agents.js";
 import { getStructuredModel, type Invokable } from "../models.js";
-import { type Mutation, MutationSchema, type State, type StateUpdate } from "../state.js";
+import { formatPerformanceData, type Mutation, MutationSchema, type State, type StateUpdate } from "../state.js";
 import { logNode } from "../utils/logger.js";
 
 export type CuratorModel = Invokable<Mutation>;
@@ -16,7 +16,7 @@ export function createCuratorNode(model: CuratorModel = createCuratorModel()) {
 
     const messages = [
       new SystemMessage(getSystemPrompt("curator")),
-      new HumanMessage(`Performance data:\n${JSON.stringify(state.performance_data)}`),
+      new HumanMessage(formatPerformanceData(state.performance_data)),
     ];
 
     // On a retry, feed back the rejected proposal and the reviewer's critique.

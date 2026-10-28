@@ -1,0 +1,49 @@
+{
+  "id": "agentic-coding",
+  "title": "Agentic Coding",
+  "description": "How to build LLM agents: from a single model call to multi-agent systems that review their own work.",
+  "lessons": [
+    {
+      "id": "llm-basics",
+      "title": "LLM Basics",
+      "summary": "Tokens, next-token prediction, chat messages, context windows and why the API is stateless.",
+      "file": "lessons/01-llm-basics.md",
+      "prerequisites": []
+    },
+    {
+      "id": "agent-loop",
+      "title": "The Agent Loop",
+      "summary": "An agent is a model in a loop: decide, act, observe the result, repeat until done.",
+      "file": "lessons/02-agent-loop.md",
+      "prerequisites": ["llm-basics"]
+    },
+    {
+      "id": "tool-calling",
+      "title": "Tool Calling",
+      "summary": "Describing tools with schemas, how the model requests a call, and how results flow back.",
+      "file": "lessons/03-tool-calling.md",
+      "prerequisites": ["agent-loop"]
+    },
+    {
+      "id": "structured-output",
+      "title": "Structured Output",
+      "summary": "Getting JSON that matches a schema, and validating it before your code trusts it.",
+      "file": "lessons/04-structured-output.md",
+      "prerequisites": ["llm-basics"]
+    },
+    {
+      "id": "multi-agent",
+      "title": "Multi-Agent Orchestration",
+      "summary": "Splitting work across specialised agents, routing with a supervisor, and sharing state.",
+      "file": "lessons/05-multi-agent.md",
+      "prerequisites": ["tool-calling", "structured-output"]
+    },
+    {
+      "id": "reflection",
+      "title": "Reflection and Self-Correction",
+      "summary": "A reviewer agent checks proposals, sends them back with a critique, and the loop stays bounded.",
+      "file": "lessons/06-reflection.md",
+      "prerequisites": ["multi-agent"]
+    }
+  ]
+}

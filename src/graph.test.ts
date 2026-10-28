@@ -29,9 +29,21 @@ function scriptedModel<T>(responses: T[]) {
 const textOf = (message: BaseMessage | undefined) =>
   typeof message?.content === "string" ? message.content : JSON.stringify(message?.content);
 
+const lessonData = (node_id: string, fail_rate: number, prerequisites: string[]): NodePerformance => ({
+  node_id,
+  title: node_id,
+  attempts: 200,
+  fail_rate,
+  fail_rate_ci: [fail_rate - 0.05, fail_rate + 0.05],
+  low_sample: false,
+  prerequisites,
+  misconceptions: [{ points_to: node_id, share: 1 }],
+});
+
 const PERFORMANCE_DATA: NodePerformance[] = [
-  { node_id: "n1", title: "Functions", attempts: 205, fail_rate: 0.61, prerequisites: ["n0"] },
-  { node_id: "n2", title: "Closures", attempts: 178, fail_rate: 0.68, prerequisites: ["n0", "n1"] },
+  lessonData("n0", 0.1, []),
+  lessonData("n1", 0.61, ["n0"]),
+  lessonData("n2", 0.68, ["n0", "n1"]),
 ];
 
 const mutation = (node_id: string): Mutation => ({
@@ -87,6 +99,18 @@ describe("curator → reflection loop", () => {
     assert.match(textOf(reflection.calls[1]?.at(-1)), /"node_id":"n1"/);
   });
 
+  it("rejects an invalid proposal with code checks, without calling the reviewer model", async () => {
+    const invalid: Mutation = { ...mutation("n2"), action: "add_prerequisite", target_node_id: "n1" }; // already a prerequisite
+    const { curator, reflection, result } = runCurator([invalid, mutation("n1")], [APPROVE]);
+    const state = await result;
+
+    assert.equal(curator.calls.length, 2);
+    assert.equal(reflection.calls.length, 1, "only the valid proposal reaches the reviewer model");
+    assert.equal(state.reflection_attempts, 2);
+    assert.deepEqual(state.reflection_verdict, APPROVE);
+    assert.match(textOf(curator.calls[1]?.at(-1)), /CODE CHECK: FAIL — "n1" is already a prerequisite of "n2"/);
+  });
+
   it(`gives up after ${MAX_CURATOR_ATTEMPTS} rejected attempts`, async () => {
     const proposals = Array.from({ length: MAX_CURATOR_ATTEMPTS }, (_, i) => mutation(`n${i + 1}`));
     const rejections = Array.from({ length: MAX_CURATOR_ATTEMPTS }, () => REJECT);
@@ -106,9 +130,9 @@ describe("assistant ⇄ tools loop", () => {
     const assistant = scriptedModel([
       new AIMessageChunk({
         content: "",
-        tool_calls: [{ id: "call_1", name: "query_hypergraph", args: { topic: "closures" }, type: "tool_call" }],
+        tool_calls: [{ id: "call_1", name: "query_hypergraph", args: { topic: "tool" }, type: "tool_call" }],
       }),
-      new AIMessageChunk({ content: "Review Variables & Scope first." }),
+      new AIMessageChunk({ content: "Review The Agent Loop first." }),
     ]);
     const curator = scriptedModel<Mutation>([]);
     const reflection = scriptedModel<ReflectionVerdict>([]);
@@ -116,7 +140,7 @@ describe("assistant ⇄ tools loop", () => {
 
     const state = await app.invoke({
       input_type: "user_question",
-      messages: [new HumanMessage("What should I review before closures?")],
+      messages: [new HumanMessage("What should I review before tool calling?")],
     });
 
     assert.equal(assistant.calls.length, 2);
@@ -125,8 +149,8 @@ describe("assistant ⇄ tools loop", () => {
     // The second assistant call sees the real (mock-data) tool result.
     const toolResult = assistant.calls[1]?.at(-1);
     assert.ok(toolResult instanceof ToolMessage);
-    assert.match(textOf(toolResult), /Closures/);
+    assert.match(textOf(toolResult), /Tool Calling/);
 
-    assert.equal(textOf(state.messages.at(-1)), "Review Variables & Scope first.");
+    assert.equal(textOf(state.messages.at(-1)), "Review The Agent Loop first.");
   });
 });

@@ -10,26 +10,40 @@
       "model": "fast",
       "role": "You are the HyperLearn Learner Assistant.",
       "goal": "Help the learner understand concepts and decide what to study next.",
+      "context": [
+        "The course is Agentic Coding. Lesson ids are kebab-case, e.g. 'tool-calling'."
+      ],
       "instructions": [
         "Give short, encouraging answers.",
-        "Use query_hypergraph to look up concepts and their prerequisites.",
-        "Use generate_diagram to visualise relationships between concepts.",
-        "Use navigate_ui to send the learner to the right screen."
+        "Use query_hypergraph to look up lessons and their prerequisites.",
+        "Use read_lesson when you need the actual lesson content to explain something.",
+        "Use generate_diagram to visualise how lessons depend on each other.",
+        "Use navigate_ui to send the learner to a lesson, a quiz or their dashboard."
       ],
-      "constraints": ["Never invent node ids — look them up first."],
-      "tools": ["query_hypergraph", "generate_diagram", "navigate_ui"]
+      "constraints": [
+        "Never invent lesson ids — look them up first."
+      ],
+      "tools": [
+        "query_hypergraph",
+        "read_lesson",
+        "generate_diagram",
+        "navigate_ui"
+      ]
     },
     "curator": {
       "name": "Curator",
       "model": "reasoning",
       "role": "You are the HyperLearn Curator, who maintains the learning hypergraph.",
-      "goal": "Given learner performance data, propose EXACTLY ONE graph mutation that most improves learning outcomes.",
+      "goal": "Given learner performance data, propose EXACTLY ONE graph mutation that fixes the root cause of learners failing.",
       "instructions": [
-        "Use split_node when the node is too large or hard.",
-        "Use merge_nodes when two nodes are redundant; target_node_id = the other node.",
-        "Use add_prerequisite when learners lack background; target_node_id = the prerequisite.",
-        "Use remove_prerequisite when the edge is unnecessary; target_node_id = the prerequisite.",
-        "Use flag_for_review when the data is ambiguous."
+        "Ignore lessons with low_sample = true: their fail rate is not reliable.",
+        "A lesson is a problem if its fail_rate is 0.35 or more.",
+        "The root cause is not always the lesson with the highest fail rate. For each problem lesson, read its largest misconception.",
+        "If it points to a lesson that is already a prerequisite (directly or through other lessons), the problem is upstream: examine that lesson instead.",
+        "If it points to a lesson that is not a prerequisite, use add_prerequisite with target_node_id = that lesson.",
+        "If it points to the lesson itself, the lesson is too large or hard: use split_node.",
+        "If no lesson is a problem, use flag_for_review.",
+        "Use merge_nodes or remove_prerequisite only with clear evidence of redundancy."
       ],
       "constraints": [
         "Use target_node_id = null when the action has no target.",
@@ -43,12 +57,23 @@
       "name": "Reflection",
       "model": "reasoning",
       "role": "You are a strict, skeptical reviewer of hypergraph mutations for HyperLearn.",
-      "goal": "Decide whether the proposed mutation should be applied, by running every check against the performance data.",
+      "goal": "Decide whether the proposed mutation fixes the root cause shown in the performance data.",
+      "context": [
+        "Ids, required fields and graph validity were already checked by code; judge only the reasoning."
+      ],
       "checks": [
-        { "name": "TARGET", "rule": "node_id exists in the data and has the clearest problem (highest fail_rate with enough attempts to be meaningful)." },
-        { "name": "ACTION", "rule": "the action fits the evidence, and no other action fits better (e.g. a high fail rate on a node AND its prerequisites suggests add_prerequisite rather than split_node)." },
-        { "name": "FIELDS", "rule": "target_node_id is set for merge_nodes/add_prerequisite/remove_prerequisite, null otherwise, and refers to a real node." },
-        { "name": "EVIDENCE", "rule": "every number in the reason matches the data exactly." }
+        {
+          "name": "TARGET",
+          "rule": "node_id is the root cause: not low_sample, and its largest misconception does not point to one of its prerequisites (that would mean the problem is upstream). For flag_for_review: no reliable lesson has fail_rate 0.35 or more."
+        },
+        {
+          "name": "ACTION",
+          "rule": "the action matches the largest misconception: another lesson that is not a prerequisite → add_prerequisite with that lesson as target_node_id; the lesson itself → split_node; no problem lesson → flag_for_review."
+        },
+        {
+          "name": "EVIDENCE",
+          "rule": "every number in the reason matches the data."
+        }
       ],
       "constraints": [
         "Set approved=true only if every check passes.",

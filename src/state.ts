@@ -3,14 +3,33 @@ import { z } from "zod";
 
 // ─── Domain schemas ────────────────────────────────────────────────
 
+export const MisconceptionSchema = z.object({
+  points_to: z.string().describe("Lesson the wrong answers point to; the lesson's own id = a gap inside it"),
+  share: z.number().min(0).max(1).describe("Fraction of the lesson's wrong answers"),
+});
+export type Misconception = z.infer<typeof MisconceptionSchema>;
+
 export const NodePerformanceSchema = z.object({
   node_id: z.string(),
   title: z.string(),
-  attempts: z.number().int().nonnegative(),
-  fail_rate: z.number().min(0).max(1).describe("Fraction of failed attempts, 0–1"),
+  attempts: z.number().int().nonnegative().describe("Learners who took the lesson's quiz"),
+  fail_rate: z.number().min(0).max(1).describe("Fraction of attempts that failed the quiz, 0–1"),
+  fail_rate_ci: z.tuple([z.number(), z.number()]).describe("95% confidence interval for fail_rate"),
+  low_sample: z.boolean().describe("Too few attempts for fail_rate to be reliable"),
   prerequisites: z.array(z.string()).describe("Node ids this node depends on"),
+  misconceptions: z.array(MisconceptionSchema).describe("Where wrong answers point, largest share first"),
 });
 export type NodePerformance = z.infer<typeof NodePerformanceSchema>;
+
+/** Performance data as the Curator and Reflection read it: a one-line legend, then compact JSON. */
+export function formatPerformanceData(data: readonly NodePerformance[]): string {
+  return (
+    "Performance data, one entry per lesson. fail_rate_ci = 95% confidence interval; " +
+    "low_sample = too few attempts to trust; misconceptions = where wrong answers point " +
+    "(the lesson's own id = a gap inside that lesson).\n" +
+    JSON.stringify(data)
+  );
+}
 
 export const MUTATION_ACTIONS = [
   "split_node",
