@@ -16,3 +16,5 @@ npm-debug.log*
 # OS / Editor files
 .DS_Store
 .vscode/
+# Eval reports
+reports/
