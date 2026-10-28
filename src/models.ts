@@ -15,7 +15,8 @@ import { ChatOpenAI } from "@langchain/openai";
  *   No code changes are required.
  */
 
-export type ModelType = "reasoning" | "fast";
+export const MODEL_TYPES = ["reasoning", "fast"] as const;
+export type ModelType = (typeof MODEL_TYPES)[number];
 type StructuredOutputMethod = "jsonSchema" | "functionCalling" | "jsonMode";
 
 /** The only part of a model the nodes depend on — lets tests pass in fakes. */
@@ -62,11 +63,12 @@ export function getModel(type: ModelType): ChatOpenAI {
   return model;
 }
 
-/** A reasoning model bound to a Zod schema; `invoke` resolves to the parsed object. */
+/** A model bound to a Zod schema; `invoke` resolves to the parsed object. */
 export function getStructuredModel<T extends Record<string, unknown>>(
   schema: InteropZodType<T>,
   name: string,
+  type: ModelType = "reasoning",
 ): Invokable<T> {
   const method = (process.env.STRUCTURED_OUTPUT_METHOD ?? "jsonSchema") as StructuredOutputMethod;
-  return getModel("reasoning").withStructuredOutput(schema, { name, method });
+  return getModel(type).withStructuredOutput(schema, { name, method });
 }

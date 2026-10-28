@@ -1,11 +1,11 @@
 import { END, START, StateGraph } from "@langchain/langgraph";
 import { ToolNode, toolsCondition } from "@langchain/langgraph/prebuilt";
+import { getAgentTools } from "./agents.js";
 import { type AssistantModel, createAssistantNode } from "./nodes/assistant.js";
 import { createCuratorNode, type CuratorModel } from "./nodes/curator.js";
 import { createReflectionNode, type ReflectionModel, routeFromReflection } from "./nodes/reflection.js";
 import { routeFromSupervisor, supervisorNode } from "./nodes/supervisor.js";
 import { GraphState } from "./state.js";
-import { assistantTools } from "./tools/index.js";
 
 /** Models each LLM node uses. Omitted ones fall back to the real configured models. */
 export interface GraphModels {
@@ -28,7 +28,7 @@ export function buildGraph(models: Partial<GraphModels> = {}) {
     new StateGraph(GraphState)
       .addNode("supervisor", supervisorNode)
       .addNode("assistant", createAssistantNode(models.assistant))
-      .addNode("tools", new ToolNode(assistantTools))
+      .addNode("tools", new ToolNode(getAgentTools("assistant")))
       .addNode("curator", createCuratorNode(models.curator))
       .addNode("reflection", createReflectionNode(models.reflection))
 

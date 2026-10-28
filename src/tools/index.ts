@@ -1,4 +1,4 @@
-import { tool } from "@langchain/core/tools";
+import { type StructuredToolInterface, tool } from "@langchain/core/tools";
 import { z } from "zod";
 import { logNode } from "../utils/logger.js";
 
@@ -98,4 +98,12 @@ export const navigateUi = tool(
   },
 );
 
-export const assistantTools = [queryHypergraph, generateDiagram, navigateUi];
+/** Every tool an agent can be given, keyed by the name used in src/config/agents.json. */
+export const TOOL_REGISTRY = {
+  query_hypergraph: queryHypergraph,
+  generate_diagram: generateDiagram,
+  navigate_ui: navigateUi,
+} satisfies Record<string, StructuredToolInterface>;
+
+export type ToolName = keyof typeof TOOL_REGISTRY;
+export const TOOL_NAMES = Object.keys(TOOL_REGISTRY) as [ToolName, ...ToolName[]];

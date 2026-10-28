@@ -1,8 +1,8 @@
 import { END } from "@langchain/langgraph";
 import { HumanMessage, SystemMessage } from "@langchain/core/messages";
+import { getAgent, getSystemPrompt } from "../agents.js";
 import { getStructuredModel, type Invokable } from "../models.js";
 import {
-  getPrompt,
   MAX_CURATOR_ATTEMPTS,
   type ReflectionVerdict,
   ReflectionVerdictSchema,
@@ -14,7 +14,7 @@ import { logNode } from "../utils/logger.js";
 export type ReflectionModel = Invokable<ReflectionVerdict>;
 
 export const createReflectionModel = (): ReflectionModel =>
-  getStructuredModel(ReflectionVerdictSchema, "review_mutation");
+  getStructuredModel(ReflectionVerdictSchema, "review_mutation", getAgent("reflection").model);
 
 export function createReflectionNode(model: ReflectionModel = createReflectionModel()) {
   return async function reflectionNode(state: State): Promise<StateUpdate> {
@@ -22,7 +22,7 @@ export function createReflectionNode(model: ReflectionModel = createReflectionMo
 
     logNode("reflection", "Reviewing proposed mutation...");
     const verdict = await model.invoke([
-      new SystemMessage(getPrompt("reflection")),
+      new SystemMessage(getSystemPrompt("reflection")),
       new HumanMessage(
         `Performance data:\n${JSON.stringify(state.performance_data)}\n\n` +
           `Proposed mutation:\n${JSON.stringify(state.proposed_mutation)}`,

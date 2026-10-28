@@ -1,6 +1,5 @@
 import { Annotation, MessagesAnnotation } from "@langchain/langgraph";
 import { z } from "zod";
-import prompts from "./config/prompts.json" with { type: "json" };
 
 // ─── Domain schemas ────────────────────────────────────────────────
 
@@ -71,12 +70,3 @@ export const GraphState = Annotation.Root({
 
 export type State = typeof GraphState.State;
 export type StateUpdate = typeof GraphState.Update;
-
-// ─── Prompts (loaded from src/config/prompts.json) ─────────────────
-
-export type PromptName = keyof typeof prompts;
-
-/** Returns a system prompt, replacing `{placeholder}` tokens with `vars`. */
-export function getPrompt(name: PromptName, vars: Record<string, string> = {}): string {
-  return prompts[name].replace(/\{(\w+)\}/g, (match, key: string) => vars[key] ?? match);
-}

@@ -24,11 +24,12 @@ Backend for **HyperLearn**, an adaptive learning platform built on a self-correc
 | --- | --- |
 | `src/index.ts` | Runner — executes both demo scenarios |
 | `src/graph.ts` | Graph wiring and conditional edges |
-| `src/state.ts` | State annotation, Zod schemas, `getPrompt()` |
+| `src/state.ts` | State annotation and Zod schemas |
 | `src/models.ts` | `getModel()` / `getStructuredModel()` factory |
 | `src/nodes/*` | Supervisor, Assistant, Curator, Reflection |
 | `src/tools/index.ts` | Tool definitions over a mock hypergraph |
-| `src/config/prompts.json` | All system prompts |
+| `src/config/agents.json` | Agent definitions: role, goal, instructions, model, tools… |
+| `src/agents.ts` | Validates `agents.json` and assembles each system prompt |
 
 ## Setup
 
@@ -40,9 +41,29 @@ npm test               # deterministic graph tests with fake models (no server n
 npm start              # demo scenarios against the real model
 ```
 
+### Configuring agents
+
+Each agent in `src/config/agents.json` is a structured object, not a prompt string. `src/agents.ts` validates
+the file with Zod at startup (unknown fields and unknown tool names fail fast) and assembles the system prompt
+from these fields, in this order:
+
+| Field | Required | Purpose |
+| --- | --- | --- |
+| `name` | yes | Human-readable name |
+| `model` | yes | Model profile: `reasoning` or `fast` |
+| `role` | yes | Who the agent is; opens the prompt |
+| `goal` | yes | What it is trying to achieve |
+| `context` | no | Background, added after the file-level `shared.context` |
+| `instructions` | no | How to do the job |
+| `checks` | no | Numbered `{ name, rule }` checklist |
+| `constraints` | no | Hard rules |
+| `output_format` | no | How to shape the answer; closes the prompt |
+| `tools` | no | Tool names from `TOOL_REGISTRY` in `src/tools/index.ts` |
+| `templates` | no | Extra prompts with `{placeholder}` slots, used via `renderTemplate()` |
+
 ### Tests
 
-`src/graph.test.ts` builds the graph with scripted fake models (`buildGraph({ curator, reflection, assistant })`)
+`src/agents.test.ts` covers config validation and prompt assembly. `src/graph.test.ts` builds the graph with scripted fake models (`buildGraph({ curator, reflection, assistant })`)
 and checks the routing, not the model's judgement:
 
 - an approved proposal ends after one round
