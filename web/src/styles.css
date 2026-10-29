@@ -90,10 +90,7 @@ code, pre { font-family: var(--mono); font-size: 0.88em; }
   position: relative; z-index: 30;
 }
 .brand { display: flex; align-items: center; gap: var(--s3); }
-.brand img { height: 17px; display: block; }
-.brand .divider { width: 1px; height: 20px; background: var(--line); }
-/* The wordmark has descenders (y, p), so it sits a little taller than the Meta logo. */
-.brand img.app-logo { height: 24px; }
+.brand img { height: 24px; display: block; }
 .header .spacer { flex: 1; }
 .header .menu-btn { display: none; }
 
@@ -131,8 +128,6 @@ code, pre { font-family: var(--mono); font-size: 0.88em; }
   .header .menu-btn { display: inline-grid; }
   .sidebar { position: fixed; top: var(--header); left: 0; bottom: 0; z-index: 25; transform: translateX(-100%); transition: transform 0.24s var(--ease); }
   .sidebar.open { transform: none; box-shadow: 12px 0 40px rgba(28, 43, 51, 0.12); }
-  .brand .divider { display: none; }
-  .brand { gap: var(--s2); }
 }
 
 /* ─── Basics ────────────────────────────────────────── */
@@ -425,12 +420,12 @@ button.act:hover { background: var(--surface-2); }
   background: radial-gradient(90% 70% at 30% 40%, #e7f3ff 0%, #f5f9ff 55%, #ffffff 100%);
   border-right: 1px solid var(--line);
 }
-.auth-brand .brand img { height: 18px; }
 .auth-brand .brand img.app-logo { height: 26px; }
 .auth-hero { display: flex; flex-direction: column; align-items: flex-start; gap: var(--s3); }
 .auth-hero h1 { font-size: clamp(34px, 3.8vw, 52px); line-height: 1.05; letter-spacing: -0.03em; margin: 0; }
 .auth-hero p { font-size: var(--t-lg); color: var(--ink-2); margin: 0; max-width: 30ch; }
-.auth-credit { font-size: var(--t-sm); color: var(--muted); }
+.auth-credit { display: flex; align-items: center; gap: var(--s2); font-size: var(--t-sm); color: var(--muted); }
+.auth-credit img { height: 13px; display: block; }
 .auth-form { display: grid; place-items: center; padding: var(--s6) var(--s5); background: var(--canvas); }
 
 /* The course network */
