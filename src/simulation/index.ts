@@ -1,6 +1,7 @@
 import { computePerformance } from "../analytics/performance.js";
 import { baseSnapshot, getCourse } from "../course/bundle.js";
 import { type CourseSnapshot, liveInterventions } from "../course/compile.js";
+import type { Course } from "../course/schema.js";
 import { publishedGraphOf } from "../measure/measure.js";
 import type { Mutation, NodePerformance } from "../state.js";
 import { publishedGraph, simulate } from "./learners.js";
@@ -17,10 +18,9 @@ export function scenarioPerformance(scenario: Scenario, seed?: number): NodePerf
  * The release a scenario starts from: the compiled course (v1.0.0) with the scenario's faults in its
  * prerequisite graph, as if that is what had been published.
  */
-export function scenarioSnapshot(scenario: Scenario): CourseSnapshot {
-  const course = getCourse();
+export function scenarioSnapshot(scenario: Scenario, course: Course = getCourse(), base: CourseSnapshot = baseSnapshot()): CourseSnapshot {
   const published = publishedGraph(course, scenario);
-  const snapshot = baseSnapshot();
+  const snapshot = structuredClone(base);
   for (const lesson of snapshot.lessons) lesson.prerequisites = [...(published[lesson.id] ?? [])];
   return snapshot;
 }
@@ -38,8 +38,7 @@ export function injectedProposal(scenario: Scenario, data: readonly NodePerforma
  * through the release's own prerequisite graph, with each named misconception marked `covered` when one
  * of the release's live interventions targets it. After a fix is kept, the next diagnosis sees its effect.
  */
-export function releasePerformance(scenario: Scenario, snapshot: CourseSnapshot): NodePerformance[] {
-  const course = getCourse();
+export function releasePerformance(scenario: Scenario, snapshot: CourseSnapshot, course: Course = getCourse()): NodePerformance[] {
   const published = publishedGraphOf(snapshot);
   const covered = new Set(liveInterventions(snapshot).map((i) => i.intervention.targets));
   const { attempts } = simulate(course, scenario, { published });

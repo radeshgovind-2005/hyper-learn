@@ -5,8 +5,8 @@ import type { Identity } from "../auth/identity.js";
 import { gradeAttempt } from "../analytics/performance.js";
 import { type Grade, gradeItem } from "../assessment/grade.js";
 import type { Certainty, Response } from "../assessment/items.js";
-import { getCourse } from "../course/bundle.js";
 import { type CourseSnapshot, courseFromSnapshot, type LiveIntervention, liveInterventions } from "../course/compile.js";
+import type { Course } from "../course/schema.js";
 import { buildGraph, graphModels } from "../graph.js";
 import type { Embedder, Guard } from "../guards/guards.js";
 import { SimMeasurer } from "../measure/measure.js";
@@ -17,11 +17,13 @@ import { nextSteps, type PathStep } from "../path/route.js";
 import { describeChange } from "../releases/changes.js";
 import { type Release, revert } from "../releases/release.js";
 import { releasePerformance, scenarioSnapshot } from "../simulation/index.js";
-import { getScenario, SCENARIOS } from "../simulation/scenarios.js";
+import type { Scenario } from "../simulation/scenarios.js";
+import { NoExemplar } from "../interventions/reference.js";
 import { defaultModels, type ModelProvider } from "../models.js";
 import type { State } from "../state.js";
 import { PersistentMemorySaver } from "../storage/checkpointer.js";
 import { type Sql, SqlEventLog, SqlMeta, SqlProfiles, SqlReleaseStore, SqlThreadStore } from "../storage/sql.js";
+import { builtInCourse, type CourseDefinition, FEATURED_COURSE } from "./courses.js";
 import { approveWithinCeiling, referenceModels } from "./reference.js";
 import { flushTraces, traceConfig } from "../observability.js";
 import { type RunStep, stepFor } from "./timeline.js";
@@ -123,6 +125,8 @@ export interface RunOptions {
 }
 
 export interface ServiceOptions {
+  /** The course this object holds. Default: the featured course (Node tools and tests). */
+  course?: CourseDefinition;
   now?: () => string;
   newId?: () => string;
   /** Whether a model is configured; without one, runs use the reference stand-ins. */
@@ -166,6 +170,8 @@ export class CourseService {
   private readonly saver: PersistentMemorySaver;
   private readonly now: () => string;
   private readonly newId: () => string;
+  private readonly definition: CourseDefinition;
+  private compiled?: Course;
 
   constructor(
     sql: Sql,
@@ -173,8 +179,9 @@ export class CourseService {
   ) {
     this.now = options.now ?? (() => new Date().toISOString());
     this.newId = options.newId ?? (() => crypto.randomUUID());
+    this.definition = options.course ?? builtInCourse(FEATURED_COURSE)!;
     this.meta = new SqlMeta(sql);
-    this.releases = new SqlReleaseStore(sql, scenarioSnapshot(getScenario(this.scenario())), this.now);
+    this.releases = new SqlReleaseStore(sql, this.startingSnapshot(this.scenarioOf(this.scenario())), this.now);
     this.events = new SqlEventLog(sql);
     this.profiles = new SqlProfiles(sql);
     this.saver = new PersistentMemorySaver(new SqlThreadStore(sql));
@@ -182,8 +189,29 @@ export class CourseService {
 
   // ─── Course and releases ──────────────────────────────────────────
 
+  /** The current scenario, or "" for a course without simulated learners. */
   scenario(): string {
-    return this.meta.get<string>("scenario") ?? "dominant-misconception";
+    const { scenarios, defaultScenario } = this.definition;
+    return this.meta.get<string>("scenario") ?? defaultScenario ?? scenarios[0]?.id ?? "";
+  }
+
+  /** The course as v1.0.0 defines it (lessons, misconceptions), validated once. */
+  course(): Course {
+    this.compiled ??= courseFromSnapshot(this.definition.base);
+    return this.compiled;
+  }
+
+  /** One of this course's scenarios; undefined for "" (none). */
+  private scenarioOf(id: string): Scenario | undefined {
+    if (!id) return undefined;
+    const scenario = this.definition.scenarios.find((s) => s.id === id);
+    if (!scenario) throw new Error(`Unknown scenario "${id}". Available: ${this.definition.scenarios.map((s) => s.id).join(", ") || "none"}`);
+    return scenario;
+  }
+
+  /** v1.0.0 as a scenario publishes it (its faults in the prerequisite graph), or the course's own. */
+  private startingSnapshot(scenario: Scenario | undefined): CourseSnapshot {
+    return scenario ? scenarioSnapshot(scenario, this.course(), this.definition.base) : structuredClone(this.definition.base);
   }
 
   run(): RunState | undefined {
@@ -193,7 +221,7 @@ export class CourseService {
   overview() {
     return {
       scenario: this.scenario(),
-      scenarios: SCENARIOS.map((s) => ({ id: s.id, title: s.title, description: s.description })),
+      scenarios: this.definition.scenarios.map((s) => ({ id: s.id, title: s.title, description: s.description })),
       live: this.releases.live().version,
       releases: this.releases.all().map(summarize),
       run: this.run(),
@@ -222,13 +250,13 @@ export class CourseService {
     return release.snapshot;
   }
 
-  /** Starts over from a scenario's v1.0.0: releases, learner history and any run are cleared. */
+  /** Starts over from a scenario's v1.0.0 (or the course's own, without scenarios): releases, learner history and any run are cleared. */
   reset(scenarioId: string) {
     if (this.run()?.status === "running") throw new Error("A run is in progress; reset once it finishes");
-    const scenario = getScenario(scenarioId);
-    this.meta.set("scenario", scenario.id);
+    const scenario = this.definition.scenarios.length > 0 ? this.scenarioOf(scenarioId) : undefined;
+    this.meta.set("scenario", scenario?.id ?? "");
     this.meta.set("run", null);
-    this.releases.reset(scenarioSnapshot(scenario), this.now);
+    this.releases.reset(this.startingSnapshot(scenario), this.now);
     this.events.clear();
   }
 
@@ -274,7 +302,7 @@ export class CourseService {
   /** Per lesson: attempts, latest result, BKT mastery over every scored answer, and beliefs shown last time. */
   progress(learner: string): LessonProgress[] {
     const answers = this.events.forLearner(learner).filter((e) => e.kind === "answer");
-    return getCourse().lessons.flatMap((lesson) => {
+    return this.course().lessons.flatMap((lesson) => {
       const attempts = answers.filter((e) => e.lesson === lesson.id).map((e) => e.data as { items: ItemResult[]; passed: boolean });
       if (attempts.length === 0) return [];
       const scored = attempts.flatMap((a) => a.items.filter((i) => !i.pilot && !i.grade.needs_review).map((i) => i.grade.correct));
@@ -351,7 +379,7 @@ export class CourseService {
   /** Everything the learner's account shows on "My progress". */
   myProgress(learner: string) {
     const events = this.events.forLearner(learner);
-    const course = getCourse();
+    const course = this.course();
     const time = timePerLesson(events);
     const progress = this.progress(learner);
     const sessions = sessionsOf(events);
@@ -449,7 +477,7 @@ export class CourseService {
 
   /** One learner in full: their progress, and their history as a timeline. */
   learnerDetail(userId: string) {
-    const course = getCourse();
+    const course = this.course();
     const profile = this.profiles.get(userId);
     return {
       profile: { user_id: userId, name: profile?.name ?? null, email: profile?.email ?? null, role: profile?.role ?? "learner" },
@@ -465,11 +493,11 @@ export class CourseService {
   // ─── Repair runs ──────────────────────────────────────────────────
 
   private graph(run: RunState) {
-    const scenario = getScenario(run.scenario);
+    const scenario = this.scenarioOf(run.scenario);
     const real = run.source === "real";
     const harness: Harness = {
       store: this.releases,
-      measurer: real ? new RealMeasurer(() => this.events.answers()) : new SimMeasurer(getCourse(), scenario),
+      measurer: real ? new RealMeasurer(() => this.events.answers()) : new SimMeasurer(this.course(), scenario!),
       trialSource: real ? "real" : "simulated",
       now: this.now,
       mode: run.mode,
@@ -479,7 +507,7 @@ export class CourseService {
     };
     const models = run.agents
       ? graphModels(this.models())
-      : { assistant: NO_ASSISTANT, ...referenceModels(real ? undefined : scenario, this.diagnosisData(run), this.releases) };
+      : { assistant: NO_ASSISTANT, ...referenceModels(real ? undefined : scenario, this.diagnosisData(run), this.releases, this.definition.exemplars) };
     return buildGraph(models, { harness, checkpointer: this.saver });
   }
 
@@ -526,8 +554,14 @@ export class CourseService {
         delete run.approval;
       }
     } catch (error) {
-      run.status = "error";
-      run.error = error instanceof Error ? error.message : String(error);
+      if (error instanceof NoExemplar) {
+        // A reference run can diagnose but not write: not a failure, just as far as it can go.
+        run.status = "done";
+        run.steps.push({ node: "author", actor: "code", title: "Needs a model to write this", detail: error.message, status: "info", at: this.now() });
+      } else {
+        run.status = "error";
+        run.error = error instanceof Error ? error.message : String(error);
+      }
     }
     await flushTraces();
     this.save(run, onUpdate);
@@ -549,10 +583,10 @@ export class CourseService {
     if (current === "awaiting_approval") throw new Error("The current run is waiting for approval; answer it or reset first");
     if (this.openTrial()) throw new Error("A trial is running on real learners; evaluate or stop it first");
     if (agents && !this.options.agentsAvailable) throw new Error("No model is configured, so only reference runs are available");
-    const scenario = getScenario(this.scenario());
+    if (source === "simulated" && this.definition.scenarios.length === 0) throw new Error("This course has no simulated learners; run on real learners");
     const run: RunState = {
       thread_id: this.newId(),
-      scenario: scenario.id,
+      scenario: this.scenario(),
       mode,
       agents,
       source,
@@ -591,7 +625,7 @@ export class CourseService {
     const live = this.releases.live();
     return run.source === "real"
       ? realPerformance(live.snapshot, live.version, this.events.answers())
-      : releasePerformance(getScenario(run.scenario), live.snapshot);
+      : releasePerformance(this.scenarioOf(run.scenario)!, live.snapshot, this.course());
   }
 
   // ─── Trials on real learners ──────────────────────────────────────
