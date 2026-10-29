@@ -13,7 +13,7 @@ import type { ApprovalMode, ApprovalRequest, ApprovalResponse, Harness } from ".
 import { nextSteps, type PathStep } from "../path/route.js";
 import { describeChange } from "../releases/changes.js";
 import type { Release } from "../releases/release.js";
-import { scenarioPerformance, scenarioSnapshot } from "../simulation/index.js";
+import { releasePerformance, scenarioSnapshot } from "../simulation/index.js";
 import { getScenario, SCENARIOS } from "../simulation/scenarios.js";
 import type { State } from "../state.js";
 import { PersistentMemorySaver } from "../storage/checkpointer.js";
@@ -87,6 +87,8 @@ export interface ServiceOptions {
   newId?: () => string;
   /** Whether a model is configured; without one, runs use the reference stand-ins. */
   agentsAvailable?: boolean;
+  /** Whether changing the course (reset, runs, approvals) needs an admin key. Enforced by the host (the Worker). */
+  adminRequired?: boolean;
   guard?: Guard;
   embedder?: Embedder;
 }
@@ -145,6 +147,7 @@ export class CourseService {
       releases: this.releases.all().map(summarize),
       run: this.run(),
       agentsAvailable: this.options.agentsAvailable ?? false,
+      adminRequired: this.options.adminRequired ?? false,
     };
   }
 
@@ -157,6 +160,7 @@ export class CourseService {
 
   /** Starts over from a scenario's v1.0.0: releases, learner history and any run are cleared. */
   reset(scenarioId: string) {
+    if (this.run()?.status === "running") throw new Error("A run is in progress; reset once it finishes");
     const scenario = getScenario(scenarioId);
     this.meta.set("scenario", scenario.id);
     this.meta.set("run", null);
@@ -237,7 +241,7 @@ export class CourseService {
       ...(this.options.guard && { guard: this.options.guard }),
       ...(this.options.embedder && { embedder: this.options.embedder }),
     };
-    const models = run.agents ? {} : referenceModels(scenario, scenarioPerformance(scenario), this.releases);
+    const models = run.agents ? {} : referenceModels(scenario, releasePerformance(scenario, this.releases.live().snapshot), this.releases);
     return buildGraph(models, { harness, checkpointer: this.saver });
   }
 
@@ -246,11 +250,11 @@ export class CourseService {
     onUpdate?.(run);
   }
 
-  /** Streams the graph from `input`, recording a step per node, until it ends or pauses for approval. */
+  /** Streams the graph from `input`, recording a step per node, until it ends or pauses for approval. Never throws: failures end the run with status "error". */
   private async drive(run: RunState, input: Parameters<ReturnType<CourseService["graph"]>["stream"]>[0], onUpdate?: (run: RunState) => void) {
-    const app = this.graph(run);
     const config = { configurable: { thread_id: run.thread_id }, recursionLimit: 40 };
     try {
+      const app = this.graph(run);
       for await (const chunk of await app.stream(input, { ...config, streamMode: "updates" })) {
         for (const [node, update] of Object.entries(chunk as Record<string, unknown>)) {
           const step = stepFor(node, (update ?? {}) as State, this.now());
@@ -277,9 +281,19 @@ export class CourseService {
     return run;
   }
 
-  /** Runs the repair loop on the current scenario's learner data. */
-  async startRun({ mode, agents }: { mode: ApprovalMode; agents: boolean }, onUpdate?: (run: RunState) => void): Promise<RunState> {
-    if (this.run()?.status === "running") throw new Error("A run is already in progress");
+  /** Runs the repair loop on the live release's learner data. */
+  async startRun(options: { mode: ApprovalMode; agents: boolean }, onUpdate?: (run: RunState) => void): Promise<RunState> {
+    return this.continueRun(this.beginRun(options, onUpdate), onUpdate);
+  }
+
+  /**
+   * Checks a run can start and records it, synchronously, so a caller that runs the rest in the
+   * background (the Worker) can still report "already running" to whoever asked.
+   */
+  beginRun({ mode, agents }: { mode: ApprovalMode; agents: boolean }, onUpdate?: (run: RunState) => void): RunState {
+    const current = this.run()?.status;
+    if (current === "running") throw new Error("A run is already in progress");
+    if (current === "awaiting_approval") throw new Error("The current run is waiting for approval; answer it or reset first");
     if (agents && !this.options.agentsAvailable) throw new Error("No model is configured, so only reference runs are available");
     const scenario = getScenario(this.scenario());
     const run: RunState = {
@@ -292,16 +306,33 @@ export class CourseService {
       started_at: this.now(),
     };
     this.save(run, onUpdate);
-    return this.drive(run, { input_type: "cron", performance_data: scenarioPerformance(scenario) }, onUpdate);
+    return run;
+  }
+
+  /** The long part of a run started with beginRun. */
+  async continueRun(run: RunState, onUpdate?: (run: RunState) => void): Promise<RunState> {
+    // Diagnose the release learners have now, not the scenario's starting point.
+    const performance_data = releasePerformance(getScenario(run.scenario), this.releases.live().snapshot);
+    return this.drive(run, { input_type: "cron", performance_data }, onUpdate);
   }
 
   /** A human's answer to the pending approval; the run continues from where it paused. */
   async approve(response: ApprovalResponse, onUpdate?: (run: RunState) => void): Promise<RunState> {
+    return this.continueApproval(this.beginApproval(onUpdate), response, onUpdate);
+  }
+
+  /** Checks something is waiting for approval and claims it, synchronously, so a second answer is refused. */
+  beginApproval(onUpdate?: (run: RunState) => void): RunState {
     const run = this.run();
     if (run?.status !== "awaiting_approval") throw new Error("Nothing is waiting for approval");
     run.status = "running";
     run.steps = run.steps.filter((s) => s.status !== "waiting");
     this.save(run, onUpdate);
+    return run;
+  }
+
+  /** The long part of an approval claimed with beginApproval. */
+  async continueApproval(run: RunState, response: ApprovalResponse, onUpdate?: (run: RunState) => void): Promise<RunState> {
     return this.drive(run, new Command({ resume: response }), onUpdate);
   }
 }

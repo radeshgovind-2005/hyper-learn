@@ -10,17 +10,17 @@
   --ink: #1c2b33;
   --ink-2: #465a69;
   --muted: #65676b;
-  --faint: #8a8d91;
+  --faint: #6b6e72;
   --line: #e4e6eb;
   --line-strong: #ccd0d5;
   --surface: #f1f4f7;
   --surface-2: #f7f8fa;
   --canvas: #ffffff;
-  --green: #1d8a4e;
+  --green: #16703f;
   --green-soft: #e6f4ec;
   --red: #c9302c;
   --red-soft: #fdecea;
-  --amber: #b26a00;
+  --amber: #8a5300;
   --amber-soft: #fff4e0;
   --violet: #6b4fd8;
   --violet-soft: #f0ecff;
@@ -330,8 +330,9 @@ details.disclosure[open] > summary .caret { transform: rotate(90deg); }
 .quiz-top h2 { margin: 0; font-size: var(--t-xl); }
 .progressbar { display: flex; gap: 4px; margin: var(--s4) 0 var(--s5); }
 .progressbar button { flex: 1; height: 6px; border: none; border-radius: 6px; background: var(--line); padding: 0; }
-.progressbar button.done { background: #9cc5f5; }
-.progressbar button.current { background: var(--blue); }
+.progressbar button.done { background: #3d7fd6; }
+/* The current question is marked by a ring as well as colour. */
+.progressbar button.current { background: var(--blue); box-shadow: 0 0 0 2px var(--canvas), 0 0 0 4px var(--blue); }
 .question { background: var(--surface-2); border-radius: var(--radius-lg); padding: var(--s5); }
 .question .kind { font-size: var(--t-xs); font-weight: 600; color: var(--muted); letter-spacing: 0.04em; text-transform: uppercase; margin-bottom: var(--s2); }
 .question .prompt { font-size: var(--t-lg); font-weight: 600; line-height: 1.45; }

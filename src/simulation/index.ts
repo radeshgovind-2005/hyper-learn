@@ -1,6 +1,7 @@
 import { computePerformance } from "../analytics/performance.js";
 import { baseSnapshot, getCourse } from "../course/bundle.js";
-import type { CourseSnapshot } from "../course/compile.js";
+import { type CourseSnapshot, liveInterventions } from "../course/compile.js";
+import { publishedGraphOf } from "../measure/measure.js";
 import type { Mutation, NodePerformance } from "../state.js";
 import { publishedGraph, simulate } from "./learners.js";
 import type { Scenario } from "./scenarios.js";
@@ -30,4 +31,20 @@ export function injectedProposal(scenario: Scenario, data: readonly NodePerforma
   if (!inject) return undefined;
   const node = data.find((n) => n.node_id === inject.node_id);
   return { ...inject, reason: `${inject.node_id} fails ${node?.fail_rate ?? "?"}; ${inject.reason}` };
+}
+
+/**
+ * Learner data for diagnosing a release: the scenario's learners (same seed and behaviour) routed
+ * through the release's own prerequisite graph, with each named misconception marked `covered` when one
+ * of the release's live interventions targets it. After a fix is kept, the next diagnosis sees its effect.
+ */
+export function releasePerformance(scenario: Scenario, snapshot: CourseSnapshot): NodePerformance[] {
+  const course = getCourse();
+  const published = publishedGraphOf(snapshot);
+  const covered = new Set(liveInterventions(snapshot).map((i) => i.intervention.targets));
+  const { attempts } = simulate(course, scenario, { published });
+  return computePerformance(course, published, attempts).map((node) => ({
+    ...node,
+    misconceptions: node.misconceptions.map((m) => ({ ...m, covered: covered.has(m.id) })),
+  }));
 }

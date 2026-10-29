@@ -55,6 +55,37 @@ describe("CourseService", () => {
     assert.equal(restarted.overview().releases.find((r) => r.version === "1.1.0-trial.1")?.status, "rejected");
   });
 
+  for (const scenario of ["dominant-misconception", "missing-prereq"]) {
+    it(`diagnoses the live release: once ${scenario}'s fix is kept, the next run finds nothing to repair`, async () => {
+      const s = service();
+      s.reset(scenario);
+      const first = await s.startRun({ mode: "autopilot", agents: false });
+      assert.match(first.steps.at(-1)!.title, /^Kept/);
+
+      const second = await s.startRun({ mode: "autopilot", agents: false });
+      assert.equal(second.status, "done");
+      assert.deepEqual(
+        second.steps.map((step) => step.node),
+        ["curator", "reflection", "plan_release"],
+        "no authoring or release attempt for a fault that's already fixed",
+      );
+      assert.match(second.steps[0]!.title, /flag_for_review/);
+      assert.equal(s.overview().releases.filter((r) => r.status === "trial" || r.status === "rejected").length, 0);
+    });
+  }
+
+  it("refuses a second answer to the same approval, and a second run, before any work starts", async () => {
+    const s = service();
+    await s.startRun({ mode: "hitl", agents: false });
+    assert.throws(() => s.beginRun({ mode: "hitl", agents: false }), /waiting for approval/);
+    const claimed = s.beginApproval();
+    assert.throws(() => s.beginApproval(), /Nothing is waiting for approval/);
+    assert.throws(() => s.beginRun({ mode: "hitl", agents: false }), /already in progress/);
+    assert.throws(() => s.reset("control"), /run is in progress/);
+    const done = await s.continueApproval(claimed, { approved: true });
+    assert.equal(done.status, "done");
+  });
+
   it("refuses a run with agents when no model is configured", async () => {
     await assert.rejects(service().startRun({ mode: "hitl", agents: true }), /No model is configured/);
   });

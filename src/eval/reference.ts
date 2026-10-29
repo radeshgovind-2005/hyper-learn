@@ -27,6 +27,8 @@ export function referenceCurator(data: readonly NodePerformance[]): Mutation {
 
     if (!top || top.points_to === node.node_id) {
       const belief = node.misconceptions.find((m) => m.points_to === node.node_id);
+      // A dominant belief that a live intervention already targets has been repaired: look elsewhere.
+      if (belief?.covered && belief.share >= DOMINANT_SHARE) continue;
       if (belief && belief.share >= DOMINANT_SHARE) {
         return {
           action: "add_intervention",

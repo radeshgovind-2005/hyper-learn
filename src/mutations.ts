@@ -46,6 +46,8 @@ export function checkMutation(mutation: Mutation, data: readonly NodePerformance
     if (misconception_id === null) problems.push("add_intervention needs a misconception_id");
     else if (!named.some((m) => m.id === misconception_id && m.points_to === node_id)) {
       problems.push(`"${misconception_id}" is not a misconception of "${node_id}" in the data`);
+    } else if (named.some((m) => m.id === misconception_id && m.covered)) {
+      problems.push(`"${misconception_id}" is already covered by a live intervention`);
     }
   } else if (misconception_id !== null) {
     problems.push(`${action} must have misconception_id = null`);

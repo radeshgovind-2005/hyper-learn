@@ -13,7 +13,7 @@ const input = {
   course: courseFromSnapshot(snapshot),
   lessonId: "agent-loop",
   misconception: "model-executes-actions",
-  evidence: { id: "model-executes-actions", points_to: "agent-loop", share: 0.63, confident: 0.8 },
+  evidence: { id: "model-executes-actions", points_to: "agent-loop", share: 0.63, confident: 0.8, covered: false },
   templates: ["contrast", "step_through"] as const,
   history: [],
 };

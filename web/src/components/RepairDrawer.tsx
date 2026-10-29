@@ -168,7 +168,24 @@ function Activity({ steps, running }: { steps: RunStep[]; running: boolean }) {
   );
 }
 
+/** The admin key, kept for this browser session only (when storage allows). */
+function savedKey(): string {
+  try {
+    return sessionStorage.getItem("hyperlearn-admin") ?? "";
+  } catch {
+    return "";
+  }
+}
+function saveKey(key: string) {
+  try {
+    sessionStorage.setItem("hyperlearn-admin", key);
+  } catch {
+    // Storage unavailable: the key lives in memory for this page only.
+  }
+}
+
 export function RepairDrawer({ overview, call, onReset, onView }: { overview: Overview | null; call: Call; onReset: () => void; onView: (v: string | null) => void }) {
+  const [adminKey, setAdminKey] = useState(savedKey);
   const [mode, setMode] = useState<"hitl" | "autopilot">("hitl");
   const [agents, setAgents] = useState(false);
   const [scenario, setScenario] = useState<string | null>(null);
@@ -187,8 +204,8 @@ export function RepairDrawer({ overview, call, onReset, onView }: { overview: Ov
 
   const start = () => {
     setError(null);
-    const reset = selected !== overview.scenario ? call("reset", [selected]).then(onReset) : Promise.resolve();
-    void act(reset.then(() => call("startRun", [mode, agents])));
+    const reset = selected !== overview.scenario ? call("reset", [selected, adminKey]).then(onReset) : Promise.resolve();
+    void act(reset.then(() => call("startRun", [mode, agents, adminKey])));
   };
 
   return (
@@ -199,7 +216,7 @@ export function RepairDrawer({ overview, call, onReset, onView }: { overview: Ov
         <div className="headline-sub">{sub}</div>
       </section>
 
-      {waiting && run.approval && <Approval request={run.approval} onAnswer={(r) => void act(call("approve", [r]))} />}
+      {waiting && run.approval && <Approval request={run.approval} onAnswer={(r) => void act(call("approve", [r, adminKey]))} />}
 
       {showOutcome && (
         <>
@@ -221,7 +238,7 @@ export function RepairDrawer({ overview, call, onReset, onView }: { overview: Ov
         </details>
       )}
 
-      <details className="disclosure card soft" open={!run}>
+      <details className="disclosure card soft" open={!run || (overview.adminRequired && !adminKey)}>
         <summary>
           <span className="caret">›</span> Run settings
           <span className="muted" style={{ fontWeight: 400, marginLeft: "auto" }}>
@@ -229,6 +246,22 @@ export function RepairDrawer({ overview, call, onReset, onView }: { overview: Ov
           </span>
         </summary>
         <div className="stack" style={{ marginTop: "var(--s4)" }}>
+          {overview.adminRequired && (
+            <label className="field">
+              <span>Admin key</span>
+              <input
+                className="input"
+                type="password"
+                autoComplete="current-password"
+                value={adminKey}
+                onChange={(e) => {
+                  setAdminKey(e.target.value);
+                  saveKey(e.target.value);
+                }}
+              />
+              <span className="footnote">Needed to change the course. Learners don't need it.</span>
+            </label>
+          )}
           <label className="field">
             <span>Learner data (simulated)</span>
             <select className="input" value={selected} onChange={(e) => setScenario(e.target.value)}>
@@ -276,7 +309,7 @@ export function RepairDrawer({ overview, call, onReset, onView }: { overview: Ov
           disabled={running}
           onClick={() => {
             setError(null);
-            void act(call("reset", [selected]).then(onReset));
+            void act(call("reset", [selected, adminKey]).then(onReset));
           }}
         >
           Reset to v1.0.0

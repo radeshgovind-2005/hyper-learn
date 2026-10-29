@@ -93,6 +93,8 @@ function namedMisconceptions(
         points_to: course.getMisconception(id)?.lesson ?? lesson.id,
         share: round2(count / failed),
         confident: round2(sure / total),
+        // Whether a live intervention targets it depends on the release, not the answers: set by releasePerformance().
+        covered: false,
       };
     })
     .filter((m) => m.share >= MIN_MISCONCEPTION_SHARE)

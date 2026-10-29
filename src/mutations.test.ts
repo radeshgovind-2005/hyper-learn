@@ -57,8 +57,8 @@ describe("checkMutation", () => {
 
 describe("checkMutation: add_intervention", () => {
   const withBelief: NodePerformance[] = [
-    { ...node("a", []), misconceptions: [{ id: "model-acts", points_to: "a", share: 0.7, confident: 0.8 }] },
-    { ...node("b", ["a"]), misconceptions: [{ id: "model-acts", points_to: "a", share: 0.9, confident: 0.2 }] },
+    { ...node("a", []), misconceptions: [{ id: "model-acts", points_to: "a", share: 0.7, confident: 0.8, covered: false }] },
+    { ...node("b", ["a"]), misconceptions: [{ id: "model-acts", points_to: "a", share: 0.9, confident: 0.2, covered: false }] },
   ];
   const intervene = (node_id: string, misconception_id: string | null): Mutation => ({
     ...m("add_intervention", node_id, null),
@@ -73,6 +73,11 @@ describe("checkMutation: add_intervention", () => {
     assert.match(checkMutation(intervene("a", null), withBelief).join(), /needs a misconception_id/);
     assert.match(checkMutation(intervene("a", "nope"), withBelief).join(), /"nope" is not a misconception of "a"/);
     assert.match(checkMutation(intervene("b", "model-acts"), withBelief).join(), /not a misconception of "b"/);
+  });
+
+  it("rejects a misconception a live intervention already covers", () => {
+    const covered = withBelief.map((n) => ({ ...n, misconceptions: n.misconceptions.map((m) => ({ ...m, covered: true })) }));
+    assert.match(checkMutation(intervene("a", "model-acts"), covered).join(), /already covered by a live intervention/);
   });
 
   it("requires misconception_id = null for other actions", () => {

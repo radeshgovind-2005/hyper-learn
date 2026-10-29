@@ -99,7 +99,7 @@ describe("computePerformance: named misconceptions and broken items", () => {
   });
 
   it("reports the belief as a share of failed attempts, with how confidently it was held", () => {
-    assert.deepEqual(a!.misconceptions, [{ id: "model-acts", points_to: "a", share: 1, confident: 1 }]);
+    assert.deepEqual(a!.misconceptions, [{ id: "model-acts", points_to: "a", share: 1, confident: 1, covered: false }]);
   });
 
   it("estimates mastery with BKT", () => {

@@ -21,6 +21,7 @@ export const NamedMisconceptionSchema = z.object({
     .min(0)
     .max(1)
     .describe("Fraction of those answers given with high certainty: high = a held belief, low = a guess"),
+  covered: z.boolean().describe("A live intervention already targets this belief, so it isn't a new problem to repair"),
 });
 export type NamedMisconception = z.infer<typeof NamedMisconceptionSchema>;
 
@@ -45,7 +46,7 @@ export function formatPerformanceData(data: readonly NodePerformance[]): string 
     "Performance data, one entry per lesson. fail_rate_ci = 95% confidence interval; " +
     "low_sample = too few attempts to trust; gaps = where wrong answers point " +
     "(the lesson's own id = a gap inside that lesson); misconceptions = named beliefs behind wrong answers " +
-    "(share = of failed attempts; confident = share answered with high certainty).\n" +
+    "(share = of failed attempts; confident = share answered with high certainty; covered = an intervention for it is already live).\n" +
     JSON.stringify(data)
   );
 }

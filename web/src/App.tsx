@@ -110,7 +110,8 @@ export function App() {
         <main className="main">
           {snapshot ? (
             <LessonView
-              key={`${shown}:${lessonId}`}
+              // Keyed by lesson, not version: a release going live mid-quiz updates the page without wiping the learner's answers.
+              key={`${viewVersion ?? "live"}:${lessonId}`}
               snapshot={snapshot}
               parent={parent}
               lessonId={lessonId}

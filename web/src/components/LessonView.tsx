@@ -238,7 +238,8 @@ export function LessonView(props: {
               }}
             />
           ) : (
-            <QuizFlow key={attempt} quiz={lesson.quiz} busy={busy} onSubmit={submit} />
+            // A new attempt, or a release that changes the questions, starts the quiz fresh.
+            <QuizFlow key={`${attempt}:${lesson.quiz.map((q) => q.id).join()}`} quiz={lesson.quiz} busy={busy} onSubmit={submit} />
           )}
         </section>
       )}
