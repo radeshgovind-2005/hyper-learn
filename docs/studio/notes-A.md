@@ -74,6 +74,24 @@ Branch `studio/assessment`. What changed, decisions, and what other workstreams 
   scored, non-excluded response. `formatPerformanceData` adds one legend clause only when some node has
   `objectives`, so the featured course's Curator and Reflection prompts are byte-identical.
 
+## 6. Simulation
+
+- `simulate` draws each attempt's exam with `drawExam` when the lesson has an `exam` config (seed taken
+  from the learner's own random stream; `seen` = that learner's earlier items for the lesson) and records
+  `item_ids`. Lessons without exam config consume exactly the same random numbers as before, so every
+  featured-course scenario is unchanged (checked by hash, see below).
+- Found while simulating the fixture: with 2-item exams an item is correlated with one other item, so
+  small negative discriminations by chance were excluding good items (and then a single slip failed an
+  attempt). `negative_discrimination` now needs the correlation to be below 0 with 95% confidence
+  (Fisher z). On the featured course no item was ever flagged negative (checked over all scenarios × 21
+  seeds), so its data is unchanged; a miskeyed item is still caught (existing test).
+- Fixture content fix from the same run: every eviction / invalidation item now has a wrong option that
+  reveals the prerequisite gap, so a missing prerequisite dominates the gaps as in the featured course.
+- New `STUDIO_CONTROL` scenario. The reference Curator solves `STUDIO_MISSING_PREREQ` and `STUDIO_CONTROL`
+  exactly on 6 seeds each (src/simulation/exams.test.ts). Useful for B's stress test.
+- Honest note for B and the demo: exams of 2–3 items make pass/fail noisy (one slip in two items is a
+  50% score, under the 0.75 pass mark); masters still fail ~10% of first attempts.
+
 ## Regression check
 
 Besides `src/eval/reference.test.ts`, I hashed `scenarioPerformance` (5 seeds per scenario),

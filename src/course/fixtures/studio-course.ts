@@ -186,7 +186,7 @@ const eviction: LessonNode = {
   quiz: [
     single("evict-1", "apply-lru", "An LRU cache holds A (used 1 s ago), B (used 9 s ago), C (used 4 s ago). Which is evicted?", "B", [
       ["A, because it was added first", { misconception: "lru-evicts-oldest-inserted" }],
-      ["C"],
+      ["C, the one with the lowest hit ratio", gapHits],
     ]),
     single("evict-2", "apply-lru", "Why does a cache evict entries at all?", "It is full and needs room for a new value", [
       ["Because a miss is an error to clean up", { ...gapHits, misconception: "miss-is-error" }],
@@ -207,7 +207,7 @@ const eviction: LessonNode = {
     },
     single("evict-4", "judge-cache-size", "A cache's hit ratio is 0.6. Doubling its size will most likely…", "raise it somewhat, by less than double", [
       ["make it 1.2", { misconception: "bigger-always-better" }],
-      ["lower it"],
+      ["lower it, since more entries mean more misses", gapHits],
     ]),
     single("evict-5", "judge-cache-size", "When does extra cache space stop helping much?", "Once the working set fits", [
       ["Never: twice the space is twice the hits", { misconception: "bigger-always-better" }],
@@ -263,7 +263,7 @@ const invalidation: LessonNode = {
   quiz: [
     single("fresh-1", "explain-staleness", "When does a cached value become stale?", "When the store's data changes and the cache still has the old copy", [
       ["Only when it is evicted", { misconception: "eviction-prevents-staleness" }],
-      ["When it has been read too often"],
+      ["When LRU marks it as the oldest entry", gapEviction],
     ]),
     single("fresh-2", "explain-staleness", "An entry is read constantly and the data behind it changed. Under LRU it will…", "stay cached, stale, until it is invalidated", [
       ["be evicted soon, since it was added long ago", { ...gapEviction, misconception: "lru-evicts-oldest-inserted" }],
@@ -275,20 +275,24 @@ const invalidation: LessonNode = {
     ]),
     single("fresh-4", "choose-write-strategy", "What does write-through do?", "Writes to the cache and the store together", [
       ["Writes to the cache; the store catches up later by itself", { misconception: "cache-is-source-of-truth" }],
-      ["Writes to the store and never touches the cache"],
+      ["Writes into the least recently used slot, which keeps it fresh", gapEviction],
     ]),
     single("fresh-5", "choose-write-strategy", "With cache-aside, what happens on the next read after a write?", "A miss, which loads the new value", [
       ["A hit on the old value", { misconception: "cache-is-source-of-truth" }],
       ["An eviction of the oldest entry", gapEviction],
     ]),
     {
-      type: "ordering",
+      type: "multi_select",
       id: "fresh-6",
       objective: "choose-write-strategy",
-      prompt: "Put a cache-aside update in order.",
+      prompt: "Which writes leave no stale copy in the cache? Pick every one.",
       pilot: false,
-      steps: ["Write the new value to the store", "Delete the cached entry", "Next read misses", "Load the new value into the cache"],
-      patterns: [{ first: 1, second: 0, misconception: "cache-is-source-of-truth" }],
+      options: [
+        { text: "Write-through: write the cache and the store together", correct: true },
+        { text: "Cache-aside: write the store, then delete the cached entry", correct: true },
+        { text: "Write the store and let LRU evict the old copy", correct: false, ...gapEviction },
+        { text: "Write the cache only", correct: false, misconception: "cache-is-source-of-truth" },
+      ],
     },
   ],
 };
@@ -329,4 +333,13 @@ export const STUDIO_MISSING_PREREQ: Scenario = {
   seed: 909,
   removeEdges: [["invalidation", "eviction"]],
   expected: { action: "add_prerequisite", node_id: "invalidation", target_node_id: "eviction", misconception_id: null },
+};
+
+/** The same course with nothing planted: the reference Curator should find nothing to restructure. */
+export const STUDIO_CONTROL: Scenario = {
+  id: "studio-control",
+  title: "Control: nothing planted",
+  description: "The published graph matches the course; only normal noise.",
+  seed: 919,
+  expected: { action: "flag_for_review", node_id: null, target_node_id: null, misconception_id: null },
 };

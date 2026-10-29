@@ -77,6 +77,14 @@ describe("itemStatistics", () => {
     assert.equal(stats[1]!.discrimination, Math.round(r * 100) / 100);
   });
 
+  it("excludes only items that are confidently negative, not ones a little below 0 by chance", () => {
+    // Two-item exams: q0's score barely anti-correlates with q1's (r ≈ −0.05 over 40 attempts).
+    const pairs = [...Array(10).fill([1, 1]), ...Array(10).fill([1, 0]), ...Array(11).fill([0, 1]), ...Array(9).fill([0, 0])] as [number, number][];
+    const [q0] = itemStatistics(["q0", "q1"], pairs.map(([x, y]) => [g(x), g(y)]));
+    assert.ok(q0!.discrimination < 0);
+    assert.equal(q0!.flag, "weak_discrimination");
+  });
+
   it("doesn't judge items with too few responses", () => {
     assert.equal(itemStatistics(["q0", "q1"], attempts.slice(0, 5).map((a) => a.slice(0, 2)))[0]!.flag, "too_few_responses");
   });

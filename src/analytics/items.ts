@@ -6,7 +6,7 @@ import type { Grade } from "../assessment/grade.js";
 
 /** Fewer graded responses than this and an item's statistics are not judged. */
 export const MIN_ITEM_RESPONSES = 30;
-/** Discrimination below this is weak; below 0 the item is excluded from diagnosis. */
+/** Discrimination below this is weak; confidently below 0, the item is excluded from diagnosis. */
 export const MIN_DISCRIMINATION = 0.2;
 
 export type ItemFlag = "ok" | "too_few_responses" | "weak_discrimination" | "negative_discrimination";
@@ -42,6 +42,17 @@ function correlation(xs: readonly number[], ys: readonly number[]): number {
 const round2 = (value: number) => Math.round(value * 100) / 100;
 
 /**
+ * Whether a correlation is below 0 with 95% confidence (Fisher's z). A drawn exam correlates an item with
+ * only a few other items, so a small negative value is often noise; excluding a good item on noise would
+ * throw away evidence. A miskeyed item is strongly negative and still caught.
+ */
+function confidentlyNegative(r: number, n: number): boolean {
+  if (r >= 0 || n < 4) return false;
+  const z = Math.atanh(Math.max(-0.999999, r));
+  return Math.tanh(z + 1.96 / Math.sqrt(n - 3)) < 0;
+}
+
+/**
  * Statistics for each item of one quiz, from every attempt's grades (one entry per item, in `itemIds`
  * order; `undefined` = the attempt didn't show that item, as in an exam drawn from a pool). An item is
  * judged only on the attempts that showed it. Discrimination correlates an item's score with the mean
@@ -69,7 +80,7 @@ export function itemStatistics(itemIds: readonly string[], attempts: readonly (r
     const flag: ItemFlag =
       responses < MIN_ITEM_RESPONSES
         ? "too_few_responses"
-        : discrimination < 0
+        : confidentlyNegative(discrimination, xs.length)
           ? "negative_discrimination"
           : discrimination < MIN_DISCRIMINATION
             ? "weak_discrimination"
