@@ -100,7 +100,7 @@ export function App() {
         <div className="brand">
           <img src="/meta-logo.svg" alt="Meta" />
           <span className="divider" />
-          <span className="name">HyperLearn</span>
+          <img className="app-logo" src="/hyperlearn-logo.png" alt="HyperLearn" />
         </div>
         <span className="spacer" />
         {mayViewLearners && (

@@ -98,7 +98,7 @@ export function AuthPage({ mode }: { mode: "sign-in" | "sign-up" }) {
         <div className="brand">
           <img src="/meta-logo.svg" alt="Meta" />
           <span className="divider" />
-          <span className="name">HyperLearn</span>
+          <img className="app-logo" src="/hyperlearn-logo.png" alt="HyperLearn" />
         </div>
         <div className="auth-hero">
           <h1>Learning that sharpens itself.</h1>
