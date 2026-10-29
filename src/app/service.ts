@@ -1,6 +1,7 @@
 import { Command } from "@langchain/langgraph";
 import { bktMastery, MASTERY_THRESHOLD } from "../analytics/bkt.js";
-import { beliefsOf, interventionsOf, quizHistory, sessionsOf, timePerLesson, TrackEventSchema } from "../analytics/learner.js";
+import { beliefsOf, interventionsOf, quizHistory, sessionsOf, timelineOf, timePerLesson, TrackEventSchema } from "../analytics/learner.js";
+import type { Identity } from "../auth/identity.js";
 import { gradeAttempt } from "../analytics/performance.js";
 import { type Grade, gradeItem } from "../assessment/grade.js";
 import type { Certainty, Response } from "../assessment/items.js";
@@ -18,7 +19,7 @@ import { releasePerformance, scenarioSnapshot } from "../simulation/index.js";
 import { getScenario, SCENARIOS } from "../simulation/scenarios.js";
 import type { State } from "../state.js";
 import { PersistentMemorySaver } from "../storage/checkpointer.js";
-import { type Sql, SqlEventLog, SqlMeta, SqlReleaseStore, SqlThreadStore } from "../storage/sql.js";
+import { type Sql, SqlEventLog, SqlMeta, SqlProfiles, SqlReleaseStore, SqlThreadStore } from "../storage/sql.js";
 import { approveWithinCeiling, referenceModels } from "./reference.js";
 import { flushTraces, traceConfig } from "../observability.js";
 import { type RunStep, stepFor } from "./timeline.js";
@@ -115,6 +116,7 @@ const summarize = (r: Release): ReleaseSummary => ({
 export class CourseService {
   readonly releases: SqlReleaseStore;
   readonly events: SqlEventLog;
+  readonly profiles: SqlProfiles;
   private readonly meta: SqlMeta;
   private readonly saver: PersistentMemorySaver;
   private readonly now: () => string;
@@ -129,6 +131,7 @@ export class CourseService {
     this.meta = new SqlMeta(sql);
     this.releases = new SqlReleaseStore(sql, scenarioSnapshot(getScenario(this.scenario())), this.now);
     this.events = new SqlEventLog(sql);
+    this.profiles = new SqlProfiles(sql);
     this.saver = new PersistentMemorySaver(new SqlThreadStore(sql));
   }
 
@@ -238,13 +241,17 @@ export class CourseService {
     this.events.append({ learner, kind: "session", lesson: null, release: this.releases.live().version, data: { event: "start", session }, at: this.now() });
   }
 
-  /** A connection closed. Its duration runs from its own start. */
+  /**
+   * A connection closed. Its duration runs from its own start. If that start is gone (the learner deleted
+   * their data while connected), nothing is recorded, so deleting can't be undone by closing the tab.
+   */
   endSession(learner: string, session: string) {
     const start = this.events
       .forLearner(learner)
       .find((e) => e.kind === "session" && (e.data as { event: string; session: string }).event === "start" && (e.data as { session: string }).session === session);
+    if (!start) return;
     const at = this.now();
-    const duration_ms = start ? Math.max(0, Date.parse(at) - Date.parse(start.at)) : 0;
+    const duration_ms = Math.max(0, Date.parse(at) - Date.parse(start.at));
     this.events.append({ learner, kind: "session", lesson: null, release: this.releases.live().version, data: { event: "end", session, duration_ms }, at });
   }
 
@@ -317,9 +324,83 @@ export class CourseService {
     };
   }
 
-  /** Removes everything recorded about this learner. Course releases are untouched. */
+  /** Removes everything recorded about this learner, including their profile. Course releases are untouched. */
   deleteMyData(learner: string) {
+    this.profiles.delete(learner);
     return { deleted: this.events.deleteLearner(learner) };
+  }
+
+  /** Remembers who signed in (name and email as their verified token carries them), for instructors' views. */
+  recordProfile(identity: Identity) {
+    this.profiles.seen({ user_id: identity.userId, name: identity.name, email: identity.email, role: identity.role }, this.now());
+  }
+
+  // ─── Instructors ──────────────────────────────────────────────────
+
+  /** Every learner with a summary an instructor can scan: activity, mastery, and beliefs still showing. */
+  learners() {
+    const profiles = new Map(this.profiles.all().map((p) => [p.user_id, p] as const));
+    const lastEvent = new Map(this.events.learners().map((l) => [l.learner, l.last_at] as const));
+    const ids = [...new Set([...profiles.keys(), ...lastEvent.keys()])];
+    const now = Date.parse(this.now());
+
+    const rows = ids.map((id) => {
+      const p = this.myProgress(id);
+      const profile = profiles.get(id);
+      const open = p.beliefs.filter((b) => !b.cleared);
+      const lastQuiz = p.quizzes[0];
+      const last_active = [profile?.last_seen, lastEvent.get(id)].filter((x): x is string => Boolean(x)).sort().at(-1) ?? null;
+      return {
+        user_id: id,
+        name: profile?.name ?? null,
+        email: profile?.email ?? null,
+        role: profile?.role ?? "learner",
+        last_active,
+        sessions: p.totals.sessions,
+        active_ms: p.totals.active_ms,
+        quizzes: p.totals.quizzes,
+        mastered: p.totals.mastered,
+        lessons: p.totals.lessons,
+        open_beliefs: open.map((b) => ({ id: b.id, belief: b.belief, lesson: b.lesson })),
+        /** Still showing a belief, or failed their latest quiz. */
+        needs_help: open.length > 0 || (lastQuiz !== undefined && !lastQuiz.passed),
+      };
+    });
+    rows.sort((a, b) => (b.last_active ?? "").localeCompare(a.last_active ?? ""));
+
+    const holders = new Map<string, { id: string; belief: string; learners: number }>();
+    for (const row of rows) {
+      for (const b of row.open_beliefs) {
+        const entry = holders.get(b.id) ?? { id: b.id, belief: b.belief, learners: 0 };
+        entry.learners++;
+        holders.set(b.id, entry);
+      }
+    }
+    const week = 7 * 24 * 3_600_000;
+    return {
+      summary: {
+        learners: rows.length,
+        active_this_week: rows.filter((r) => r.last_active && now - Date.parse(r.last_active) < week).length,
+        needs_help: rows.filter((r) => r.needs_help).length,
+        common_beliefs: [...holders.values()].sort((a, b) => b.learners - a.learners).slice(0, 5),
+      },
+      learners: rows,
+    };
+  }
+
+  /** One learner in full: their progress, and their history as a timeline. */
+  learnerDetail(userId: string) {
+    const course = getCourse();
+    const profile = this.profiles.get(userId);
+    return {
+      profile: { user_id: userId, name: profile?.name ?? null, email: profile?.email ?? null, role: profile?.role ?? "learner" },
+      progress: this.myProgress(userId),
+      timeline: timelineOf(
+        this.events.forLearner(userId),
+        (id) => course.getLesson(id)?.title ?? id,
+        (id) => course.getMisconception(id)?.belief ?? id,
+      ),
+    };
   }
 
   // ─── Repair runs ──────────────────────────────────────────────────

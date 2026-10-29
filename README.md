@@ -97,7 +97,14 @@ npm run dev                               # terminal 2: Vite on :5173, proxying 
   else is recorded by the server. `/me` ("My progress") shows mastery, time, sessions, quizzes and the beliefs a
   learner has shown and cleared, and "Delete my data" removes their history.
 
-  Setup: in Clerk, add the session-token claim `{ "role": "{{user.public_metadata.role}}" }` and set your own
+- **Instructors** (`/learners`): every learner with when they were last active, sessions, time, lessons
+  mastered and the beliefs they still show, a "needs help" filter, the misconceptions most learners hold, and
+  for each learner their progress and a readable timeline. Names come from the session token when it carries
+  `name` and `email` claims; otherwise learners are listed by their user id.
+
+  Setup: in Clerk, add the session-token claims
+  `{ "role": "{{user.public_metadata.role}}", "name": "{{user.full_name}}", "email": "{{user.primary_email_address}}" }`
+  (only `role` is required) and set your own
   public metadata to `{ "role": "admin" }`; set `VITE_CLERK_PUBLISHABLE_KEY` (`.env` locally, a GitHub Actions
   variable for CI) and the Worker secret `CLERK_JWT_KEY` (`.dev.vars` locally).
 - Live at **https://hyperlearn.radesh-govind.com**. `.github/workflows/ci-cd.yml` typechecks, tests and builds every

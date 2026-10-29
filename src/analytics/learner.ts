@@ -178,3 +178,58 @@ export function interventionsOf(events: readonly LearnerEvent[]): InterventionRe
   }
   return [...records.values()];
 }
+
+export interface TimelineEntry {
+  at: string;
+  kind: LearnerEvent["kind"];
+  lesson: string | null;
+  text: string;
+  /** For quizzes: passed or not. Lets the UI colour the entry. */
+  outcome?: "pass" | "fail";
+}
+
+const mins = (ms: number) => (ms < 60_000 ? `${Math.max(1, Math.round(ms / 1000))} s` : `${Math.round(ms / 60_000)} min`);
+
+/** A learner's history as plain sentences, newest first. */
+export function timelineOf(
+  events: readonly LearnerEvent[],
+  titleOf: (lesson: string) => string,
+  beliefOf: (misconception: string) => string,
+  limit = 100,
+): TimelineEntry[] {
+  const entries: TimelineEntry[] = [];
+  for (const e of events) {
+    const lesson = e.lesson ? titleOf(e.lesson) : "";
+    switch (e.kind) {
+      case "session": {
+        const d = e.data as SessionData;
+        entries.push({ at: e.at, kind: e.kind, lesson: null, text: d.event === "start" ? "Opened HyperLearn" : `Left after ${mins(d.duration_ms ?? 0)}` });
+        break;
+      }
+      case "lesson":
+        entries.push({ at: e.at, kind: e.kind, lesson: e.lesson, text: `${mins((e.data as { active_ms: number }).active_ms)} reading ${lesson}` });
+        break;
+      case "answer": {
+        const d = e.data as AnswerData;
+        const shown = [...new Set(d.items.flatMap((i) => i.grade.errors.flatMap((err) => err.misconception ?? [])))];
+        entries.push({
+          at: e.at,
+          kind: e.kind,
+          lesson: e.lesson,
+          text: `Quiz on ${lesson}: ${Math.round(d.score * 100)}%${d.passed ? ", passed" : ", not passed"}${shown.length ? `, showing “${shown.map(beliefOf).join("”, “")}”` : ""}`,
+          outcome: d.passed ? "pass" : "fail",
+        });
+        break;
+      }
+      case "intervention": {
+        const d = e.data as { event: "shown" | "completed"; misconception?: string; context: string };
+        const belief = d.misconception ? `“${beliefOf(d.misconception)}”` : "a misconception";
+        entries.push({ at: e.at, kind: e.kind, lesson: e.lesson, text: `${d.event === "shown" ? "Was shown" : "Completed"} help for ${belief}${d.context === "preview" ? " (opened it)" : ""}` });
+        break;
+      }
+      case "path":
+        break; // the interventions it led to are recorded on their own
+    }
+  }
+  return entries.reverse().slice(0, limit);
+}

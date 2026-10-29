@@ -57,6 +57,7 @@ export class CourseAgent extends Agent<Env, CourseAgentState> {
       return;
     }
     connection.setState({ identity, connectedAt: new Date().toISOString() });
+    this.app.recordProfile(identity);
     this.app.startSession(identity.userId, connection.id);
   }
 
@@ -118,6 +119,20 @@ export class CourseAgent extends Agent<Env, CourseAgentState> {
   deleteMyData() {
     const { userId } = this.actor("learn");
     return this.app.deleteMyData(userId);
+  }
+
+  /** Every learner, summarised for instructors. */
+  @callable()
+  learners() {
+    this.actor("view_learners");
+    return this.app.learners();
+  }
+
+  /** One learner's progress and timeline, for instructors. */
+  @callable()
+  learnerDetail(userId: string) {
+    this.actor("view_learners");
+    return this.app.learnerDetail(userId);
   }
 
   private connectionId(): string {

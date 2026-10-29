@@ -7,6 +7,7 @@ import { Drawer } from "./components/Drawer.js";
 import { HistoryDrawer } from "./components/HistoryDrawer.js";
 import { LessonView } from "./components/LessonView.js";
 import { RepairDrawer } from "./components/RepairDrawer.js";
+import { LearnerDetail, Learners } from "./pages/Learners.js";
 import { MyProgress } from "./pages/MyProgress.js";
 import type { AgentState, Call, CourseSnapshot, LessonProgress, Me, Overview } from "./types.js";
 
@@ -17,6 +18,7 @@ export function App() {
   const location = useLocation();
   const navigate = useNavigate();
   const onProgressPage = location.pathname === "/me";
+  const learnerMatch = /^\/learners(?:\/([^/]+))?$/.exec(location.pathname);
   const [me, setMe] = useState<Me | null>(null);
   const [overview, setOverview] = useState<Overview | null>(null);
   const [lessonId, setLessonId] = useState("agent-loop");
@@ -47,6 +49,7 @@ export function App() {
     void call<LessonProgress[]>("progress").then(setProgress);
   }, [call, agent.identified]);
   const mayRepair = me?.permissions.includes("repair") ?? false;
+  const mayViewLearners = me?.permissions.includes("view_learners") ?? false;
 
   // When a run starts waiting for a human, bring its approval card into view (for people who may approve).
   const status = overview?.run?.status;
@@ -90,6 +93,11 @@ export function App() {
           <span className="name">HyperLearn</span>
         </div>
         <span className="spacer" />
+        {mayViewLearners && (
+          <button className={`btn sm ${learnerMatch ? "primary" : "quiet"}`} onClick={() => navigate(learnerMatch ? "/" : "/learners")} aria-current={learnerMatch ? "page" : undefined}>
+            Learners
+          </button>
+        )}
         <button className={`btn sm ${onProgressPage ? "primary" : "quiet"}`} onClick={() => navigate(onProgressPage ? "/" : "/me")} aria-current={onProgressPage ? "page" : undefined}>
           My progress
         </button>
@@ -120,6 +128,12 @@ export function App() {
         <main className="main">
           {onProgressPage ? (
             <MyProgress key={progress.length} call={call} onOpenLesson={openLesson} />
+          ) : learnerMatch && mayViewLearners ? (
+            learnerMatch[1] ? (
+              <LearnerDetail call={call} userId={decodeURIComponent(learnerMatch[1])} onBack={() => navigate("/learners")} />
+            ) : (
+              <Learners call={call} onOpen={(id) => navigate(`/learners/${encodeURIComponent(id)}`)} />
+            )
           ) : snapshot ? (
             <LessonView
               // Keyed by lesson, not version: a release going live mid-quiz updates the page without wiping the learner's answers.

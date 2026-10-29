@@ -157,6 +157,43 @@ describe("CourseService", () => {
     assert.equal(s.myProgress("bob").totals.quizzes, 1);
   });
 
+  it("lists learners for instructors: who needs help, and the beliefs most learners still hold", () => {
+    const s = service();
+    s.recordProfile({ userId: "ada", role: "learner", name: "Ada" });
+    s.recordProfile({ userId: "bob", role: "learner", email: "bob@example.com" });
+    s.submitQuiz("ada", "agent-loop", believerAnswers().answers, believerAnswers().certainty);
+    const right = lesson.quiz.map((item) => correctResponse(item));
+    s.submitQuiz("bob", "agent-loop", right, right.map(() => 3 as const));
+
+    const { summary, learners } = s.learners();
+    assert.equal(summary.learners, 2);
+    assert.equal(summary.needs_help, 1);
+    assert.equal(summary.common_beliefs[0]?.id, "model-executes-actions");
+    const ada = learners.find((l) => l.user_id === "ada")!;
+    assert.equal(ada.name, "Ada");
+    assert.equal(ada.needs_help, true);
+    assert.ok(ada.open_beliefs.some((b) => b.id === "model-executes-actions"));
+    assert.equal(learners.find((l) => l.user_id === "bob")?.needs_help, false);
+  });
+
+  it("shows one learner's history as a readable timeline, and forgets their profile on delete", () => {
+    const s = service();
+    s.recordProfile({ userId: "ada", role: "learner", name: "Ada" });
+    s.startSession("ada", "c1");
+    s.track("ada", "c1", { kind: "lesson", lesson: "agent-loop", active_ms: 120_000 });
+    s.submitQuiz("ada", "agent-loop", believerAnswers().answers, believerAnswers().certainty, "c1");
+    const detail = s.learnerDetail("ada");
+    assert.equal(detail.profile.name, "Ada");
+    assert.match(detail.timeline[0]!.text, /^Quiz on The Agent Loop: \d+%, not passed, showing “The model carries out/);
+    assert.equal(detail.timeline[0]!.outcome, "fail");
+    assert.deepEqual(detail.timeline.slice(1).map((t) => t.text), ["2 min reading The Agent Loop", "Opened HyperLearn"]);
+
+    s.deleteMyData("ada");
+    s.endSession("ada", "c1"); // the tab closes after deleting: nothing comes back
+    assert.equal(s.learnerDetail("ada").profile.name, null);
+    assert.equal(s.learners().summary.learners, 0);
+  });
+
   it("resets to another scenario", () => {
     const s = service();
     s.submitQuiz("ada", "agent-loop", believerAnswers().answers, believerAnswers().certainty);

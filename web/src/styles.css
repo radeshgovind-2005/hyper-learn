@@ -485,3 +485,24 @@ button.act:hover { background: var(--surface-2); }
 .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: var(--s6); }
 @media (max-width: 720px) { .two-col { grid-template-columns: 1fr; } }
 .danger-zone { border-top: 1px solid var(--line); margin-top: var(--s7); padding-top: var(--s2); }
+
+/* ─── Learners (instructors) ────────────────────────── */
+
+.lesson.wide { max-width: 960px; }
+.learner-rows { list-style: none; margin: var(--s3) 0 0; padding: 0; display: flex; flex-direction: column; gap: var(--s2); }
+.learner-row { display: flex; align-items: center; gap: var(--s4); width: 100%; text-align: left; border: 1px solid var(--line); background: var(--canvas); border-radius: var(--radius-sm); padding: var(--s3) var(--s4); }
+.learner-row:hover { border-color: var(--line-strong); }
+.learner-row .who { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.learner-row .name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.learner-row .beliefs { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; max-width: 300px; }
+.learner-row .mastery { width: 120px; }
+@media (max-width: 760px) { .learner-row .beliefs, .learner-row .mastery { display: none; } }
+.timeline-list { list-style: none; margin: 0; padding: 0; border-left: 2px solid var(--line); margin-left: 6px; }
+.timeline-list li { display: flex; align-items: baseline; gap: var(--s3); padding: 6px 0 6px var(--s4); position: relative; font-size: var(--t-sm); }
+.timeline-list .dot { position: absolute; left: -6px; top: 12px; width: 10px; height: 10px; border-radius: 50%; background: var(--line-strong); border: 2px solid var(--canvas); }
+.timeline-list li.fail .dot { background: var(--amber); }
+.timeline-list li.pass .dot { background: var(--green); }
+.timeline-list li.intervention .dot { background: var(--violet); }
+.timeline-list li.session .dot { background: var(--canvas); border-color: var(--line-strong); }
+.timeline-list .grow { flex: 1; }
+.timeline-list time { flex: none; }

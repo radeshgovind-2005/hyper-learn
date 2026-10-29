@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import type { Call } from "../types.js";
 
-interface Progress {
+export interface Progress {
   totals: { active_ms: number; sessions: number; quizzes: number; mastered: number; lessons: number };
   lessons: { lesson: string; title: string; active_ms: number; attempts: number; passed: boolean; mastery: number; mastered: boolean }[];
   sessions: { start: string; end: string; duration_ms: number; lessons: string[]; quizzes: number }[];
@@ -10,32 +10,17 @@ interface Progress {
   interventions: { block_id: string; first_shown: string; completed: boolean; context: "path" | "preview" }[];
 }
 
-const minutes = (ms: number) => (ms < 60_000 ? `${Math.round(ms / 1000)} s` : ms < 3_600_000 ? `${Math.round(ms / 60_000)} min` : `${(ms / 3_600_000).toFixed(1)} h`);
-const when = (iso: string) => new Date(iso).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
-const pct = (v: number) => `${Math.round(v * 100)}%`;
+export const minutes = (ms: number) => (ms < 60_000 ? `${Math.round(ms / 1000)} s` : ms < 3_600_000 ? `${Math.round(ms / 60_000)} min` : `${(ms / 3_600_000).toFixed(1)} h`);
+export const when = (iso: string) => new Date(iso).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+export const pct = (v: number) => `${Math.round(v * 100)}%`;
 
-/** The signed-in learner's own record: mastery, time, sessions, quizzes and beliefs, and a way to delete it. */
-export function MyProgress({ call, onOpenLesson }: { call: Call; onOpenLesson: (id: string) => void }) {
-  const [data, setData] = useState<Progress | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [confirming, setConfirming] = useState(false);
-  const [deleted, setDeleted] = useState<number | null>(null);
-
-  const load = () => void call<Progress>("myProgress").then(setData, (e: unknown) => setError(e instanceof Error ? e.message : String(e)));
-  useEffect(load, [call]);
-
-  if (error) return <div className="lesson"><div className="notice">{error}</div></div>;
-  if (!data) return <div className="empty">Loading your progress…</div>;
+/** Tiles, lessons, beliefs, sessions and quizzes: the same view for a learner's own page and an instructor's. */
+export function ProgressSections({ data, onOpenLesson }: { data: Progress; onOpenLesson?: (id: string) => void }) {
   const title = (id: string) => data.lessons.find((l) => l.lesson === id)?.title ?? id;
   const open = data.beliefs.filter((b) => !b.cleared);
   const cleared = data.beliefs.filter((b) => b.cleared);
-
   return (
-    <article className="lesson progress-page">
-      <div className="crumbs">Your account</div>
-      <h1>My progress</h1>
-      <p className="lede">Everything here is recorded under your account and follows you across devices.</p>
-
+    <>
       <div className="tiles">
         <div className="tile"><span className="value">{data.totals.mastered}<span className="of">/{data.totals.lessons}</span></span><span className="label">lessons mastered</span></div>
         <div className="tile"><span className="value">{minutes(data.totals.active_ms)}</span><span className="label">time learning</span></div>
@@ -48,7 +33,7 @@ export function MyProgress({ call, onOpenLesson }: { call: Call; onOpenLesson: (
         <ul className="lesson-rows">
           {data.lessons.map((l) => (
             <li key={l.lesson}>
-              <button className="lesson-row" onClick={() => onOpenLesson(l.lesson)}>
+              <button className="lesson-row" onClick={() => onOpenLesson?.(l.lesson)} disabled={!onOpenLesson}>
                 <span className="grow">
                   <span className="name">{l.title}</span>
                   <span className="small muted">
@@ -68,14 +53,14 @@ export function MyProgress({ call, onOpenLesson }: { call: Call; onOpenLesson: (
       <section className="section">
         <h2>Ideas to revisit</h2>
         {data.beliefs.length === 0 ? (
-          <p className="muted">Nothing yet. When an answer suggests a common misunderstanding, it shows up here until you've cleared it.</p>
+          <p className="muted">Nothing yet. When an answer suggests a common misunderstanding, it shows up here until it's cleared.</p>
         ) : (
           <ul className="belief-list">
             {open.map((b) => (
               <li key={b.id} className="belief open">
                 <span className="chip amber">Still showing</span>
                 <span className="grow">“{b.belief}”<span className="small muted"> · {title(b.lesson)} · seen {b.times}×</span></span>
-                <button className="btn secondary sm" onClick={() => onOpenLesson(b.lesson)}>Review</button>
+                {onOpenLesson && <button className="btn secondary sm" onClick={() => onOpenLesson(b.lesson)}>Review</button>}
               </li>
             ))}
             {cleared.map((b) => (
@@ -116,6 +101,30 @@ export function MyProgress({ call, onOpenLesson }: { call: Call; onOpenLesson: (
           )}
         </div>
       </section>
+    </>
+  );
+}
+
+/** The signed-in learner's own record: mastery, time, sessions, quizzes and beliefs, and a way to delete it. */
+export function MyProgress({ call, onOpenLesson }: { call: Call; onOpenLesson: (id: string) => void }) {
+  const [data, setData] = useState<Progress | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [confirming, setConfirming] = useState(false);
+  const [deleted, setDeleted] = useState<number | null>(null);
+
+  const load = () => void call<Progress>("myProgress").then(setData, (e: unknown) => setError(e instanceof Error ? e.message : String(e)));
+  useEffect(load, [call]);
+
+  if (error) return <div className="lesson"><div className="notice">{error}</div></div>;
+  if (!data) return <div className="empty">Loading your progress…</div>;
+
+  return (
+    <article className="lesson progress-page">
+      <div className="crumbs">Your account</div>
+      <h1>My progress</h1>
+      <p className="lede">Everything here is recorded under your account and follows you across devices.</p>
+
+      <ProgressSections data={data} onOpenLesson={onOpenLesson} />
 
       <section className="section danger-zone">
         <h2>Your data</h2>

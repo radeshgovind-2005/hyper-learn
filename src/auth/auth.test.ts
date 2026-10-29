@@ -56,6 +56,14 @@ describe("forwarding identity", () => {
     assert.deepEqual(identityFrom(withIdentity(spoofed, { userId: "user_ada", role: "learner" })), { userId: "user_ada", role: "learner" });
   });
 
+  it("carries optional name and email claims, including non-ASCII names, and strips spoofed copies", async () => {
+    const identity = await verifySessionToken(await token({ role: "instructor", name: "Radesh Gõvind", email: "r@example.com" }), options);
+    assert.deepEqual(identity, { userId: "user_ada", role: "instructor", name: "Radesh Gõvind", email: "r@example.com" });
+    const spoofed = new Request(SITE, { headers: { [IDENTITY_HEADERS.name]: "Mallory" } });
+    assert.deepEqual(identityFrom(withIdentity(spoofed, identity)), identity);
+    assert.equal(identityFrom(withIdentity(spoofed, { userId: "u", role: "learner" }))?.name, undefined);
+  });
+
   it("reads a forwarded role defensively", () => {
     assert.equal(roleFrom("admin"), "admin");
     assert.equal(roleFrom(undefined), "learner");
