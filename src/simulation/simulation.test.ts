@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { getCourse } from "../course/bundle.js";
 import type { NodePerformance } from "../state.js";
-import { scenarioPerformance } from "./index.js";
+import { EXEMPLARS } from "../interventions/exemplars.js";
+import { releasePerformance, scenarioPerformance, scenarioSnapshot } from "./index.js";
 import { publishedGraph, simulate } from "./learners.js";
 import { getScenario, SCENARIOS } from "./scenarios.js";
 
@@ -66,6 +67,27 @@ describe("simulation", () => {
     const reflection = byId(scenarioPerformance(getScenario("low-sample-trap")), "reflection");
     assert.equal(reflection.attempts, 10);
     assert.equal(reflection.low_sample, true);
+  });
+
+  it("releasePerformance routes learners through the release's graph and marks covered beliefs", () => {
+    const scenario = getScenario("missing-prereq");
+    const snapshot = scenarioSnapshot(scenario);
+    assert.deepEqual(releasePerformance(scenario, snapshot), scenarioPerformance(scenario), "same as the scenario's data before any change");
+
+    const fixed = structuredClone(snapshot);
+    fixed.lessons.find((l) => l.id === "multi-agent")!.prerequisites.unshift("tool-calling");
+    assert.ok(byId(releasePerformance(scenario, fixed), "multi-agent").fail_rate < 0.35, "the fixed graph no longer fails");
+
+    const dominant = getScenario("dominant-misconception");
+    const withCard = structuredClone(scenarioSnapshot(dominant));
+    withCard.lessons.find((l) => l.id === "agent-loop")!.sections[1]!.blocks.push({
+      id: "agent-loop/the-harness-does-the-acting/i1",
+      kind: "intervention",
+      archived: false,
+      intervention: EXEMPLARS[0]!,
+    });
+    const belief = byId(releasePerformance(dominant, withCard), "agent-loop").misconceptions.find((m) => m.id === "model-executes-actions");
+    assert.equal(belief?.covered, true);
   });
 
   it("every scenario has a unique id", () => {

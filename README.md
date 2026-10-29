@@ -79,6 +79,9 @@ npm run dev                               # terminal 2: Vite on :5173, proxying 
   model calls; the UI says so. With `MODEL_BASE_URL` and `MODEL_API_KEY` set (`.dev.vars` locally,
   `npx wrangler secret put MODEL_API_KEY` deployed), the "Muse Spark" toggle runs the real agents. Point
   `MODEL_BASE_URL` at a Cloudflare AI Gateway to log every model call.
+- Changing the course (reset, runs, approvals) needs the `ADMIN_TOKEN` secret when one is set
+  (`npx wrangler secret put ADMIN_TOKEN`); learners don't need it, and the UI asks for it once per session.
+  Without it, as in local dev, anyone connected can administer: **set it before deploying**.
 - Deploy: `npx wrangler login`, then `npm run deploy` (Durable Objects need the Workers Paid plan).
 
 ## Setup
@@ -227,6 +230,10 @@ not show that a change helps real learners; the same decision rule applied to re
 Splits and merges are reviewed and recorded, but not released: no agent writes whole lessons yet.
 
 ## Interventions and per-learner paths
+
+Each run diagnoses the **live** release: the scenario's learners are routed through its prerequisite graph,
+and every named misconception that a live intervention already targets is marked `covered`. Code rejects a
+proposal for a covered belief, so once a fix is kept the next run moves on instead of re-proposing it.
 
 An `add_intervention` proposal targets one named misconception. Code decides which **templates** fit from how
 the belief is held: confidently held → `contrast` (belief, why it's tempting, what really happens, a check

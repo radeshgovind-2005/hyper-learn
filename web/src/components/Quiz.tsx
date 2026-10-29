@@ -258,13 +258,12 @@ export function QuizFlow({ quiz, busy, onSubmit }: { quiz: QuizItem[]; busy: boo
 
   return (
     <>
-      <div className="progressbar" role="tablist" aria-label="Questions">
+      <div className="progressbar" role="group" aria-label="Questions">
         {quiz.map((q, i) => (
           <button
             key={q.id}
-            role="tab"
-            aria-selected={i === index}
-            aria-label={`Question ${i + 1}${visited.has(i) && ready(i) ? ", answered" : ""}`}
+            aria-current={i === index ? "step" : undefined}
+            aria-label={`Go to question ${i + 1}${visited.has(i) && ready(i) ? ", answered" : ""}`}
             className={i === index ? "current" : visited.has(i) && ready(i) ? "done" : ""}
             onClick={() => setIndex(i)}
           />

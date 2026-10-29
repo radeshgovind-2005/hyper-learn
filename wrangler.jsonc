@@ -20,6 +20,7 @@
   "vars": {
     // Point MODEL_BASE_URL at an AI Gateway to log every model call. Set MODEL_API_KEY as a secret:
     //   npx wrangler secret put MODEL_API_KEY      (locally: .dev.vars)
+    // Set ADMIN_TOKEN the same way before deploying: without it, anyone can reset the course and approve releases.
     // Without a key, runs use the reference stand-ins and make no model calls.
     "MODEL_BASE_URL": "",
     "REASONING_MODEL": "muse-spark-1.3",
