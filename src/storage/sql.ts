@@ -118,6 +118,11 @@ export class SqlEventLog {
     return this.sql<{ id: number; learner: string; kind: LearnerEvent["kind"]; lesson: string | null; release: string; data: string; at: string }>`
       SELECT * FROM hl_events WHERE learner = ${learner} ORDER BY id`.map((row) => ({ ...row, data: JSON.parse(row.data) as unknown }));
   }
+  /** Every graded quiz since `since` (default: all), across learners, oldest first. */
+  answers(since = ""): LearnerEvent[] {
+    return this.sql<{ id: number; learner: string; kind: LearnerEvent["kind"]; lesson: string | null; release: string; data: string; at: string }>`
+      SELECT * FROM hl_events WHERE kind = 'answer' AND at >= ${since} ORDER BY id`.map((row) => ({ ...row, data: JSON.parse(row.data) as unknown }));
+  }
   /** Every learner who has any event, with their latest activity. */
   learners(): { learner: string; last_at: string }[] {
     return this.sql<{ learner: string; last_at: string }>`SELECT learner, MAX(at) AS last_at FROM hl_events GROUP BY learner ORDER BY last_at DESC`;

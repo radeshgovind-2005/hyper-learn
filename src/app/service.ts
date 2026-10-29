@@ -10,11 +10,12 @@ import { type CourseSnapshot, courseFromSnapshot, type LiveIntervention, liveInt
 import { buildGraph } from "../graph.js";
 import type { Embedder, Guard } from "../guards/guards.js";
 import { SimMeasurer } from "../measure/measure.js";
+import { type Arm, armOf, isPending, measureReal, type PendingMeasurement, RealMeasurer, realPerformance } from "../measure/real.js";
 import { createApprover } from "../nodes/approver.js";
-import type { ApprovalMode, ApprovalRequest, ApprovalResponse, Harness } from "../nodes/release.js";
+import { type ApprovalMode, type ApprovalRequest, type ApprovalResponse, type Harness, settleTrial } from "../nodes/release.js";
 import { nextSteps, type PathStep } from "../path/route.js";
 import { describeChange } from "../releases/changes.js";
-import type { Release } from "../releases/release.js";
+import { type Release, revert } from "../releases/release.js";
 import { releasePerformance, scenarioSnapshot } from "../simulation/index.js";
 import { getScenario, SCENARIOS } from "../simulation/scenarios.js";
 import type { State } from "../state.js";
@@ -30,13 +31,19 @@ import { type RunStep, stepFor } from "./timeline.js";
 /** Most activity events one connection may report per minute. */
 export const TRACK_EVENTS_PER_MINUTE = 60;
 
+/** Whose answers a run diagnoses and trials on: the scenario's simulated learners, or the people using the app. */
+export type DataSource = "simulated" | "real";
+
 export interface RunState {
   thread_id: string;
   scenario: string;
   mode: ApprovalMode;
   /** true = the real agents on a model; false = the reference stand-ins (no model calls). */
   agents: boolean;
-  status: "running" | "awaiting_approval" | "done" | "error";
+  /** Missing on runs stored before real learners existed: simulated. */
+  source?: DataSource;
+  /** trial_running: a trial on real learners started and is collecting answers; it's decided later. */
+  status: "running" | "awaiting_approval" | "trial_running" | "done" | "error";
   steps: RunStep[];
   approval?: ApprovalRequest;
   error?: string;
@@ -57,7 +64,26 @@ export interface ReleaseSummary {
   decision?: Release["decision"];
   promoted_to?: string;
   released_from?: string;
+  trial_source?: Release["trial_source"];
+  pending?: PendingMeasurement;
   created_at: string;
+}
+
+/** A trial on real learners that hasn't been decided yet. */
+export interface TrialStatus {
+  version: string;
+  parent: string;
+  started_at: string;
+  changes: string[];
+  /** Learners counted so far in each arm, as of the last evaluation. */
+  pending?: PendingMeasurement;
+}
+
+/** The release one learner is served: during a real trial, half of learners get the trial. */
+export interface ServedRelease {
+  version: string;
+  /** Set while a real trial is running: which arm this learner is in. */
+  arm?: Arm;
 }
 
 export interface ItemResult {
@@ -88,6 +114,13 @@ export interface LessonProgress {
   beliefs: string[];
 }
 
+export interface RunOptions {
+  mode: ApprovalMode;
+  agents: boolean;
+  /** Whose answers to diagnose and trial on. Default: simulated. */
+  source?: DataSource;
+}
+
 export interface ServiceOptions {
   now?: () => string;
   newId?: () => string;
@@ -110,6 +143,8 @@ const summarize = (r: Release): ReleaseSummary => ({
   ...(r.decision && { decision: r.decision }),
   ...(r.promoted_to && { promoted_to: r.promoted_to }),
   ...(r.released_from && { released_from: r.released_from }),
+  ...(r.trial_source && { trial_source: r.trial_source }),
+  ...(r.pending && { pending: r.pending }),
   created_at: r.created_at,
 });
 
@@ -152,8 +187,22 @@ export class CourseService {
       live: this.releases.live().version,
       releases: this.releases.all().map(summarize),
       run: this.run(),
+      trial: this.trial(),
       agentsAvailable: this.options.agentsAvailable ?? false,
     };
+  }
+
+  /** The release learners are served: live, or for half of them the trial while one runs on real learners. */
+  servedRelease(learner: string): Release {
+    const trial = this.openTrial();
+    return trial && armOf(learner, trial.version) === "treatment" ? trial : this.releases.live();
+  }
+
+  myRelease(learner: string): ServedRelease {
+    const trial = this.openTrial();
+    if (!trial) return { version: this.releases.live().version };
+    const arm = armOf(learner, trial.version);
+    return { version: arm === "treatment" ? trial.version : this.releases.live().version, arm };
   }
 
   /** The full content of a release (default: the live one). */
@@ -175,9 +224,9 @@ export class CourseService {
 
   // ─── Learners ─────────────────────────────────────────────────────
 
-  /** Grades a quiz on the live release, records it, and returns the learner's next steps. */
+  /** Grades a quiz on the release this learner is served, records it, and returns their next steps. */
   submitQuiz(learner: string, lessonId: string, answers: Response[], certainty: Certainty[], session?: string): QuizResult {
-    const live = this.releases.live();
+    const live = this.servedRelease(learner);
     const course = courseFromSnapshot(live.snapshot);
     const lesson = course.getLesson(lessonId);
     if (!lesson) throw new Error(`No lesson "${lessonId}" in ${live.version}`);
@@ -198,7 +247,7 @@ export class CourseService {
     const shown = new Set(steps.flatMap((s) => (s.kind === "intervention" ? [s.block_id] : [])));
 
     const at = this.now();
-    this.events.append({ learner, kind: "answer", lesson: lessonId, release: live.version, data: { responses, certainty, items, passed, score, session }, at });
+    this.events.append({ learner, kind: "answer", lesson: lessonId, release: live.version, data: { responses, certainty, items, passed, score, attempt: previous + 1, session }, at });
     this.events.append({ learner, kind: "path", lesson: lessonId, release: live.version, data: { steps, session }, at });
 
     return {
@@ -271,7 +320,7 @@ export class CourseService {
     if (!window || now - window.start > 60_000) this.trackWindows.set(session, { start: now, count: 1 });
     else if (++window.count > TRACK_EVENTS_PER_MINUTE) throw new Error("Too many activity events; slow down");
 
-    const live = this.releases.live();
+    const live = this.servedRelease(learner);
     if (event.kind === "lesson") {
       if (!live.snapshot.lessons.some((l) => l.id === event.lesson && !l.archived)) throw new Error(`No lesson "${event.lesson}"`);
       this.events.append({ learner, kind: "lesson", lesson: event.lesson, release: live.version, data: { active_ms: event.active_ms, session }, at: this.now() });
@@ -407,15 +456,18 @@ export class CourseService {
 
   private graph(run: RunState) {
     const scenario = getScenario(run.scenario);
+    const real = run.source === "real";
     const harness: Harness = {
       store: this.releases,
-      measurer: new SimMeasurer(getCourse(), scenario),
+      measurer: real ? new RealMeasurer(() => this.events.answers()) : new SimMeasurer(getCourse(), scenario),
+      trialSource: real ? "real" : "simulated",
+      now: this.now,
       mode: run.mode,
       approver: run.agents ? createApprover() : approveWithinCeiling,
       ...(this.options.guard && { guard: this.options.guard }),
       ...(this.options.embedder && { embedder: this.options.embedder }),
     };
-    const models = run.agents ? {} : referenceModels(scenario, releasePerformance(scenario, this.releases.live().snapshot), this.releases);
+    const models = run.agents ? {} : referenceModels(real ? undefined : scenario, this.diagnosisData(run), this.releases);
     return buildGraph(models, { harness, checkpointer: this.saver });
   }
 
@@ -433,6 +485,7 @@ export class CourseService {
       scenario: run.scenario,
       mode: run.mode,
       agents: run.agents,
+      source: run.source ?? "simulated",
       release: this.releases.live().version,
     });
     try {
@@ -446,13 +499,14 @@ export class CourseService {
           }
         }
       }
-      const pending = (await app.getState(config)).tasks.flatMap((t) => t.interrupts);
+      const state = await app.getState(config);
+      const pending = state.tasks.flatMap((t) => t.interrupts);
       if (pending.length > 0) {
         run.status = "awaiting_approval";
         run.approval = pending[0]!.value as ApprovalRequest;
         run.steps.push({ node: "approve", actor: "human", title: `Waiting for approval of ${run.approval.version}`, status: "waiting", at: this.now() });
       } else {
-        run.status = "done";
+        run.status = (state.values as State).trial_pending ? "trial_running" : "done";
         delete run.approval;
       }
     } catch (error) {
@@ -465,7 +519,7 @@ export class CourseService {
   }
 
   /** Runs the repair loop on the live release's learner data. */
-  async startRun(options: { mode: ApprovalMode; agents: boolean }, onUpdate?: (run: RunState) => void): Promise<RunState> {
+  async startRun(options: RunOptions, onUpdate?: (run: RunState) => void): Promise<RunState> {
     return this.continueRun(this.beginRun(options, onUpdate), onUpdate);
   }
 
@@ -473,10 +527,11 @@ export class CourseService {
    * Checks a run can start and records it, synchronously, so a caller that runs the rest in the
    * background (the Worker) can still report "already running" to whoever asked.
    */
-  beginRun({ mode, agents }: { mode: ApprovalMode; agents: boolean }, onUpdate?: (run: RunState) => void): RunState {
+  beginRun({ mode, agents, source = "simulated" }: RunOptions, onUpdate?: (run: RunState) => void): RunState {
     const current = this.run()?.status;
     if (current === "running") throw new Error("A run is already in progress");
     if (current === "awaiting_approval") throw new Error("The current run is waiting for approval; answer it or reset first");
+    if (this.openTrial()) throw new Error("A trial is running on real learners; evaluate or stop it first");
     if (agents && !this.options.agentsAvailable) throw new Error("No model is configured, so only reference runs are available");
     const scenario = getScenario(this.scenario());
     const run: RunState = {
@@ -484,6 +539,7 @@ export class CourseService {
       scenario: scenario.id,
       mode,
       agents,
+      source,
       status: "running",
       steps: [],
       started_at: this.now(),
@@ -494,9 +550,101 @@ export class CourseService {
 
   /** The long part of a run started with beginRun. */
   async continueRun(run: RunState, onUpdate?: (run: RunState) => void): Promise<RunState> {
-    // Diagnose the release learners have now, not the scenario's starting point.
-    const performance_data = releasePerformance(getScenario(run.scenario), this.releases.live().snapshot);
+    const performance_data = this.diagnosisData(run);
+    if (performance_data.length === 0) {
+      run.steps.push({
+        node: "curator",
+        actor: "code",
+        title: `No quiz answers on v${this.releases.live().version} yet`,
+        status: "info",
+        detail: "Real-learner runs diagnose people's first attempts on the live release. Nothing to go on until someone takes a quiz.",
+        at: this.now(),
+      });
+      run.status = "done";
+      this.save(run, onUpdate);
+      return run;
+    }
     return this.drive(run, { input_type: "cron", performance_data }, onUpdate);
+  }
+
+  /**
+   * What a run diagnoses: the release learners have now (not the scenario's starting point), from the
+   * scenario's simulated learners or from real learners' first attempts on it.
+   */
+  private diagnosisData(run: RunState) {
+    const live = this.releases.live();
+    return run.source === "real"
+      ? realPerformance(live.snapshot, live.version, this.events.answers())
+      : releasePerformance(getScenario(run.scenario), live.snapshot);
+  }
+
+  // ─── Trials on real learners ──────────────────────────────────────
+
+  private openTrial(): Release | undefined {
+    return this.releases.all().find((r) => r.status === "trial" && r.trial_source === "real");
+  }
+
+  trial(): TrialStatus | null {
+    const t = this.openTrial();
+    if (!t) return null;
+    return {
+      version: t.version,
+      parent: t.parent!,
+      started_at: t.trial_started_at ?? t.created_at,
+      changes: t.changes.map(describeChange),
+      ...(t.pending && { pending: t.pending }),
+    };
+  }
+
+  /**
+   * Measures the open real trial from the answers so far. Still short of learners: records the counts.
+   * Enough: applies the same keep-or-revert rule as a simulated trial, and the run that started it ends.
+   */
+  evaluateTrial(onUpdate?: (run: RunState) => void): { status: "none" } | { status: "pending"; pending: PendingMeasurement } | { status: "decided"; verdict: "keep" | "revert"; live: string } {
+    const trial = this.openTrial();
+    if (!trial) return { status: "none" };
+    const since = trial.trial_started_at ?? trial.created_at;
+    const result = measureReal(this.releases.live(), trial, this.events.answers(since), since);
+    if (isPending(result)) {
+      this.releases.update(trial.version, { pending: result });
+      this.finishTrialRun(undefined, onUpdate);
+      return { status: "pending", pending: result };
+    }
+    const decision = settleTrial(this.releases, trial.version, result);
+    const live = this.releases.live().version;
+    this.finishTrialRun(
+      {
+        node: "decide",
+        actor: "code",
+        title: decision.verdict === "keep" ? `Kept: ${live} is live` : `Reverted: ${live} stays live`,
+        status: decision.verdict === "keep" ? "ok" : "rejected",
+        detail: decision.reasons.join("\n"),
+        at: this.now(),
+      },
+      onUpdate,
+    );
+    return { status: "decided", verdict: decision.verdict, live };
+  }
+
+  /** Ends the open real trial by hand: it's reverted and every learner goes back to the live release. */
+  stopTrial(by: string, onUpdate?: (run: RunState) => void) {
+    const trial = this.openTrial();
+    if (!trial) throw new Error("No trial is running");
+    revert(this.releases, trial.version);
+    const reason = `Stopped by ${by} before it could be measured.`;
+    this.releases.update(trial.version, { decision: { verdict: "revert", reasons: [reason] } });
+    this.finishTrialRun({ node: "decide", actor: "human", title: `Stopped: ${this.releases.live().version} stays live`, status: "rejected", detail: reason, at: this.now() }, onUpdate);
+  }
+
+  /** The run that started a real trial: refreshed while the trial runs, ended with `step` once it's decided. */
+  private finishTrialRun(step: RunStep | undefined, onUpdate?: (run: RunState) => void) {
+    const run = this.run();
+    if (run?.status !== "trial_running") return;
+    if (step) {
+      run.steps.push(step);
+      run.status = "done";
+    }
+    this.save(run, onUpdate);
   }
 
   /** A human's answer to the pending approval; the run continues from where it paused. */

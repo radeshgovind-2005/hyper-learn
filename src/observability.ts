@@ -24,6 +24,7 @@ export function traceConfig(run: {
   scenario?: string;
   mode?: string;
   agents?: boolean;
+  source?: string;
   release?: string;
 }) {
   const { name, ...metadata } = run;

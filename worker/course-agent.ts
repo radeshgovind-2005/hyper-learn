@@ -1,6 +1,6 @@
 import { Agent, type Connection, type ConnectionContext, callable, getCurrentAgent } from "agents";
 import { type Permission, permissionsOf, requirePermission } from "../src/app/access.js";
-import { CourseService, type QuizResult } from "../src/app/service.js";
+import { CourseService, type DataSource, type QuizResult } from "../src/app/service.js";
 import type { Certainty, Response } from "../src/assessment/items.js";
 import { type Identity, identityFrom } from "../src/auth/identity.js";
 import { configureModels, modelConfigFromEnv } from "../src/models.js";
@@ -45,8 +45,19 @@ export class CourseAgent extends Agent<Env, CourseAgentState> {
     return this.service;
   }
 
-  override onStart() {
+  /** How often an open trial on real learners is re-measured, in seconds. */
+  static readonly TRIAL_CHECK_INTERVAL = 3600;
+
+  override async onStart() {
     this.publish();
+    // Idempotent: one schedule however often the object wakes.
+    await this.scheduleEvery(CourseAgent.TRIAL_CHECK_INTERVAL, "checkTrial");
+  }
+
+  /** Scheduled, not callable by clients: decides an open real trial once both arms have enough learners. */
+  async checkTrial() {
+    const result = this.app.evaluateTrial(() => this.publish());
+    if (result.status !== "none") this.publish();
   }
 
   /** Binds the connection to the person the Worker verified. A connection without one is closed. */
@@ -91,8 +102,15 @@ export class CourseAgent extends Agent<Env, CourseAgentState> {
 
   @callable()
   snapshot(version?: string) {
-    this.actor("learn");
-    return this.app.snapshot(version);
+    const { userId } = this.actor("learn");
+    return this.app.snapshot(version ?? this.app.myRelease(userId).version);
+  }
+
+  /** The release the caller is served: during a trial on real learners, half of learners get the trial. */
+  @callable()
+  myRelease() {
+    const { userId } = this.actor("learn");
+    return this.app.myRelease(userId);
   }
 
   @callable()
@@ -157,9 +175,10 @@ export class CourseAgent extends Agent<Env, CourseAgentState> {
    * the run itself continues in the background and reaches the UI through state updates.
    */
   @callable()
-  startRun(mode: ApprovalMode, agents: boolean) {
+  startRun(mode: ApprovalMode, agents: boolean, source: DataSource = "simulated") {
     this.actor("repair");
-    const run = this.app.beginRun({ mode, agents }, () => this.publish());
+    if (source !== "simulated" && source !== "real") throw new Error(`Unknown data source "${String(source)}"`);
+    const run = this.app.beginRun({ mode, agents, source }, () => this.publish());
     this.background(() => this.app.continueRun(run, () => this.publish()));
   }
 
@@ -169,6 +188,23 @@ export class CourseAgent extends Agent<Env, CourseAgentState> {
     const { userId } = this.actor("repair");
     const run = this.app.beginApproval(() => this.publish());
     this.background(() => this.app.continueApproval(run, { ...response, note: response.note ?? `approved by ${userId}` }, () => this.publish()));
+  }
+
+  /** Measures the open real trial now instead of waiting for the hourly check. */
+  @callable()
+  evaluateTrial() {
+    this.actor("repair");
+    const result = this.app.evaluateTrial(() => this.publish());
+    this.publish();
+    return result;
+  }
+
+  /** Ends the open real trial without a measurement: reverted, everyone back on the live release. */
+  @callable()
+  stopTrial() {
+    const { userId } = this.actor("repair");
+    this.app.stopTrial(userId, () => this.publish());
+    this.publish();
   }
 
   private background(work: () => Promise<unknown>) {

@@ -6,10 +6,11 @@ import type { Release } from "../releases/release.js";
 import { simulate, type QuizAttempt } from "../simulation/learners.js";
 import type { Scenario } from "../simulation/scenarios.js";
 import { type Comparison, compare, type Measurement, outcome } from "./decide.js";
+import type { PendingMeasurement } from "./real.js";
 
-/** Measures a trial release against the live one. */
+/** Measures a trial release against the live one; a real-learner measurer may not have enough data yet. */
 export interface Measurer {
-  measure(live: Release, candidate: Release): Promise<Measurement>;
+  measure(live: Release, candidate: Release): Promise<Measurement | PendingMeasurement>;
 }
 
 /** What a trial measures for a change: which lesson, which metric, and what the change must do to it. */

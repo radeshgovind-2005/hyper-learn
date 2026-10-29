@@ -9,7 +9,7 @@ import { LessonView } from "./components/LessonView.js";
 import { RepairDrawer } from "./components/RepairDrawer.js";
 import { LearnerDetail, Learners } from "./pages/Learners.js";
 import { MyProgress } from "./pages/MyProgress.js";
-import type { AgentState, Call, CourseSnapshot, LessonProgress, Me, Overview } from "./types.js";
+import type { AgentState, Call, CourseSnapshot, LessonProgress, Me, Overview, ServedRelease } from "./types.js";
 
 type DrawerName = "repair" | "history" | null;
 
@@ -23,6 +23,7 @@ export function App() {
   const [overview, setOverview] = useState<Overview | null>(null);
   const [lessonId, setLessonId] = useState("agent-loop");
   const [viewVersion, setViewVersion] = useState<string | null>(null);
+  const [served, setServed] = useState<ServedRelease | null>(null);
   const [snapshot, setSnapshot] = useState<CourseSnapshot | null>(null);
   const [parent, setParent] = useState<CourseSnapshot | null>(null);
   const [progress, setProgress] = useState<LessonProgress[]>([]);
@@ -59,8 +60,17 @@ export function App() {
     previous.current = status;
   }, [status, mayRepair]);
 
-  // The release on screen: the live one, or one picked from the history (with its parent, to show what changed).
-  const shown = viewVersion ?? overview?.live;
+  // The release this person is served: the live one, or during a trial on real learners, possibly the trial.
+  const live = overview?.live;
+  const trialVersion = overview?.trial?.version;
+  useEffect(() => {
+    if (!agent.identified || !live) return;
+    void call<ServedRelease>("myRelease").then(setServed);
+  }, [call, agent.identified, live, trialVersion]);
+  const home = served?.version ?? live;
+
+  // The release on screen: the served one, or one picked from the history (with its parent, to show what changed).
+  const shown = viewVersion ?? home;
   const shownParent = overview?.releases.find((r) => r.version === shown)?.parent ?? null;
   useEffect(() => {
     if (!shown) return;
@@ -101,9 +111,9 @@ export function App() {
         <button className={`btn sm ${onProgressPage ? "primary" : "quiet"}`} onClick={() => navigate(onProgressPage ? "/" : "/me")} aria-current={onProgressPage ? "page" : undefined}>
           My progress
         </button>
-        {overview && (
-          <button className="chip blue" onClick={() => toggle("history")} title="Release history">
-            v{overview.live}
+        {home && (
+          <button className="chip blue" onClick={() => toggle("history")} title={served?.arm ? "Release history · a trial is running, and you're in it" : "Release history"}>
+            v{home}
           </button>
         )}
         {mayRepair && (
@@ -141,7 +151,7 @@ export function App() {
               snapshot={snapshot}
               parent={parent}
               lessonId={lessonId}
-              viewingHistory={viewVersion !== null && viewVersion !== overview?.live}
+              viewingHistory={viewVersion !== null && viewVersion !== home}
               onBackToLive={() => setViewVersion(null)}
               approvalWaiting={mayRepair && waiting && drawer !== "repair" ? (overview?.run?.approval?.version ?? null) : null}
               onReviewApproval={() => setDrawer("repair")}
@@ -171,9 +181,9 @@ export function App() {
         <Drawer open={drawer === "history"} title="Releases" onClose={closeDrawer}>
           <HistoryDrawer
             overview={overview}
-            viewing={viewVersion ?? overview?.live ?? null}
+            viewing={viewVersion ?? home ?? null}
             onView={(v) => {
-              setViewVersion(v === overview?.live ? null : v);
+              setViewVersion(v === home ? null : v);
               setDrawer(null);
             }}
           />

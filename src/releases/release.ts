@@ -1,5 +1,6 @@
 import { type CourseSnapshot, courseFromSnapshot } from "../course/compile.js";
 import type { Measurement, TrialDecision } from "../measure/decide.js";
+import type { PendingMeasurement } from "../measure/real.js";
 import {
   applyChanges,
   type Bump,
@@ -45,6 +46,11 @@ export interface Release {
   promoted_to?: string;
   /** For a release that came from a trial: that trial's version. */
   released_from?: string;
+  /** Who a trial runs on: simulated learners (measured at once) or real ones (measured as they arrive). */
+  trial_source?: "simulated" | "real";
+  trial_started_at?: string;
+  /** For a real trial still collecting learners: how many each arm has, and how many it needs. */
+  pending?: PendingMeasurement;
   created_at: string;
 }
 

@@ -1,7 +1,8 @@
 import { END, interrupt } from "@langchain/langgraph";
-import { decideTrial } from "../measure/decide.js";
+import { decideTrial, type Measurement, type TrialDecision } from "../measure/decide.js";
 import type { Embedder, Guard } from "../guards/guards.js";
 import type { Measurer } from "../measure/measure.js";
+import { isPending } from "../measure/real.js";
 import { describeChange, type RiskTier } from "../releases/changes.js";
 import { changesFor } from "../releases/from-mutation.js";
 import { type Approval, planRelease, promote, type Release, type ReleaseStore, revert } from "../releases/release.js";
@@ -45,6 +46,10 @@ export interface Harness {
   store: ReleaseStore;
   measurer: Measurer;
   mode: ApprovalMode;
+  /** Who trials run on. Real trials end the run once started and are evaluated later. Default: simulated. */
+  trialSource?: "simulated" | "real";
+  /** Clock for when a trial starts. Default: the system clock. */
+  now?: () => string;
   /** Used in autopilot mode. */
   approver?: Approver;
   /** Screens authored content for safety before review; skipped when absent. */
@@ -79,7 +84,7 @@ export function createPlanReleaseNode({ store }: Harness) {
   };
 }
 
-export function createApprovalNode({ store, mode, approver }: Harness) {
+export function createApprovalNode({ store, mode, approver, trialSource = "simulated", now = () => new Date().toISOString() }: Harness) {
   return async function approvalNode(state: State): Promise<StateUpdate> {
     const candidate = state.candidate;
     if (!candidate) throw new Error("approval reached without a candidate");
@@ -107,7 +112,12 @@ export function createApprovalNode({ store, mode, approver }: Harness) {
       approval = { approved: response.approved, by: "human", ...(response.note && { note: response.note }) };
     }
 
-    store.add({ ...candidate, status: approval.approved ? "trial" : "rejected", approval });
+    store.add({
+      ...candidate,
+      status: approval.approved ? "trial" : "rejected",
+      approval,
+      ...(approval.approved && { trial_source: trialSource, trial_started_at: now() }),
+    });
     logNode("approval", `${approval.approved ? "✅ Approved" : "❌ Rejected"} by ${approval.by}${approval.note ? `: ${approval.note}` : ""}`);
     return { approval, live_version: store.live().version };
   };
@@ -122,7 +132,13 @@ export function createMeasureNode({ store, measurer }: Harness) {
     if (!trial) throw new Error("measure reached without a trial");
 
     logNode("measure", `Trial ${trial.version} vs live ${store.live().version}...`);
-    const measurement = await measurer.measure(store.live(), trial);
+    const result = await measurer.measure(store.live(), trial);
+    if (isPending(result)) {
+      store.update(trial.version, { pending: result });
+      logNode("measure", `Trial running on real learners: ${result.control}/${result.needed} and ${result.treatment}/${result.needed}`);
+      return { trial_pending: result };
+    }
+    const measurement = result;
     store.update(trial.version, { measurement });
     const { primary } = measurement;
     logNode(
@@ -134,20 +150,25 @@ export function createMeasureNode({ store, measurer }: Harness) {
   };
 }
 
+/** Applies the keep-or-revert rule to a measured trial: promotes it, or reverts it. */
+export function settleTrial(store: ReleaseStore, version: string, measurement: Measurement): TrialDecision {
+  const decision = decideTrial(measurement);
+  store.update(version, { measurement, decision });
+  if (decision.verdict === "keep") {
+    const released = promote(store, version);
+    logNode("decide", `✅ KEEP — released as ${released.version}`, decision.reasons.join("\n"));
+  } else {
+    revert(store, version);
+    logNode("decide", `↩️  REVERT — ${store.live().version} stays live`, decision.reasons.join("\n"));
+  }
+  return decision;
+}
+
 export function createDecideNode({ store }: Harness) {
   return async function decideNode(state: State): Promise<StateUpdate> {
     const { candidate, measurement } = state;
     if (!candidate || !measurement) throw new Error("decide reached without a measured trial");
-
-    const decision = decideTrial(measurement);
-    store.update(candidate.version, { decision });
-    if (decision.verdict === "keep") {
-      const released = promote(store, candidate.version);
-      logNode("decide", `✅ KEEP — released as ${released.version}`, decision.reasons.join("\n"));
-    } else {
-      revert(store, candidate.version);
-      logNode("decide", `↩️  REVERT — ${store.live().version} stays live`, decision.reasons.join("\n"));
-    }
+    const decision = settleTrial(store, candidate.version, measurement);
     return { trial_decision: decision, live_version: store.live().version };
   };
 }
