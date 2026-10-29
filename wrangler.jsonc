@@ -20,6 +20,9 @@
   // Workers AI: Llama Guard (safety) and bge embeddings (paraphrase checks). Optional at runtime.
   "ai": { "binding": "AI" },
   "observability": { "enabled": true },
+  // Keep variables set in the Cloudflare dashboard (e.g. LANGSMITH_TRACING, LANGSMITH_PROJECT) across deploys;
+  // without this, every CI deploy would replace them with only the vars below.
+  "keep_vars": true,
   "vars": {
     // Point MODEL_BASE_URL at an AI Gateway to log every model call. Set MODEL_API_KEY as a secret:
     //   npx wrangler secret put MODEL_API_KEY      (locally: .dev.vars)
