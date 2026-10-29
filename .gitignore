@@ -24,3 +24,4 @@ web/dist/
 .wrangler/
 .dev.vars
 worker/worker-configuration.d.ts
+.admin-token

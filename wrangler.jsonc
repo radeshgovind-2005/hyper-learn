@@ -1,7 +1,10 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "hyperlearn",
+  "account_id": "880ce52eda03556a28c57b3488f3517b",
   "main": "worker/index.ts",
+  // Served at this domain; the radesh-govind.com zone must be in the same Cloudflare account.
+  "routes": [{ "pattern": "hyperlearn.radesh-govind.com", "custom_domain": true }],
   "compatibility_date": "2026-10-01",
   "compatibility_flags": ["nodejs_compat"],
   "assets": {
@@ -21,6 +24,8 @@
     // Point MODEL_BASE_URL at an AI Gateway to log every model call. Set MODEL_API_KEY as a secret:
     //   npx wrangler secret put MODEL_API_KEY      (locally: .dev.vars)
     // Set ADMIN_TOKEN the same way before deploying: without it, anyone can reset the course and approve releases.
+    // LangSmith tracing (optional, off by default): set LANGSMITH_API_KEY as a secret, and
+    // LANGSMITH_TRACING=true and LANGSMITH_PROJECT here or as secrets.
     // Without a key, runs use the reference stand-ins and make no model calls.
     "MODEL_BASE_URL": "",
     "REASONING_MODEL": "muse-spark-1.3",

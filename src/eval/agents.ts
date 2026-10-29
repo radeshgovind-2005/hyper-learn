@@ -1,4 +1,5 @@
 import { buildGraph } from "../graph.js";
+import { traceConfig } from "../observability.js";
 import type { ExpectedMutation } from "../simulation/scenarios.js";
 import type { Mutation, NodePerformance, State } from "../state.js";
 import { type Score, scoreMutation } from "./score.js";
@@ -28,6 +29,7 @@ export async function runAgents(
   expected: ExpectedMutation,
   data: NodePerformance[],
   graph: Graph = buildGraph(),
+  scenario?: string,
 ): Promise<AgentResult> {
   const started = Date.now();
   let last: State | undefined;
@@ -36,7 +38,7 @@ export async function runAgents(
   try {
     const steps = await graph.stream(
       { input_type: "cron", performance_data: data },
-      { streamMode: "values", recursionLimit: 15 },
+      { streamMode: "values", recursionLimit: 15, ...traceConfig({ name: "eval", ...(scenario && { scenario }) }) },
     );
     for await (const state of steps) last = state as State;
   } catch (caught) {

@@ -13,6 +13,7 @@ import { MemoryReleaseStore, type ReleaseStore } from "../releases/release.js";
 import { scenarioPerformance, scenarioSnapshot } from "../simulation/index.js";
 import { getScenario } from "../simulation/scenarios.js";
 import type { State } from "../state.js";
+import { flushTraces, traceConfig, tracingEnabled } from "../observability.js";
 import { describeMutation, printData } from "./format.js";
 
 /**
@@ -81,7 +82,12 @@ async function main() {
     approver: flag("agents") ? createApprover() : approveWithinCeiling,
   };
   const app = buildGraph(flag("agents") ? {} : referenceModels(scenario, data, store), { harness, checkpointer: new MemorySaver() });
-  const config = { configurable: { thread_id: randomUUID() }, recursionLimit: 25 };
+  const thread_id = randomUUID();
+  const config = {
+    configurable: { thread_id },
+    recursionLimit: 25,
+    ...traceConfig({ name: "loop", thread_id, scenario: scenario.id, mode: harness.mode, agents: flag("agents"), release: store.live().version }),
+  };
 
   let input: Parameters<typeof app.invoke>[0] = { input_type: "cron", performance_data: data };
   for (;;) {
@@ -94,6 +100,8 @@ async function main() {
   const final = (await app.getState(config)).values as State;
   if (final.release_problems) console.log(`\n  Nothing released: ${final.release_problems.join("; ")}`);
   printHistory(store);
+  if (tracingEnabled()) console.log(`\n  Traces: LangSmith, metadata thread_id = ${thread_id}`);
+  await flushTraces();
 }
 
 main().catch((error: unknown) => {

@@ -19,6 +19,7 @@ import type { State } from "../state.js";
 import { PersistentMemorySaver } from "../storage/checkpointer.js";
 import { type Sql, SqlEventLog, SqlMeta, SqlReleaseStore, SqlThreadStore } from "../storage/sql.js";
 import { approveWithinCeiling, referenceModels } from "./reference.js";
+import { flushTraces, traceConfig } from "../observability.js";
 import { type RunStep, stepFor } from "./timeline.js";
 
 // The application behind the UI, independent of where it runs: the Worker's Durable Object wraps it,
@@ -253,9 +254,17 @@ export class CourseService {
   /** Streams the graph from `input`, recording a step per node, until it ends or pauses for approval. Never throws: failures end the run with status "error". */
   private async drive(run: RunState, input: Parameters<ReturnType<CourseService["graph"]>["stream"]>[0], onUpdate?: (run: RunState) => void) {
     const config = { configurable: { thread_id: run.thread_id }, recursionLimit: 40 };
+    const trace = traceConfig({
+      name: input instanceof Command ? "repair-run (resumed after approval)" : "repair-run",
+      thread_id: run.thread_id,
+      scenario: run.scenario,
+      mode: run.mode,
+      agents: run.agents,
+      release: this.releases.live().version,
+    });
     try {
       const app = this.graph(run);
-      for await (const chunk of await app.stream(input, { ...config, streamMode: "updates" })) {
+      for await (const chunk of await app.stream(input, { ...config, ...trace, streamMode: "updates" })) {
         for (const [node, update] of Object.entries(chunk as Record<string, unknown>)) {
           const step = stepFor(node, (update ?? {}) as State, this.now());
           if (step) {
@@ -277,6 +286,7 @@ export class CourseService {
       run.status = "error";
       run.error = error instanceof Error ? error.message : String(error);
     }
+    await flushTraces();
     this.save(run, onUpdate);
     return run;
   }
