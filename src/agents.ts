@@ -6,7 +6,22 @@ import { TOOL_NAMES, TOOL_REGISTRY } from "./tools/index.js";
 // ─── Schema for src/config/agents.json ─────────────────────────────
 // Strict objects reject unknown keys, so a typo in the JSON fails at startup instead of being ignored.
 
-export const AGENT_NAMES = ["assistant", "curator", "reflection", "author", "reviewer", "approver", "grader"] as const;
+export const AGENT_NAMES = [
+  "assistant",
+  "curator",
+  "reflection",
+  "author",
+  "reviewer",
+  "approver",
+  "grader",
+  // Course generation (src/generate).
+  "classifier",
+  "digester",
+  "planner",
+  "writer",
+  "examiner",
+  "fact_checker",
+] as const;
 export type AgentName = (typeof AGENT_NAMES)[number];
 
 const lines = z.array(z.string()).default([]);
