@@ -1,6 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { AsyncLocalStorageProviderSingleton } from "@langchain/core/singletons";
 import { routeAgentRequest } from "agents";
+import { type AgentRoute, routeAllowed } from "../src/app/courses.js";
 import { type Identity, roleFrom, verifySessionToken, withIdentity } from "../src/auth/identity.js";
 import { refuseDefaultModels } from "../src/models.js";
 
@@ -49,14 +50,29 @@ async function authenticate(request: Request, env: AuthEnv): Promise<Request | R
   return withIdentity(new Request(url, request), identity);
 }
 
+/** Whether a studio course with this id was created by the directory. */
+async function courseExists(_env: Env, _id: string): Promise<boolean> {
+  return false;
+}
+
+/**
+ * Signed in first (401), then a name that may exist (404). Routing to a Durable Object name creates the
+ * object, so an unknown course id is refused here, before anything is created.
+ */
+async function admit(request: Request, route: AgentRoute, env: Env): Promise<Request | Response> {
+  const authenticated = await authenticate(request, env as unknown as AuthEnv);
+  if (authenticated instanceof Response) return authenticated;
+  if (!(await routeAllowed(route, (id) => courseExists(env, id)))) return new Response("Not found", { status: 404 });
+  return authenticated;
+}
+
 /** WebSocket and RPC traffic for agents goes to their Durable Objects, signed in; everything else is the UI's static assets. */
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
-    const auth = env as unknown as AuthEnv;
     return (
       (await routeAgentRequest(request, env, {
-        onBeforeConnect: (req) => authenticate(req, auth),
-        onBeforeRequest: (req) => authenticate(req, auth),
+        onBeforeConnect: (req, route) => admit(req, route, env),
+        onBeforeRequest: (req, route) => admit(req, route, env),
       })) ?? new Response("Not found", { status: 404 })
     );
   },

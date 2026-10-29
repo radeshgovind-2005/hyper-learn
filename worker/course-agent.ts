@@ -1,5 +1,6 @@
 import { Agent, type Connection, type ConnectionContext, callable, getCurrentAgent } from "agents";
 import { type Permission, permissionsOf, requirePermission } from "../src/app/access.js";
+import { builtInCourse, isBuiltIn } from "../src/app/courses.js";
 import { CourseService, type DataSource, type QuizResult } from "../src/app/service.js";
 import type { Certainty, Response } from "../src/assessment/items.js";
 import { type Identity, identityFrom } from "../src/auth/identity.js";
@@ -22,21 +23,29 @@ interface ConnectionState {
 }
 
 /**
- * One course, as a Durable Object: its releases, learner history, and repair runs live in the
- * object's SQLite. A thin wrapper; the logic is CourseService (src/app/service.ts), which tests run on Node.
+ * One course, as a Durable Object named by the course id: its releases, learner history, and repair runs
+ * live in the object's SQLite. A thin wrapper; the logic is CourseService (src/app/service.ts), which tests run on Node.
  * Every method acts as the signed-in person on the calling connection, within their role.
  */
 export class CourseAgent extends Agent<Env, CourseAgentState> {
   initialState: CourseAgentState = { overview: null };
   private service?: CourseService;
 
+  /** Whether this object holds a course. The Worker refuses unknown names; this is the second check. */
+  private known(): boolean {
+    return isBuiltIn(this.name);
+  }
+
   private get app(): CourseService {
     if (!this.service) {
+      const course = builtInCourse(this.name);
+      if (!course) throw new Error("No such course");
       const env = this.env as unknown as Record<string, string | undefined> & { AI?: Ai };
       // LangChain reads LangSmith settings from process.env; Worker vars and secrets arrive on env.
       for (const key of LANGSMITH_SETTINGS) if (env[key] && !process.env[key]) process.env[key] = env[key];
       const agentsAvailable = Boolean(env.MODEL_API_KEY && env.MODEL_BASE_URL);
       this.service = new CourseService(this.sql.bind(this) as unknown as Sql, {
+        course,
         agentsAvailable,
         models: new ModelProvider(modelConfigFromEnv(env)),
         ...(env.AI && { guard: workersAiGuard(env.AI), embedder: workersAiEmbedder(env.AI) }),
@@ -49,6 +58,7 @@ export class CourseAgent extends Agent<Env, CourseAgentState> {
   static readonly TRIAL_CHECK_INTERVAL = 3600;
 
   override async onStart() {
+    if (!this.known()) return;
     this.publish();
     // Idempotent: one schedule however often the object wakes.
     await this.scheduleEvery(CourseAgent.TRIAL_CHECK_INTERVAL, "checkTrial");
@@ -62,6 +72,10 @@ export class CourseAgent extends Agent<Env, CourseAgentState> {
 
   /** Binds the connection to the person the Worker verified. A connection without one is closed. */
   override onConnect(connection: Connection<ConnectionState>, ctx: ConnectionContext) {
+    if (!this.known()) {
+      connection.close(4004, "No such course");
+      return;
+    }
     const identity = identityFrom(ctx.request);
     if (!identity) {
       connection.close(4001, "Unauthorized");
@@ -75,6 +89,11 @@ export class CourseAgent extends Agent<Env, CourseAgentState> {
   override onClose(connection: Connection<ConnectionState>) {
     const identity = connection.state?.identity;
     if (identity) this.app.endSession(identity.userId, connection.id);
+  }
+
+  /** State is the server's view; a browser can't overwrite what other people see. */
+  override validateStateChange(_next: CourseAgentState, source: Connection | "server") {
+    if (source !== "server") throw new Error("State is read-only");
   }
 
   private publish() {

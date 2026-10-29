@@ -36,3 +36,43 @@ export const isBuiltIn = (id: string) => BUILT_IN.has(id);
 
 /** A fresh copy of a built-in course's definition, or undefined for any other id. */
 export const builtInCourse = (id: string): CourseDefinition | undefined => BUILT_IN.get(id)?.();
+
+// ─── Which objects may exist ─────────────────────────────────────────
+// Routing a request to a Durable Object name creates that object, so the Worker checks the name first:
+// a typo or a guessed id must not leave an empty course behind.
+
+/** The one directory object's name. */
+export const DIRECTORY_NAME = "main";
+
+/** Ids the directory gives studio courses: "c-" and 12 random lowercase letters or digits. */
+const STUDIO_ID = /^c-[a-z0-9]{12}$/;
+
+export const isStudioId = (id: string) => STUDIO_ID.test(id);
+
+/** A new studio course id, from WebCrypto randomness. */
+export function newCourseId(): string {
+  const alphabet = "abcdefghijklmnopqrstuvwxyz0123456789";
+  // 252 is the largest multiple of 36 below 256: rejecting bytes above it keeps every character equally likely.
+  const out: string[] = [];
+  while (out.length < 12) {
+    for (const byte of crypto.getRandomValues(new Uint8Array(16))) if (byte < 252 && out.length < 12) out.push(alphabet[byte % 36]!);
+  }
+  return `c-${out.join("")}`;
+}
+
+/** An agent route as the Agents SDK resolves it: the binding name and the object's name. */
+export interface AgentRoute {
+  className: string;
+  name: string;
+}
+
+/**
+ * Whether a request may reach (and so create) this object: a built-in course, a studio course the
+ * directory has created, or the directory itself. Anything else is refused before routing.
+ */
+export async function routeAllowed(route: AgentRoute, courseExists: (id: string) => Promise<boolean>): Promise<boolean> {
+  if (route.className === "DirectoryAgent") return route.name === DIRECTORY_NAME;
+  if (route.className !== "CourseAgent") return false;
+  if (isBuiltIn(route.name)) return true;
+  return isStudioId(route.name) && (await courseExists(route.name));
+}

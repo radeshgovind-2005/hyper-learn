@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { getCourse } from "../course/bundle.js";
 import { sqlite } from "../node/sqlite.js";
-import { BUILT_IN_COURSES, builtInCourse, type CourseDefinition, FEATURED_COURSE, isBuiltIn } from "./courses.js";
+import { BUILT_IN_COURSES, builtInCourse, type CourseDefinition, DIRECTORY_NAME, FEATURED_COURSE, isBuiltIn, isStudioId, newCourseId, routeAllowed } from "./courses.js";
 import { CourseService } from "./service.js";
 
 const NOW = "2026-10-29T12:00:00.000Z";
@@ -42,5 +42,40 @@ describe("course definitions", () => {
     assert.match(real.steps[0]!.title, /No quiz answers/);
     s.reset("anything");
     assert.deepEqual(s.overview().releases.map((r) => r.version), ["1.0.0"]);
+  });
+});
+
+describe("which objects may exist", () => {
+  const created = new Set(["c-abcdefghijkl"]);
+  const exists = async (id: string) => created.has(id);
+  const allowed = (className: string, name: string) => routeAllowed({ className, name }, exists);
+
+  it("lets through built-in courses, created studio courses and the one directory", async () => {
+    assert.equal(await allowed("CourseAgent", FEATURED_COURSE), true);
+    assert.equal(await allowed("CourseAgent", "c-abcdefghijkl"), true);
+    assert.equal(await allowed("DirectoryAgent", DIRECTORY_NAME), true);
+  });
+
+  it("refuses everything else without asking the directory about malformed ids", async () => {
+    let asked = 0;
+    const counting = async (id: string) => (asked++, created.has(id));
+    for (const [className, name] of [
+      ["CourseAgent", "c-unknownunkno"],
+      ["CourseAgent", "agentic-coding2"],
+      ["CourseAgent", "../agentic-coding"],
+      ["CourseAgent", "C-ABCDEFGHIJKL"],
+      ["DirectoryAgent", "other"],
+      ["DirectoryAgent", FEATURED_COURSE],
+      ["OtherAgent", FEATURED_COURSE],
+    ] as const) {
+      assert.equal(await routeAllowed({ className, name }, counting), false, `${className}/${name}`);
+    }
+    assert.equal(asked, 1, "only the well-formed unknown id reaches the directory");
+  });
+
+  it("makes well-formed, distinct ids", () => {
+    const ids = new Set(Array.from({ length: 200 }, newCourseId));
+    assert.equal(ids.size, 200);
+    for (const id of ids) assert.equal(isStudioId(id), true, id);
   });
 });
