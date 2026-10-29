@@ -45,13 +45,14 @@ LangGraph.js, LangChain.js and Zod, running in a Cloudflare Worker (Agents SDK +
 | `src/releases/` | Typed changes (apply, invert, risk tier, semver), releases, trials, promote and revert |
 | `src/measure/` | Measuring a trial on simulated or real learners (`real.ts`: arms, pending until enough), and the keep-or-revert rule |
 | `src/auth/` | Clerk token verification, identity headers, role changes |
-| `src/app/` | `CourseService` (everything the app does), the access matrix, the run timeline |
+| `src/app/` | `CourseService` (everything a course object does), the directory, course definitions, the access matrix, the run timeline |
+| `src/crypto/` | Sealing owners' model keys (AES-GCM, WebCrypto) |
 | `src/nodes/release.ts` | Harness nodes: plan_release, approve (interrupt or autopilot), measure, decide |
 | `src/cli/loop.ts` | `npm run loop`: one scenario through the whole loop |
 | `src/index.ts` | Demo runner |
 | `src/graph.ts` | Graph wiring and conditional edges |
 | `src/state.ts` | State annotation and Zod schemas |
-| `src/models.ts` | `getModel()` / `getStructuredModel()` factory |
+| `src/models.ts` | `ModelProvider` (one per course) and the default provider for Node entry points |
 | `src/nodes/*` | Supervisor, Assistant, Curator, Reflection |
 | `src/tools/index.ts` | Assistant tools over the course, and the tool registry |
 | `src/config/agents.json` | Agent definitions: role, goal, instructions, model, tools… |
@@ -96,6 +97,29 @@ npm run dev                               # terminal 2: Vite on :5173, proxying 
   metadata (needs the Worker secret `CLERK_SECRET_KEY`) and applies when their browser next connects. Admins
   can't change their own role, so the last admin can't lock everyone out.
 
+- **Studio courses: one Durable Object per course.** Besides the featured course (`agentic-coding`, the object
+  of that name, global roles as above), anyone signed in can create a course. `DirectoryAgent` (one object,
+  `main`) lists courses and memberships; each course is a `CourseAgent` named by its id (`c-` and 12 random
+  characters). The Worker refuses any other name with 404 before routing, so a guessed id creates nothing.
+  In a studio course, access comes from the person's role in that course (stored in its object); global admins
+  may do everything anywhere:
+
+  | | learner | editor | owner |
+  | --- | --- | --- | --- |
+  | lessons, quizzes, own progress | ✓ | ✓ | ✓ |
+  | course repair (run, approve), see learners | | ✓ | ✓ |
+  | sources, model key, build, publish, invite link, members, reset | | | ✓ |
+
+  Non-members can't connect (4003). People join through the owner's invite link (the directory's `join`),
+  as learners; the owner can make them editors. A course goes draft → building → review → published:
+  the owner uploads sources (page texts; at most 30 files and 2,000,000 characters), sets a model API key,
+  builds (the generator runs in the background with that key), reviews the draft and publishes it as
+  release 1.0.0. Learners can't open a course before it's published. The owner's key is stored only
+  encrypted (AES-GCM, key derived from the Worker secret `KEY_ENCRYPTION_SECRET`, bound to the course) and is
+  never shown again; calls always go to the Worker's `MODEL_BASE_URL`, and owners pick a model from
+  `MODEL_CHOICES`. Set the secret once with `npx wrangler secret put KEY_ENCRYPTION_SECRET` (at least 32
+  characters, e.g. `openssl rand -base64 32`; changing it makes stored keys unreadable, so owners re-enter them).
+
 - **What's recorded per account** (the append-only event log, each event pinned to the release the person saw):
   connections opening and closing (merged into sessions when less than 30 minutes apart), visible time on each
   lesson, interventions shown and completed, and every quiz answer with its certainty. The browser can only report
@@ -126,7 +150,7 @@ npm run dev                               # terminal 2: Vite on :5173, proxying 
 - Live at **https://hyperlearn.radesh-govind.com**. `.github/workflows/ci-cd.yml` typechecks, tests and builds every
   push and pull request, and deploys every push to `main` that passes. It needs one repository secret,
   `CLOUDFLARE_API_TOKEN` (a token from Cloudflare's "Edit Cloudflare Workers" template). Worker secrets
-  (`CLERK_JWT_KEY`, `CLERK_SECRET_KEY`, `MODEL_API_KEY`, `LANGSMITH_API_KEY`) are set once with `wrangler secret put` and survive deploys.
+  (`CLERK_JWT_KEY`, `CLERK_SECRET_KEY`, `MODEL_API_KEY`, `KEY_ENCRYPTION_SECRET`, `LANGSMITH_API_KEY`) are set once with `wrangler secret put` and survive deploys.
 - Manual deploy: `npx wrangler login`, then `npm run deploy`.
 
 ## Setup
