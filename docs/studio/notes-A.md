@@ -2,6 +2,37 @@
 
 Branch `studio/assessment`. What changed, decisions, and what other workstreams need to know.
 
+## Summary for other workstreams
+
+All 8 items done. Every change is backward compatible: a course without objectives or exam config
+grades, simulates, routes and diagnoses exactly as before (hash-checked, see "Regression check").
+
+| What | Change |
+| --- | --- |
+| `QuizAttempt` | `item_ids?: string[]` (items shown, in order; absent = whole quiz) |
+| `gradeAttempt(lesson, attempt, excluded?)` | same parameters; result adds `scored: { item, position, grade }[]` |
+| `attemptItems(lesson, attempt)` | new: the items an attempt showed |
+| `itemStatistics(ids, rows)` | rows are `(Grade \| undefined)[]`; exclusion needs confidently negative discrimination |
+| `Grade` | `objective?: string` (copied from the item) |
+| `drawExam`, `examSeed`, `PILOT_ITEMS_PER_EXAM` | new, `src/assessment/exam.ts` |
+| `Lesson` (Course view) | `exam?: ExamConfig`; `courseFromSnapshot` carries `exam` and `objectives` |
+| `validateCourse(lessons, misconceptions?, objectives?)` | third parameter; `validateObjectives` exported |
+| `liveObjectives(snapshot)` | new, `src/course/compile.ts` |
+| `PathStep` | adds `{ kind: "review_section", lesson, section_id, objective, reason }` |
+| `nextSteps(lessonId, grades, passed, live, objectives?)` | fifth parameter |
+| `NodePerformance` | `objectives?: { id, miss_rate, responses }[]` (src/state.ts) |
+| `LearnerEvent.kind` | adds `"check"` (src/storage/sql.ts) |
+| `CourseService.exam(learner, lessonId)` | new → `Exam { release, lesson, attempt, items }` |
+| `CourseService.submitQuiz(..., session?, item_ids?)` | sixth parameter; required for lessons with exam config |
+| `CourseService.answerCheck(learner, blockId, option, session?)` | new → `{ correct, feedback }` |
+| `LessonProgress` | `missed_objectives?: string[]`; `progress()` lists the served release's lessons |
+| Fixture | `src/course/fixtures/studio-course.ts` (see item 8) |
+
+Files outside A's listed area (minimal): `src/state.ts` (optional `objectives` on NodePerformance and one
+conditional legend clause), `src/storage/sql.ts` (`"check"` in the kind union), `src/course/schema.ts`
+(`Lesson.exam?`, Phase 0 shared file). No Worker or web files changed; C needs to add the `exam` and
+`answerCheck` callables and pass `item_ids` through `submitQuiz`.
+
 ## 1. Answers keyed by item
 
 - `QuizAttempt.item_ids?: string[]` (src/simulation/learners.ts): the items shown, in order. Absent =
