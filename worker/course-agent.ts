@@ -1,5 +1,5 @@
 import { Agent, type Connection, type ConnectionContext, callable, getAgentByName, getCurrentAgent } from "agents";
-import { type Permission, permissionsOf, requirePermission } from "../src/app/access.js";
+import { coursePermissions, mayEnter, type Permission, requireCoursePermission } from "../src/app/access.js";
 import { builtInCourse, DIRECTORY_NAME, isBuiltIn, isStudioId } from "../src/app/courses.js";
 import { CourseService, type DataSource, type DirectoryLink, type QuizResult } from "../src/app/service.js";
 import type { Certainty, Response } from "../src/assessment/items.js";
@@ -43,12 +43,12 @@ export class CourseAgent extends Agent<Env, CourseAgentState> {
       const env = this.env as unknown as Record<string, string | undefined> & { AI?: Ai };
       // LangChain reads LangSmith settings from process.env; Worker vars and secrets arrive on env.
       for (const key of LANGSMITH_SETTINGS) if (env[key] && !process.env[key]) process.env[key] = env[key];
-      const agentsAvailable = Boolean(env.MODEL_API_KEY && env.MODEL_BASE_URL);
+      // The Worker's own model key is for built-in courses only; a studio course uses its owner's.
+      const builtIn = course !== "studio";
       this.service = new CourseService(this.sql.bind(this) as unknown as Sql, {
         course,
         directory: this.directoryLink(),
-        agentsAvailable,
-        models: new ModelProvider(modelConfigFromEnv(env)),
+        ...(builtIn && { agentsAvailable: Boolean(env.MODEL_API_KEY && env.MODEL_BASE_URL), models: new ModelProvider(modelConfigFromEnv(env)) }),
         ...(env.AI && { guard: workersAiGuard(env.AI), embedder: workersAiEmbedder(env.AI) }),
       });
     }
@@ -85,6 +85,13 @@ export class CourseAgent extends Agent<Env, CourseAgentState> {
     return { id: record.id };
   }
 
+  /** Joins with an invite token, for the directory's join(). Returns the caller's role in the course. */
+  redeemInvite(person: Identity, token: unknown) {
+    if (!this.known() || isBuiltIn(this.name)) throw new Error("This invite link is no longer valid");
+    if (typeof person?.userId !== "string" || !person.userId) throw new Error("Sign in to continue");
+    return this.app.join(person, token);
+  }
+
   /** Scheduled, not callable by clients: decides an open real trial once both arms have enough learners. */
   async checkTrial() {
     const result = this.app.evaluateTrial(() => this.publish());
@@ -100,6 +107,11 @@ export class CourseAgent extends Agent<Env, CourseAgentState> {
     const identity = identityFrom(ctx.request);
     if (!identity) {
       connection.close(4001, "Unauthorized");
+      return;
+    }
+    // A studio course is for its members (and admins): others never see its state.
+    if (!mayEnter(this.access(identity))) {
+      connection.close(4003, "Not a member of this course");
       return;
     }
     connection.setState({ identity, connectedAt: new Date().toISOString() });
@@ -121,10 +133,19 @@ export class CourseAgent extends Agent<Env, CourseAgentState> {
     this.setState({ overview: this.app.overview() });
   }
 
-  /** The person calling, if their role allows `permission`; otherwise the call fails with a readable message. */
+  /** Someone's standing in this course: global roles on the featured course, course roles elsewhere. */
+  private access(identity: Identity) {
+    return { featured: isBuiltIn(this.name), global: identity.role, course: this.app.memberRole(identity.userId) };
+  }
+
+  /**
+   * The person calling, if their role allows `permission`; otherwise the call fails with a readable message.
+   * Course roles are read on every call, so a change applies at once.
+   */
   private actor(permission: Permission): Identity {
-    const connection = getCurrentAgent().connection as Connection<ConnectionState> | undefined;
-    return requirePermission(connection?.state?.identity, permission);
+    const identity = (getCurrentAgent().connection as Connection<ConnectionState> | undefined)?.state?.identity;
+    const courseRole = identity ? this.app.memberRole(identity.userId) : null;
+    return requireCoursePermission(identity, { featured: isBuiltIn(this.name), courseRole }, permission);
   }
 
   /** Who I am and what I may do, for the UI to show or hide controls. */
@@ -133,7 +154,67 @@ export class CourseAgent extends Agent<Env, CourseAgentState> {
     const identity = this.actor("learn");
     // Role changes need Clerk's secret key; without it, admins see roles but can't change them here.
     const rolesConfigured = Boolean((this.env as unknown as { CLERK_SECRET_KEY?: string }).CLERK_SECRET_KEY);
-    return { ...identity, permissions: permissionsOf(identity.role), rolesConfigured };
+    const access = this.access(identity);
+    return { ...identity, courseRole: access.course, permissions: coursePermissions(access), rolesConfigured };
+  }
+
+  // ─── Members and invites (studio courses; owner, or an admin) ────────
+
+  @callable()
+  members() {
+    this.actor("manage_course");
+    return this.app.memberList();
+  }
+
+  /** Makes a member an editor or a learner. */
+  @callable()
+  async setMemberRole(userId: string, role: string) {
+    const { userId: by } = this.actor("manage_course");
+    const member = await this.app.setMemberRole(String(userId), role);
+    console.log(`Course ${this.name}: ${member.user_id} is now ${member.role} (by ${by})`);
+    return member;
+  }
+
+  /** Removes a member; their open connections are closed. */
+  @callable()
+  async removeMember(userId: string) {
+    this.actor("manage_course");
+    await this.app.removeMember(String(userId));
+    this.disconnect(String(userId), "Removed from this course");
+  }
+
+  /** Leaves this course. */
+  @callable()
+  async leave() {
+    const { userId } = this.actor("learn");
+    await this.app.leave(userId);
+    this.disconnect(userId, "Left this course");
+  }
+
+  /** The current invite link's token (null when there is none). */
+  @callable()
+  invite() {
+    this.actor("manage_course");
+    return this.app.invite();
+  }
+
+  /** A new invite token; the previous link stops working. */
+  @callable()
+  rotateInvite() {
+    this.actor("manage_course");
+    return this.app.rotateInvite();
+  }
+
+  @callable()
+  revokeInvite() {
+    this.actor("manage_course");
+    this.app.revokeInvite();
+  }
+
+  private disconnect(userId: string, reason: string) {
+    for (const connection of this.getConnections<ConnectionState>()) {
+      if (connection.state?.identity.userId === userId) connection.close(4003, reason);
+    }
   }
 
   /** Admins: changes someone else's role in Clerk. It applies when their browser next connects. */

@@ -70,3 +70,59 @@ describe("studio course objects", () => {
     await assert.rejects(s.updateDetails({ title: "" }), /title/);
   });
 });
+
+describe("studio members and invites", () => {
+  const bob = { userId: "user_bob", role: "learner" as const, email: "bob@example.com" };
+
+  it("starts with the owner as the only member", () => {
+    const { s } = initialisedStudio();
+    assert.equal(s.memberRole("user_ada"), "owner");
+    assert.equal(s.memberRole("user_bob"), null);
+    assert.deepEqual(s.memberList().map((m) => [m.user_id, m.role, m.name]), [["user_ada", "owner", "Ada"]]);
+  });
+
+  it("lets people join with the current invite only, as learners", () => {
+    const { s } = initialisedStudio();
+    assert.equal(s.invite().token, null);
+    assert.throws(() => s.join(bob, "anything"), /no longer valid/);
+    const { token } = s.rotateInvite();
+    assert.ok(token && token.length >= 32);
+    assert.throws(() => s.join(bob, `${token}x`), /no longer valid/);
+    assert.throws(() => s.join(bob, 42), /no longer valid/);
+    assert.deepEqual(s.join(bob, token), { role: "learner" });
+    assert.equal(s.memberRole("user_bob"), "learner");
+
+    const rotated = s.rotateInvite().token!;
+    assert.notEqual(rotated, token);
+    assert.throws(() => s.join({ userId: "user_cy", role: "learner" }, token), /no longer valid/, "the old link stops working");
+    assert.deepEqual(s.join({ userId: "user_ada", role: "learner" }, rotated), { role: "owner" }, "joining never lowers a role");
+    s.revokeInvite();
+    assert.throws(() => s.join({ userId: "user_cy", role: "learner" }, rotated), /no longer valid/);
+  });
+
+  it("lets the owner change and remove members, but never the owner, and tells the directory", async () => {
+    const { s, directory } = initialisedStudio();
+    s.join(bob, s.rotateInvite().token);
+    await s.setMemberRole("user_bob", "editor");
+    assert.equal(s.memberRole("user_bob"), "editor");
+    await assert.rejects(s.setMemberRole("user_bob", "owner"), /editors or learners/);
+    await assert.rejects(s.setMemberRole("user_bob", "admin"), /editors or learners/);
+    await assert.rejects(s.setMemberRole("user_ada", "learner"), /owner's role/);
+    await assert.rejects(s.setMemberRole("user_cy", "learner"), /Not a member/);
+    await assert.rejects(s.removeMember("user_ada"), /can't be removed/);
+    await assert.rejects(s.leave("user_ada"), /can't leave/);
+    await s.removeMember("user_bob");
+    assert.equal(s.memberRole("user_bob"), null);
+    assert.deepEqual(directory.calls, [
+      ["member", ID, "user_bob", "editor"],
+      ["member", ID, "user_bob", null],
+    ]);
+  });
+
+  it("has no members or invites on a built-in course", () => {
+    const s = new CourseService(sqlite(), { now: () => NOW });
+    assert.equal(s.memberRole("user_ada"), null);
+    assert.throws(() => s.rotateInvite(), /Built-in courses/);
+    assert.throws(() => s.join(bob, "x"), /Built-in courses/);
+  });
+});

@@ -24,8 +24,9 @@ import { defaultModels, type ModelProvider } from "../models.js";
 import type { State } from "../state.js";
 import { PersistentMemorySaver } from "../storage/checkpointer.js";
 import { type Sql, SqlEventLog, SqlMeta, SqlProfiles, SqlReleaseStore, SqlThreadStore } from "../storage/sql.js";
+import { type Member, SqlMembers } from "../storage/studio.js";
 import type { Identity as Person } from "../auth/identity.js";
-import type { CourseRole } from "./access.js";
+import { COURSE_ROLES, type CourseRole } from "./access.js";
 import { builtInCourse, type CourseDefinition, FEATURED_COURSE, isStudioId } from "./courses.js";
 import { type CourseDetails, CourseDetailsSchema, type CourseRecord, type CourseStatus, firstIssue } from "./directory.js";
 import { approveWithinCeiling, referenceModels } from "./reference.js";
@@ -155,6 +156,15 @@ const DetailsUpdateSchema = z.strictObject({
   language: z.string().trim().max(40).optional(),
 });
 
+/** Compares secrets in time that doesn't depend on where they differ. */
+function sameText(a: string, b: string): boolean {
+  const x = new TextEncoder().encode(a);
+  const y = new TextEncoder().encode(b);
+  let diff = x.length ^ y.length;
+  for (let i = 0; i < Math.max(x.length, y.length); i++) diff |= (x[i] ?? 0) ^ (y[i] ?? 0);
+  return diff === 0;
+}
+
 /** A learner call on a course that has no live release yet. */
 export class NotPublished extends Error {
   constructor() {
@@ -209,6 +219,8 @@ export class CourseService {
   readonly releases: SqlReleaseStore;
   readonly events: SqlEventLog;
   readonly profiles: SqlProfiles;
+  /** A studio course's members and their roles. Built-in courses use global roles instead. */
+  readonly members: SqlMembers;
   private readonly meta: SqlMeta;
   private readonly saver: PersistentMemorySaver;
   private readonly now: () => string;
@@ -229,6 +241,7 @@ export class CourseService {
     this.releases = new SqlReleaseStore(sql, this.fixed && this.startingSnapshot(this.scenarioOf(this.scenario())), this.now);
     this.events = new SqlEventLog(sql);
     this.profiles = new SqlProfiles(sql);
+    this.members = new SqlMembers(sql);
     this.saver = new PersistentMemorySaver(new SqlThreadStore(sql));
   }
 
@@ -825,7 +838,86 @@ export class CourseService {
     if (!parsed.success) throw new Error(firstIssue(parsed.error));
     const record: StudioRecord = { id: input.id, ...parsed.data, goal: "", language: "", status: "draft", owner: input.owner.userId, created_at: this.now() };
     this.meta.set("course", record);
+    this.members.set({ user_id: input.owner.userId, role: "owner", name: input.owner.name, email: input.owner.email }, this.now());
     return record;
+  }
+
+  // ─── Members and invites (studio courses) ─────────────────────────
+
+  /** Someone's role in this studio course, or null if they aren't a member (always null on a built-in course). */
+  memberRole(userId: string): CourseRole | null {
+    if (this.fixed) return null;
+    return this.members.get(userId)?.role ?? null;
+  }
+
+  memberList(): Member[] {
+    this.studio();
+    return this.members.all();
+  }
+
+  /** The owner makes a member an editor or a learner. Ownership itself doesn't move. */
+  async setMemberRole(userId: string, role: unknown) {
+    const record = this.studio();
+    if (role === "owner" || !(COURSE_ROLES as readonly unknown[]).includes(role)) throw new Error(`Members can be editors or learners, not "${String(role)}"`);
+    const member = this.members.get(userId);
+    if (!member) throw new Error("Not a member of this course");
+    if (member.role === "owner") throw new Error("The owner's role can't be changed");
+    this.members.set({ user_id: userId, role: role as CourseRole }, this.now());
+    await this.report((d) => d.membershipChanged(record.id, userId, role as CourseRole));
+    return this.members.get(userId)!;
+  }
+
+  /** The owner removes a member. Their learning history stays (they can delete it themselves, or rejoin). */
+  async removeMember(userId: string) {
+    const record = this.studio();
+    const member = this.members.get(userId);
+    if (!member) throw new Error("Not a member of this course");
+    if (member.role === "owner") throw new Error("The owner can't be removed");
+    this.members.delete(userId);
+    await this.report((d) => d.membershipChanged(record.id, userId, null));
+  }
+
+  /** A member leaves the course. */
+  async leave(userId: string) {
+    const record = this.studio();
+    if (this.members.get(userId)?.role === "owner") throw new Error("The owner can't leave their own course");
+    this.members.delete(userId);
+    await this.report((d) => d.membershipChanged(record.id, userId, null));
+  }
+
+  /** The invite link's token, if one is active. Only the owner sees it. */
+  invite(): { token: string | null; created_at: string | null } {
+    this.studio();
+    const invite = this.meta.get<{ token: string; created_at: string }>("invite");
+    return { token: invite?.token ?? null, created_at: invite?.created_at ?? null };
+  }
+
+  /** Makes a new invite token; the old link stops working. */
+  rotateInvite() {
+    this.studio();
+    const bytes = crypto.getRandomValues(new Uint8Array(24));
+    const token = btoa(String.fromCharCode(...bytes)).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
+    this.meta.set("invite", { token, created_at: this.now() });
+    return this.invite();
+  }
+
+  revokeInvite() {
+    this.studio();
+    this.meta.set("invite", null);
+  }
+
+  /**
+   * Joins with an invite token: a new member becomes a learner; an existing member keeps their role.
+   * The directory calls this (and records the membership itself), so it doesn't report back.
+   */
+  join(person: Person, token: unknown): { role: CourseRole } {
+    this.studio();
+    const invite = this.meta.get<{ token: string }>("invite");
+    if (!invite || typeof token !== "string" || !sameText(token, invite.token)) throw new Error("This invite link is no longer valid");
+    const current = this.members.get(person.userId)?.role;
+    const role = current ?? "learner";
+    this.members.set({ user_id: person.userId, role, name: person.name, email: person.email }, this.now());
+    return { role };
   }
 
   /** The owner changes the title, description, goal or language. */

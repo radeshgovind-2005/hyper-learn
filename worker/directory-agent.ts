@@ -70,6 +70,19 @@ export class DirectoryAgent extends Agent<Env, Record<string, never>> {
     return { id: record.id };
   }
 
+  /** Joins a course with its invite token. Returns the course id and the caller's role in it. */
+  @callable()
+  async join(courseId: unknown, token: unknown) {
+    const person = this.actor();
+    const invalid = "This invite link is no longer valid";
+    if (typeof courseId !== "string" || !this.courseExists(courseId)) throw new Error(invalid);
+    if (typeof token !== "string" || token.length > 100) throw new Error(invalid);
+    const course = await getAgentByName(this.env.CourseAgent, courseId);
+    const { role } = await course.redeemInvite(person, token);
+    this.app.membershipChanged(courseId, person.userId, role);
+    return { id: courseId, role };
+  }
+
   // ─── RPC only (not @callable): the Worker and course objects ─────────
 
   /** Whether a studio course with this id exists: the Worker asks before routing to a course object. */
