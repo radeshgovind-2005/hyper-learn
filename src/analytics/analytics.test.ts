@@ -7,7 +7,7 @@ import type { Lesson } from "../course/schema.js";
 import type { QuizAttempt } from "../simulation/learners.js";
 import { bktMastery, bktUpdate, DEFAULT_BKT } from "./bkt.js";
 import { itemStatistics } from "./items.js";
-import { computePerformance } from "./performance.js";
+import { computePerformance, gradeAttempt } from "./performance.js";
 
 describe("BKT", () => {
   it("matches a hand-computed update", () => {
@@ -45,6 +45,29 @@ describe("itemStatistics", () => {
     assert.ok(stats[3]!.discrimination < 0);
     // The broken item drags the rest-of-quiz totals the others are correlated with, so only require them positive.
     for (const s of stats.slice(0, 3)) assert.ok(s.discrimination > 0, s.item_id);
+  });
+
+  it("judges an item only on the attempts that showed it", () => {
+    // The same 40 attempts, but each also shows q4 only half the time (undefined = not shown).
+    const sparse = attempts.map((grades, i) => [...grades, i % 2 === 0 ? g(i < 20 ? 1 : 0) : undefined]);
+    const withQ4 = itemStatistics(["q0", "q1", "q2", "q3", "q4"], sparse);
+    assert.equal(withQ4[4]!.responses, 20);
+    assert.equal(withQ4[4]!.flag, "too_few_responses");
+    assert.ok(withQ4[4]!.discrimination > 0.5, "q4 separates strong from weak learners where it was shown");
+    assert.equal(withQ4[0]!.responses, 40);
+    assert.equal(withQ4[3]!.flag, "negative_discrimination");
+  });
+
+  it("gives the classic corrected item-total correlation when every item is shown", () => {
+    const total = (a: readonly Grade[]) => a.reduce((sum, x) => sum + x.score, 0);
+    const xs = attempts.map((a) => a[1]!.score);
+    const ys = attempts.map((a) => total(a) - a[1]!.score);
+    const mean = (v: number[]) => v.reduce((p, q) => p + q, 0) / v.length;
+    const [mx, my] = [mean(xs), mean(ys)];
+    const r =
+      xs.reduce((sum, x, i) => sum + (x - mx) * (ys[i]! - my), 0) /
+      Math.sqrt(xs.reduce((sum, x) => sum + (x - mx) ** 2, 0) * ys.reduce((sum, y) => sum + (y - my) ** 2, 0));
+    assert.equal(stats[1]!.discrimination, Math.round(r * 100) / 100);
   });
 
   it("doesn't judge items with too few responses", () => {
@@ -104,5 +127,38 @@ describe("computePerformance: named misconceptions and broken items", () => {
 
   it("estimates mastery with BKT", () => {
     assert.equal(a!.mastery_rate, 0.5);
+  });
+
+  it("grades answers keyed by the items shown, in the order shown", () => {
+    // Shown: q3 then q1 only. Answer 1 on q3 is the belief; 0 on q1 is right.
+    const { grades, scored, passed } = gradeAttempt(lesson, { learner_id: 0, lesson_id: "a", item_ids: ["q3", "q1"], answers: [1, 0], certainty: [3, 1] });
+    assert.deepEqual(scored.map((s) => [s.item.id, s.position, s.grade.correct]), [["q3", 0, false], ["q1", 1, true]]);
+    assert.equal(grades.length, 2);
+    assert.equal(passed, false);
+  });
+
+  it("grades attempts recorded without item_ids as the whole quiz, in order", () => {
+    const old = gradeAttempt(lesson, { learner_id: 0, lesson_id: "a", answers: [0, 0, 0, 0, 1], certainty: [3, 3, 3, 3, 3] });
+    const keyed = gradeAttempt(lesson, { learner_id: 0, lesson_id: "a", item_ids: lesson.quiz.map((q) => q.id), answers: [0, 0, 0, 0, 1], certainty: [3, 3, 3, 3, 3] });
+    assert.deepEqual(keyed, old);
+  });
+
+  it("refuses item_ids that don't fit the answers or the quiz", () => {
+    const attempt = (item_ids: string[], answers: number[]): QuizAttempt => ({ learner_id: 0, lesson_id: "a", item_ids, answers, certainty: answers.map(() => 3 as const) });
+    assert.throws(() => gradeAttempt(lesson, attempt(["q1", "q2"], [0])), /2 items but has 1 answers/);
+    assert.throws(() => gradeAttempt(lesson, attempt(["q1", "nope"], [0, 0])), /"nope", which is not in its quiz/);
+    assert.throws(() => gradeAttempt(lesson, attempt(["q1", "q1"], [0, 0])), /shows an item twice/);
+  });
+
+  it("diagnoses attempts that each showed part of the pool", () => {
+    // Same learners as above, but each attempt shows two of q1–q3 plus the broken item (q4 is never drawn).
+    const pairs = [["q1", "q2"], ["q2", "q3"], ["q1", "q3"]];
+    const sparse: QuizAttempt[] = attempts.map((full, i) => {
+      const ids = [...pairs[i % 3]!, "broken"];
+      return { ...full, item_ids: ids, answers: ids.map((id) => full.answers[lesson.quiz.findIndex((q) => q.id === id)]!), certainty: ids.map(() => 3 as const) };
+    });
+    const [node] = computePerformance(course, course.graph, sparse);
+    assert.deepEqual(node!.excluded_items, ["broken"]);
+    assert.equal(node!.fail_rate, 0.5);
   });
 });

@@ -42,17 +42,30 @@ function correlation(xs: readonly number[], ys: readonly number[]): number {
 const round2 = (value: number) => Math.round(value * 100) / 100;
 
 /**
- * Statistics for each item of one quiz, from every attempt's grades (one Grade per item, in quiz order).
- * Discrimination correlates an item's score with the total of the *other* items, so an item doesn't
- * inflate its own correlation.
+ * Statistics for each item of one quiz, from every attempt's grades (one entry per item, in `itemIds`
+ * order; `undefined` = the attempt didn't show that item, as in an exam drawn from a pool). An item is
+ * judged only on the attempts that showed it. Discrimination correlates an item's score with the mean
+ * score of the *other* items shown in the same attempt, so an item doesn't inflate its own correlation;
+ * when every attempt shows every item this is the classic corrected item-total correlation.
  */
-export function itemStatistics(itemIds: readonly string[], attempts: readonly (readonly Grade[])[]): ItemStats[] {
-  const totals = attempts.map((grades) => grades.reduce((sum, grade) => sum + grade.score, 0));
+export function itemStatistics(itemIds: readonly string[], attempts: readonly (readonly (Grade | undefined)[])[]): ItemStats[] {
+  const shown = attempts.map((grades) => grades.filter((grade): grade is Grade => grade !== undefined));
+  const totals = shown.map((grades) => grades.reduce((sum, grade) => sum + grade.score, 0));
   return itemIds.map((item_id, i) => {
-    const scores = attempts.map((grades) => grades[i]!.score);
-    const rest = attempts.map((_, a) => totals[a]! - scores[a]!);
+    const scores: number[] = [];
+    const xs: number[] = [];
+    const rest: number[] = [];
+    attempts.forEach((grades, a) => {
+      const grade = grades[i];
+      if (!grade) return;
+      scores.push(grade.score);
+      const others = shown[a]!.length - 1;
+      if (others === 0) return; // nothing to correlate with
+      xs.push(grade.score);
+      rest.push((totals[a]! - grade.score) / others);
+    });
     const responses = scores.length;
-    const discrimination = responses > 1 ? correlation(scores, rest) : 0;
+    const discrimination = xs.length > 1 ? correlation(xs, rest) : 0;
     const flag: ItemFlag =
       responses < MIN_ITEM_RESPONSES
         ? "too_few_responses"

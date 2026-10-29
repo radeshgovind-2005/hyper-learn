@@ -46,7 +46,12 @@ export const DEFAULT_LEARNER_MODEL: LearnerModel = {
 export interface QuizAttempt {
   learner_id: number;
   lesson_id: string;
-  /** The response to each item, in quiz order (shape depends on the item type). */
+  /**
+   * The items shown, in order, when the exam was drawn from the lesson's pool. Absent = the whole quiz in
+   * quiz order (every attempt before exams were drawn, and every lesson without an exam config).
+   */
+  item_ids?: string[];
+  /** The response to each item shown, in that order (shape depends on the item type). */
   answers: Response[];
   /** How sure the learner was of each answer. */
   certainty: Certainty[];

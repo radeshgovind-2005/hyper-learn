@@ -37,6 +37,13 @@ describe("real learners", () => {
     );
   });
 
+  it("keeps the items an attempt showed, and reads older answers without them as the whole quiz", () => {
+    const shown = { ...answer("a", "t1"), data: { item_ids: [lesson.quiz[1]!.id], responses: [right[1]], certainty: [3] } };
+    const [keyed, old] = attemptsFrom([shown, answer("b", "t2")]);
+    assert.deepEqual(keyed!.item_ids, [lesson.quiz[1]!.id]);
+    assert.equal(old!.item_ids, undefined);
+  });
+
   it("diagnoses from first attempts only, and a handful of learners is low_sample", () => {
     const snapshot = compileCourse(getCourse());
     const few = realPerformance(snapshot, "1.0.0", [answer("a", "t1"), answer("a", "t2")]);
