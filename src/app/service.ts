@@ -6,7 +6,7 @@ import { gradeAttempt } from "../analytics/performance.js";
 import { type Grade, gradeItem } from "../assessment/grade.js";
 import type { Certainty, Response } from "../assessment/items.js";
 import { getCourse } from "../course/bundle.js";
-import { type CourseSnapshot, courseFromSnapshot, type LiveIntervention, liveInterventions } from "../course/compile.js";
+import { type CourseSnapshot, courseFromSnapshot, type LiveIntervention, liveInterventions, liveObjectives } from "../course/compile.js";
 import { buildGraph } from "../graph.js";
 import type { Embedder, Guard } from "../guards/guards.js";
 import { SimMeasurer } from "../measure/measure.js";
@@ -243,7 +243,7 @@ export class CourseService {
     const items = lesson.quiz.map((item, i) => ({ item_id: item.id, pilot: item.pilot, grade: gradeItem(item, responses[i]!, lessonId) }));
     const score = grades.reduce((sum, g) => sum + g.score, 0) / Math.max(1, grades.length);
     const live_interventions = liveInterventions(live.snapshot);
-    const steps = nextSteps(lessonId, grades, passed, live_interventions);
+    const steps = nextSteps(lessonId, grades, passed, live_interventions, liveObjectives(live.snapshot));
     const shown = new Set(steps.flatMap((s) => (s.kind === "intervention" ? [s.block_id] : [])));
 
     const at = this.now();

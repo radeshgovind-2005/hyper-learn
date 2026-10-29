@@ -52,6 +52,20 @@ Branch `studio/assessment`. What changed, decisions, and what other workstreams 
   checks).
 - Objectives of an archived lesson are dropped from the `Course` view, like the lesson's quiz.
 
+## 4. Router
+
+- `PathStep` gains `{ kind: "review_section"; lesson; section_id; objective; reason }`. The web UI's
+  existing filters ignore it until wave 2 (E renders it as "review §…").
+- `nextSteps(lessonId, grades, passed, live, objectives = [])`: new optional fifth parameter. After a
+  failed attempt, for each objective (course order) with a wrong answer, one step to its first section;
+  a section shared by two missed objectives is suggested once; objectives without sections add nothing.
+  Order: interventions, review_section, prerequisite reviews, retake.
+- `Grade.objective?`: `gradeItem` copies the item's objective onto its grade, so the router (and stored
+  answer events, and learner summaries) know which objective a wrong answer was about. Absent for items
+  without an objective, so the featured course's grades are unchanged.
+- `liveObjectives(snapshot)` (src/course/compile.ts): objectives of live lessons, with archived sections
+  removed. `submitQuiz` passes it to `nextSteps`.
+
 ## Regression check
 
 Besides `src/eval/reference.test.ts`, I hashed `scenarioPerformance` (5 seeds per scenario),

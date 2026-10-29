@@ -207,6 +207,16 @@ export function liveInterventions(snapshot: CourseSnapshot): LiveIntervention[] 
     );
 }
 
+/** The release's objectives, as the router uses them: in live lessons, listing only live sections. */
+export function liveObjectives(snapshot: CourseSnapshot): Objective[] {
+  return (snapshot.objectives ?? []).flatMap((objective) => {
+    const lesson = snapshot.lessons.find((l) => l.id === objective.lesson && !l.archived);
+    if (!lesson) return [];
+    const live = new Set(lesson.sections.filter((s) => !s.archived).map((s) => s.id));
+    return [{ ...objective, sections: objective.sections.filter((id) => live.has(id)) }];
+  });
+}
+
 /**
  * Snapshot-level rules for objectives, exam configs and check blocks (the item-level objective rules are
  * in validateObjectives): well-formed objectives, each in a lesson of the snapshot and listing only that
