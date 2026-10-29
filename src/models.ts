@@ -72,6 +72,13 @@ export function modelConfigFromEnv(env: ModelEnv): ModelConfig {
   };
 }
 
+/** Models a course owner may pick (MODEL_CHOICES, comma-separated; default: REASONING_MODEL). */
+export function modelChoicesFromEnv(env: ModelEnv): string[] {
+  const listed = (env.MODEL_CHOICES ?? "").split(",").map((m) => m.trim()).filter(Boolean);
+  if (listed.length > 0) return [...new Set(listed)];
+  return env.REASONING_MODEL ? [env.REASONING_MODEL] : [];
+}
+
 /**
  * The models for one course: its settings in, chat models and schema-bound models out. Each course
  * object makes its own, so two courses in one isolate never share a key or a cached model.

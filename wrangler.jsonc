@@ -41,9 +41,14 @@
     // LangSmith tracing (optional, off by default): set LANGSMITH_API_KEY as a secret, and
     // LANGSMITH_TRACING=true and LANGSMITH_PROJECT here or as secrets.
     // Without a key, runs use the reference stand-ins and make no model calls.
+    // Studio courses use their owner's key instead, stored encrypted with KEY_ENCRYPTION_SECRET (a secret, at
+    // least 32 characters, e.g. `openssl rand -base64 32`; changing it makes stored keys unreadable). Without
+    // it, owners can't save keys. Their calls still go to MODEL_BASE_URL; owners only pick a model from MODEL_CHOICES.
     "MODEL_BASE_URL": "",
     "REASONING_MODEL": "muse-spark-1.3",
     "FAST_MODEL": "muse-spark-1.3",
+    // Comma-separated models a studio course's owner may pick; empty means REASONING_MODEL only.
+    "MODEL_CHOICES": "muse-spark-1.3",
     "STRUCTURED_OUTPUT_METHOD": "jsonSchema",
     "MODEL_TIMEOUT_MS": "120000",
     "MODEL_MAX_RETRIES": "1",

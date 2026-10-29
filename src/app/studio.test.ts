@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import { MAX_PAGE_CHARS } from "../course/sources.js";
+import { modelConfigFromEnv } from "../models.js";
 import { sqlite } from "../node/sqlite.js";
 import type { CourseRole } from "./access.js";
-import { CourseService, type DirectoryLink, type ServiceOptions } from "./service.js";
+import { CourseService, type DirectoryLink, type OwnerModelSettings, type ServiceOptions, SOURCE_LIMITS } from "./service.js";
 
 const NOW = "2026-10-29T12:00:00.000Z";
 const ID = "c-abcdefghijkl";
@@ -17,6 +19,12 @@ function fakeDirectory() {
   };
   return { calls, link };
 }
+
+export const ownerModels = (secret: string | undefined = "test-only-secret-0123456789abcdefghijkl"): OwnerModelSettings => ({
+  secret,
+  config: { ...modelConfigFromEnv({ MODEL_BASE_URL: "https://models.example.com/v1" }), apiKey: "" },
+  choices: ["muse-spark-1.3", "muse-glimmer"],
+});
 
 export function studioService(options: Partial<ServiceOptions> = {}, sql = sqlite()) {
   const directory = fakeDirectory();
@@ -124,5 +132,100 @@ describe("studio members and invites", () => {
     assert.equal(s.memberRole("user_ada"), null);
     assert.throws(() => s.rotateInvite(), /Built-in courses/);
     assert.throws(() => s.join(bob, "x"), /Built-in courses/);
+  });
+});
+
+describe("studio sources", () => {
+  it("adds files as pages with ids that are never reused", () => {
+    const { s } = initialisedStudio();
+    const lecture = s.addSource({ name: "Lecture 1.pdf", pages: ["Amdahl's law.", "Speedup."] });
+    assert.deepEqual(lecture, { id: "s1", name: "Lecture 1.pdf", role: null, pages: 2, chars: 21 });
+    assert.equal(s.addSource({ name: "exam.pdf", role: "assessment", pages: ["Q1"] }).id, "s2");
+    s.removeSource("s2");
+    assert.equal(s.addSource({ name: "brief.md", pages: ["Build a parallel sort"] }).id, "s3");
+    assert.deepEqual(s.sourceList().map((x) => x.id), ["s1", "s3"]);
+
+    assert.equal(s.setSourceRole("s3", "brief").role, "brief");
+    assert.equal(s.setSourceRole("s3", null).role, null);
+    assert.throws(() => s.setSourceRole("s3", "notes"), /Unknown role/);
+    assert.equal(s.appendPages("s1", ["Gustafson."]).pages, 3);
+    assert.deepEqual(s.sourceTexts()[0]?.pages, ["Amdahl's law.", "Speedup.", "Gustafson."]);
+    assert.throws(() => s.appendPages("s9", ["x"]), /No source/);
+  });
+
+  it("validates uploads and cuts over-long pages", () => {
+    const { s } = initialisedStudio();
+    assert.throws(() => s.addSource({ name: "", pages: ["x"] }), /Name the file/);
+    assert.throws(() => s.addSource({ name: "a", pages: [] }), /at least one page/);
+    assert.throws(() => s.addSource({ name: "a", pages: [42] }));
+    assert.throws(() => s.addSource({ name: "a", pages: ["x"], id: "s7" }), "the id is the server's");
+    assert.throws(() => s.addSource({ name: "a", pages: ["x"], role: "notes" }));
+    assert.equal(s.addSource({ name: "long", pages: ["x".repeat(MAX_PAGE_CHARS + 5)] }).chars, MAX_PAGE_CHARS);
+  });
+
+  it("enforces the limits server-side", () => {
+    const { s } = initialisedStudio();
+    const page = "x".repeat(MAX_PAGE_CHARS);
+    const perCall = Math.floor(SOURCE_LIMITS.charsPerCall / MAX_PAGE_CHARS);
+    assert.throws(() => s.addSource({ name: "big", pages: Array(perCall + 1).fill(page) }), /at a time/);
+    // Fill up to the course total with full calls, then one more page is too many.
+    let added = 0;
+    const { id } = s.addSource({ name: "big", pages: Array(perCall).fill(page) });
+    added += perCall * MAX_PAGE_CHARS;
+    while (added + perCall * MAX_PAGE_CHARS <= SOURCE_LIMITS.chars) {
+      s.addSource({ name: `more ${added}`, pages: Array(perCall).fill(page) });
+      added += perCall * MAX_PAGE_CHARS;
+    }
+    assert.throws(() => s.appendPages(id, ["x".repeat(SOURCE_LIMITS.chars - added + 1)]), /in all/);
+
+    const many = initialisedStudio().s;
+    for (let i = 0; i < SOURCE_LIMITS.sources; i++) many.addSource({ name: `f${i}`, pages: ["x"] });
+    assert.throws(() => many.addSource({ name: "one more", pages: ["x"] }), /at most 30 sources/);
+  });
+
+  it("is only for studio courses", () => {
+    const s = new CourseService(sqlite(), { now: () => NOW });
+    assert.throws(() => s.addSource({ name: "a", pages: ["x"] }), /Built-in courses/);
+  });
+});
+
+describe("the owner's model key", () => {
+  it("is stored sealed, never returned, and makes agents available", async () => {
+    const { s, sql } = initialisedStudio({ ownerModels: ownerModels() });
+    assert.deepEqual(s.modelSettings(), { hasKey: false, model: null, choices: ["muse-spark-1.3", "muse-glimmer"], keysAvailable: true, set_at: null });
+    assert.equal(s.agentsAvailable(), false);
+    const settings = await s.setModelKey("  sk-meta-secret-123  ", "muse-glimmer");
+    assert.deepEqual(settings, { hasKey: true, model: "muse-glimmer", choices: ["muse-spark-1.3", "muse-glimmer"], keysAvailable: true, set_at: NOW });
+    assert.equal(s.agentsAvailable(), true);
+    assert.equal(s.overview().agentsAvailable, true);
+
+    const everything = JSON.stringify([
+      sql`SELECT * FROM hl_meta`,
+      s.overview(),
+      s.modelSettings(),
+      s.courseInfo(),
+    ]);
+    assert.ok(!everything.includes("sk-meta-secret-123"), "the key is nowhere in storage, state or settings");
+    s.clearModelKey();
+    assert.equal(s.modelSettings().hasKey, false);
+  });
+
+  it("refuses bad keys, models outside MODEL_CHOICES, and a missing Worker secret", async () => {
+    const { s } = initialisedStudio({ ownerModels: ownerModels() });
+    await assert.rejects(s.setModelKey("short", "muse-glimmer"), /doesn't look like an API key/);
+    await assert.rejects(s.setModelKey("sk-with space", "muse-glimmer"), /no spaces/);
+    await assert.rejects(s.setModelKey("sk-meta-secret-123", "gpt-anything"), /Pick one of these models/);
+    await assert.rejects(s.setModelKey(42, "muse-glimmer"));
+
+    const unset = initialisedStudio({ ownerModels: ownerModels("") }).s;
+    assert.equal(unset.modelSettings().keysAvailable, false);
+    await assert.rejects(unset.setModelKey("sk-meta-secret-123", "muse-glimmer"), /KEY_ENCRYPTION_SECRET/);
+  });
+
+  it("is used for agent runs only through the course's own provider", async () => {
+    const { s } = initialisedStudio({ ownerModels: ownerModels() });
+    await s.setModelKey("sk-meta-secret-123", "muse-glimmer");
+    // Not published: runs are refused before any model is made.
+    assert.throws(() => s.beginRun({ mode: "hitl", agents: true, source: "real" }), /isn't published/);
   });
 });

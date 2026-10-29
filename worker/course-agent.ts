@@ -5,7 +5,7 @@ import { CourseService, type DataSource, type DirectoryLink, type QuizResult } f
 import type { Certainty, Response } from "../src/assessment/items.js";
 import { type Identity, identityFrom } from "../src/auth/identity.js";
 import { checkRoleChange, setClerkRole } from "../src/auth/roles.js";
-import { ModelProvider, modelConfigFromEnv } from "../src/models.js";
+import { ModelProvider, modelChoicesFromEnv, modelConfigFromEnv } from "../src/models.js";
 import { LANGSMITH_SETTINGS } from "../src/observability.js";
 import type { ApprovalMode, ApprovalResponse } from "../src/nodes/release.js";
 import type { Sql } from "../src/storage/sql.js";
@@ -48,7 +48,16 @@ export class CourseAgent extends Agent<Env, CourseAgentState> {
       this.service = new CourseService(this.sql.bind(this) as unknown as Sql, {
         course,
         directory: this.directoryLink(),
-        ...(builtIn && { agentsAvailable: Boolean(env.MODEL_API_KEY && env.MODEL_BASE_URL), models: new ModelProvider(modelConfigFromEnv(env)) }),
+        ...(builtIn
+          ? { agentsAvailable: Boolean(env.MODEL_API_KEY && env.MODEL_BASE_URL), models: new ModelProvider(modelConfigFromEnv(env)) }
+          : {
+              ownerModels: {
+                secret: env.KEY_ENCRYPTION_SECRET,
+                // The Worker's endpoint and limits; the key comes from the owner, opened only when used.
+                config: { ...modelConfigFromEnv(env), apiKey: "" },
+                choices: modelChoicesFromEnv(env),
+              },
+            }),
         ...(env.AI && { guard: workersAiGuard(env.AI), embedder: workersAiEmbedder(env.AI) }),
       });
     }
@@ -209,6 +218,75 @@ export class CourseAgent extends Agent<Env, CourseAgentState> {
   revokeInvite() {
     this.actor("manage_course");
     this.app.revokeInvite();
+  }
+
+  // ─── Course details, sources and model key (owner, or an admin) ───────
+
+  /** Title, description, goal (guides the build) and language. */
+  @callable()
+  async updateDetails(input: unknown) {
+    this.actor("manage_course");
+    const info = await this.app.updateDetails(input);
+    this.publish();
+    return info;
+  }
+
+  /** The uploaded files, without their text. */
+  @callable()
+  sources() {
+    this.actor("manage_course");
+    return this.app.sourceList();
+  }
+
+  /** Adds a file as page texts ({ name, pages, role? }); a big file continues with appendPages. */
+  @callable()
+  addSource(input: unknown) {
+    this.actor("manage_course");
+    return this.app.addSource(input);
+  }
+
+  @callable()
+  appendPages(id: string, pages: unknown) {
+    this.actor("manage_course");
+    return this.app.appendPages(id, pages);
+  }
+
+  @callable()
+  removeSource(id: string) {
+    this.actor("manage_course");
+    this.app.removeSource(id);
+  }
+
+  /** material | assessment | brief, or null to let the build decide. */
+  @callable()
+  setSourceRole(id: string, role: string | null) {
+    this.actor("manage_course");
+    return this.app.setSourceRole(id, role);
+  }
+
+  /** Whether a key is set and which model is used. The key itself is never returned. */
+  @callable()
+  modelSettings() {
+    this.actor("manage_course");
+    return this.app.modelSettings();
+  }
+
+  /** Stores the owner's model API key, encrypted, and the model (one of MODEL_CHOICES). */
+  @callable()
+  async setModelKey(key: string, model: string) {
+    const { userId } = this.actor("manage_course");
+    const settings = await this.app.setModelKey(key, model);
+    console.log(`Course ${this.name}: model key set by ${userId} (model ${settings.model})`);
+    this.publish();
+    return settings;
+  }
+
+  @callable()
+  clearModelKey() {
+    this.actor("manage_course");
+    const settings = this.app.clearModelKey();
+    this.publish();
+    return settings;
   }
 
   private disconnect(userId: string, reason: string) {

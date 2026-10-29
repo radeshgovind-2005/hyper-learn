@@ -20,11 +20,13 @@ import { type Release, revert } from "../releases/release.js";
 import { releasePerformance, scenarioSnapshot } from "../simulation/index.js";
 import type { Scenario } from "../simulation/scenarios.js";
 import { NoExemplar } from "../interventions/reference.js";
-import { defaultModels, type ModelProvider } from "../models.js";
+import { defaultModels, type ModelConfig, ModelProvider } from "../models.js";
+import { keysAvailable, openSecret, sealSecret } from "../crypto/keys.js";
+import { MAX_PAGE_CHARS, SOURCE_ROLES, type Source, SourceSchema } from "../course/sources.js";
 import type { State } from "../state.js";
 import { PersistentMemorySaver } from "../storage/checkpointer.js";
 import { type Sql, SqlEventLog, SqlMeta, SqlProfiles, SqlReleaseStore, SqlThreadStore } from "../storage/sql.js";
-import { type Member, SqlMembers } from "../storage/studio.js";
+import { type Member, SqlMembers, SqlSources, type SourceSummary } from "../storage/studio.js";
 import type { Identity as Person } from "../auth/identity.js";
 import { COURSE_ROLES, type CourseRole } from "./access.js";
 import { builtInCourse, type CourseDefinition, FEATURED_COURSE, isStudioId } from "./courses.js";
@@ -172,7 +174,49 @@ export class NotPublished extends Error {
   }
 }
 
+/** How a studio course reaches a model with its owner's key. The Worker fills this from its env. */
+export interface OwnerModelSettings {
+  /** KEY_ENCRYPTION_SECRET. Without it keys can't be saved or used. */
+  secret: string | undefined;
+  /** Everything but the key and model names. The base URL is always the Worker's (MODEL_BASE_URL), never the owner's. */
+  config: ModelConfig;
+  /** Models an owner may pick (MODEL_CHOICES). */
+  choices: readonly string[];
+}
+
+/** Limits on what an owner uploads, enforced here whatever the UI does. */
+export const SOURCE_LIMITS = {
+  sources: 30,
+  /** All sources together. */
+  chars: 2_000_000,
+  /** One addSource or appendPages call: bigger files arrive in several (WebSocket messages are bounded). */
+  charsPerCall: 500_000,
+  pagesPerSource: 2_000,
+} as const;
+
+const SourceUploadSchema = z.strictObject({
+  name: z.string().trim().min(1, "Name the file").max(200),
+  role: z.enum(SOURCE_ROLES).optional(),
+  pages: z.array(z.string()).min(1, "A file needs at least one page"),
+});
+
+const MODEL_KEY = z
+  .string()
+  .trim()
+  .min(8, "That doesn't look like an API key")
+  .max(400, "That doesn't look like an API key")
+  .regex(/^\S+$/, "An API key has no spaces");
+
+/** What's stored for a studio course's model: the key sealed, never in the clear. */
+interface StoredModelKey {
+  sealed: string;
+  model: string;
+  set_at: string;
+}
+
 export interface ServiceOptions {
+  /** A studio course's owner-key settings (ignored for built-in courses, which use `models`). */
+  ownerModels?: OwnerModelSettings;
   /**
    * The course this object holds: a built-in definition, or "studio" for a course created in the studio,
    * whose definition is in this object's storage. Default: the featured course (Node tools and tests).
@@ -221,6 +265,7 @@ export class CourseService {
   readonly profiles: SqlProfiles;
   /** A studio course's members and their roles. Built-in courses use global roles instead. */
   readonly members: SqlMembers;
+  private readonly sources: SqlSources;
   private readonly meta: SqlMeta;
   private readonly saver: PersistentMemorySaver;
   private readonly now: () => string;
@@ -242,6 +287,7 @@ export class CourseService {
     this.events = new SqlEventLog(sql);
     this.profiles = new SqlProfiles(sql);
     this.members = new SqlMembers(sql);
+    this.sources = new SqlSources(sql);
     this.saver = new PersistentMemorySaver(new SqlThreadStore(sql));
   }
 
@@ -307,7 +353,7 @@ export class CourseService {
       releases: this.releases.all().map(summarize),
       run: this.run(),
       trial: this.trial(),
-      agentsAvailable: this.options.agentsAvailable ?? false,
+      agentsAvailable: this.agentsAvailable(),
     };
   }
 
@@ -578,7 +624,7 @@ export class CourseService {
 
   // ─── Repair runs ──────────────────────────────────────────────────
 
-  private graph(run: RunState) {
+  private graph(run: RunState, provider: ModelProvider | undefined) {
     const scenario = this.scenarioOf(run.scenario);
     const real = run.source === "real";
     const harness: Harness = {
@@ -587,18 +633,20 @@ export class CourseService {
       trialSource: real ? "real" : "simulated",
       now: this.now,
       mode: run.mode,
-      approver: run.agents ? createApprover(createApproverModel(this.models())) : approveWithinCeiling,
+      approver: run.agents ? createApprover(createApproverModel(provider!)) : approveWithinCeiling,
       ...(this.options.guard && { guard: this.options.guard }),
       ...(this.options.embedder && { embedder: this.options.embedder }),
     };
     const models = run.agents
-      ? graphModels(this.models())
+      ? graphModels(provider!)
       : { assistant: NO_ASSISTANT, ...referenceModels(real ? undefined : scenario, this.diagnosisData(run), this.releases, this.definition().exemplars) };
     return buildGraph(models, { harness, checkpointer: this.saver });
   }
 
-  private models(): ModelProvider {
-    return this.options.models ?? defaultModels();
+  /** The models agent runs use: a built-in course's (the Worker's), or a studio course's owner key. */
+  private async models(): Promise<ModelProvider> {
+    if (this.fixed) return this.options.models ?? defaultModels();
+    return this.ownerProvider();
   }
 
   private save(run: RunState, onUpdate?: (run: RunState) => void) {
@@ -619,7 +667,7 @@ export class CourseService {
       release: this.releases.live().version,
     });
     try {
-      const app = this.graph(run);
+      const app = this.graph(run, run.agents ? await this.models() : undefined);
       for await (const chunk of await app.stream(input, { ...config, ...trace, streamMode: "updates" })) {
         for (const [node, update] of Object.entries(chunk as Record<string, unknown>)) {
           const step = stepFor(node, (update ?? {}) as State, this.now());
@@ -668,7 +716,7 @@ export class CourseService {
     if (current === "running") throw new Error("A run is already in progress");
     if (current === "awaiting_approval") throw new Error("The current run is waiting for approval; answer it or reset first");
     if (this.openTrial()) throw new Error("A trial is running on real learners; evaluate or stop it first");
-    if (agents && !this.options.agentsAvailable) throw new Error("No model is configured, so only reference runs are available");
+    if (agents && !this.agentsAvailable()) throw new Error("No model is configured, so only reference runs are available");
     this.requirePublished();
     if (source === "simulated" && this.scenarios().length === 0) throw new Error("This course has no simulated learners; run on real learners");
     const run: RunState = {
@@ -931,6 +979,134 @@ export class CourseService {
       await this.report((d) => d.courseUpdated(record.id, { title: next.title, description: next.description }));
     }
     return this.courseInfo();
+  }
+
+  // ─── Sources (studio courses) ─────────────────────────────────────
+
+  /** Sources can change while a course is a draft or in review; a build reads them, and a published course cites them. */
+  private editableSources() {
+    const record = this.studio();
+    if (record.status === "building") throw new Error("Wait for the build to finish before changing sources");
+    if (record.status === "published") throw new Error("A published course keeps its sources: lessons cite them");
+  }
+
+  sourceList(): SourceSummary[] {
+    this.studio();
+    return this.sources.summaries();
+  }
+
+  /** The full sources, for a build. */
+  sourceTexts(): Source[] {
+    this.studio();
+    return this.sources.all();
+  }
+
+  /** Checks one upload's pages against the limits; long pages are cut to MAX_PAGE_CHARS. */
+  private pagesWithinLimits(pages: string[], already: { pages: number; chars: number }): string[] {
+    const cut = pages.map((p) => p.slice(0, MAX_PAGE_CHARS));
+    const chars = cut.reduce((sum, p) => sum + p.length, 0);
+    if (chars > SOURCE_LIMITS.charsPerCall) throw new Error(`Send at most ${SOURCE_LIMITS.charsPerCall.toLocaleString("en")} characters at a time; add the rest with appendPages`);
+    if (already.pages + cut.length > SOURCE_LIMITS.pagesPerSource) throw new Error(`A file can have at most ${SOURCE_LIMITS.pagesPerSource} pages`);
+    if (this.sources.totalChars() + chars > SOURCE_LIMITS.chars) throw new Error(`A course's sources can hold at most ${SOURCE_LIMITS.chars.toLocaleString("en")} characters in all`);
+    return cut;
+  }
+
+  /** Adds a file as page texts. Its id ("s1", "s2", …) is never reused, so a citation can't point at a different file. */
+  addSource(input: unknown): SourceSummary {
+    this.editableSources();
+    const parsed = SourceUploadSchema.safeParse(input);
+    if (!parsed.success) throw new Error(firstIssue(parsed.error));
+    if (this.sources.count() >= SOURCE_LIMITS.sources) throw new Error(`A course can have at most ${SOURCE_LIMITS.sources} sources`);
+    const pages = this.pagesWithinLimits(parsed.data.pages, { pages: 0, chars: 0 });
+    const seq = (this.meta.get<number>("source_seq") ?? 0) + 1;
+    const source = SourceSchema.parse({ id: `s${seq}`, name: parsed.data.name, ...(parsed.data.role && { role: parsed.data.role }), pages });
+    this.sources.put(source, seq);
+    this.meta.set("source_seq", seq);
+    return this.sources.summaries().find((s) => s.id === source.id)!;
+  }
+
+  /** Adds more pages to a source: how a file too big for one message arrives. */
+  appendPages(id: unknown, pages: unknown): SourceSummary {
+    this.editableSources();
+    const source = typeof id === "string" ? this.sources.get(id) : undefined;
+    if (!source) throw new Error(`No source "${String(id)}"`);
+    const parsed = SourceUploadSchema.shape.pages.safeParse(pages);
+    if (!parsed.success) throw new Error(firstIssue(parsed.error));
+    const added = this.pagesWithinLimits(parsed.data, { pages: source.pages.length, chars: 0 });
+    this.sources.put(SourceSchema.parse({ ...source, pages: [...source.pages, ...added] }), this.sources.seq(source.id)!);
+    return this.sources.summaries().find((s) => s.id === source.id)!;
+  }
+
+  removeSource(id: unknown) {
+    this.editableSources();
+    if (typeof id !== "string" || !this.sources.get(id)) throw new Error(`No source "${String(id)}"`);
+    this.sources.delete(id);
+  }
+
+  /** Sets what a file is for (null: let the build decide). */
+  setSourceRole(id: unknown, role: unknown): SourceSummary {
+    this.editableSources();
+    const source = typeof id === "string" ? this.sources.get(id) : undefined;
+    if (!source) throw new Error(`No source "${String(id)}"`);
+    if (role !== null && !(SOURCE_ROLES as readonly unknown[]).includes(role)) throw new Error(`Unknown role "${String(role)}"`);
+    const { role: _old, ...rest } = source;
+    this.sources.put(SourceSchema.parse(role === null ? rest : { ...rest, role }), this.sources.seq(source.id)!);
+    return this.sources.summaries().find((s) => s.id === source.id)!;
+  }
+
+  // ─── The owner's model key (studio courses) ───────────────────────
+
+  /** What the owner's settings page shows. Never the key. */
+  modelSettings() {
+    this.studio();
+    const stored = this.meta.get<StoredModelKey>("model_key");
+    const owner = this.options.ownerModels;
+    return {
+      hasKey: Boolean(stored),
+      model: stored?.model ?? null,
+      choices: [...(owner?.choices ?? [])],
+      /** Whether the Worker can store keys at all (KEY_ENCRYPTION_SECRET is set). */
+      keysAvailable: keysAvailable(owner?.secret),
+      set_at: stored?.set_at ?? null,
+    };
+  }
+
+  /** Stores the owner's API key, sealed, with the model to use. */
+  async setModelKey(key: unknown, model: unknown) {
+    const record = this.studio();
+    const owner = this.options.ownerModels;
+    if (!owner || !keysAvailable(owner.secret)) throw new Error("Model keys can't be stored: KEY_ENCRYPTION_SECRET isn't set on the Worker");
+    const parsed = MODEL_KEY.safeParse(key);
+    if (!parsed.success) throw new Error(firstIssue(parsed.error));
+    if (typeof model !== "string" || !owner.choices.includes(model)) throw new Error(`Pick one of these models: ${owner.choices.join(", ") || "none configured"}`);
+    const sealed = await sealSecret(parsed.data, owner.secret, record.id);
+    this.meta.set("model_key", { sealed, model, set_at: this.now() } satisfies StoredModelKey);
+    return this.modelSettings();
+  }
+
+  clearModelKey() {
+    this.studio();
+    this.meta.set("model_key", null);
+    return this.modelSettings();
+  }
+
+  /** Whether agent runs (and builds) can use a model. */
+  agentsAvailable(): boolean {
+    if (this.fixed) return this.options.agentsAvailable ?? false;
+    const owner = this.options.ownerModels;
+    return Boolean(owner && keysAvailable(owner.secret) && owner.config.baseURL && this.meta.get<StoredModelKey>("model_key"));
+  }
+
+  /** Models with the owner's key, opened just for this use. */
+  private async ownerProvider(): Promise<ModelProvider> {
+    const record = this.studio();
+    const owner = this.options.ownerModels;
+    const stored = this.meta.get<StoredModelKey>("model_key");
+    if (!stored) throw new Error("Set a model API key first");
+    if (!owner?.config.baseURL) throw new Error("No model endpoint is configured on the Worker (MODEL_BASE_URL)");
+    if (!owner.choices.includes(stored.model)) throw new Error(`${stored.model} is no longer offered; pick another model`);
+    const apiKey = await openSecret(stored.sealed, owner.secret, record.id);
+    return new ModelProvider({ ...owner.config, apiKey, models: { reasoning: stored.model, fast: stored.model } });
   }
 
   /** Tells the directory; a failure there is logged, not thrown: this object stays the authority. */

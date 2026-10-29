@@ -74,17 +74,14 @@ export class SqlSources {
     );
   }
   summaries(): SourceSummary[] {
-    return this.sql<{ id: string; name: string; role: SourceRole | null; pages: string; chars: number }>`
-      SELECT id, name, role, pages, chars FROM hl_sources ORDER BY seq`.map((row) => ({
-      id: row.id,
-      name: row.name,
-      role: row.role,
-      pages: (JSON.parse(row.pages) as string[]).length,
-      chars: row.chars,
-    }));
+    return this.sql<SourceSummary>`SELECT id, name, role, json_array_length(pages) AS pages, chars FROM hl_sources ORDER BY seq`.map((row) => ({ ...row }));
   }
   get(id: string): Source | undefined {
-    return this.all().find((s) => s.id === id);
+    const [row] = this.sql<{ name: string; role: SourceRole | null; pages: string }>`SELECT name, role, pages FROM hl_sources WHERE id = ${id}`;
+    return row && { id, name: row.name, ...(row.role && { role: row.role }), pages: JSON.parse(row.pages) as string[] };
+  }
+  seq(id: string): number | undefined {
+    return this.sql<{ seq: number }>`SELECT seq FROM hl_sources WHERE id = ${id}`[0]?.seq;
   }
   count(): number {
     return (this.sql<{ n: number }>`SELECT COUNT(*) AS n FROM hl_sources`[0] as { n: number }).n;
@@ -92,15 +89,10 @@ export class SqlSources {
   totalChars(): number {
     return (this.sql<{ n: number }>`SELECT COALESCE(SUM(chars), 0) AS n FROM hl_sources`[0] as { n: number }).n;
   }
-  /** The next free id: s1, s2, … (never reused within a course, so old citations can't point at a new file). */
-  nextId(): string {
-    const [row] = this.sql<{ n: number }>`SELECT COALESCE(MAX(seq), 0) + 1 AS n FROM hl_sources`;
-    return `s${(row as { n: number }).n}`;
-  }
-  put(source: Source) {
+  /** Adds or replaces a source; `seq` orders the list. */
+  put(source: Source, seq: number) {
     const chars = source.pages.reduce((sum, p) => sum + p.length, 0);
     const pages = JSON.stringify(source.pages);
-    const seq = Number(source.id.slice(1));
     this.sql`INSERT INTO hl_sources (id, seq, name, role, pages, chars) VALUES (${source.id}, ${seq}, ${source.name}, ${source.role ?? null}, ${pages}, ${chars})
       ON CONFLICT (id) DO UPDATE SET name = excluded.name, role = excluded.role, pages = excluded.pages, chars = excluded.chars`;
   }
