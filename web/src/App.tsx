@@ -98,8 +98,6 @@ export function App() {
           ☰
         </button>
         <div className="brand">
-          <img src="/meta-logo.svg" alt="Meta" />
-          <span className="divider" />
           <img className="app-logo" src="/hyperlearn-logo.png" alt="HyperLearn" />
         </div>
         <span className="spacer" />

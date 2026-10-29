@@ -96,8 +96,6 @@ export function AuthPage({ mode }: { mode: "sign-in" | "sign-up" }) {
     <div className="auth">
       <section className="auth-brand" aria-label="HyperLearn">
         <div className="brand">
-          <img src="/meta-logo.svg" alt="Meta" />
-          <span className="divider" />
           <img className="app-logo" src="/hyperlearn-logo.png" alt="HyperLearn" />
         </div>
         <div className="auth-hero">
@@ -105,7 +103,10 @@ export function AuthPage({ mode }: { mode: "sign-in" | "sign-up" }) {
           <p>Every wrong answer teaches the course how to teach better.</p>
           <CourseNetwork />
         </div>
-        <div className="auth-credit">Built for the Meta Global AI Developer Hackathon</div>
+        <div className="auth-credit">
+          <img src="/meta-logo-black.svg" alt="Meta" />
+          <span>Global AI Developer Hackathon</span>
+        </div>
       </section>
       <section className="auth-form">
         {mode === "sign-in" ? (
