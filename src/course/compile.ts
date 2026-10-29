@@ -231,7 +231,12 @@ export function courseFromSnapshot(snapshot: CourseSnapshot): Course {
   }
   if (problems.length > 0) throw new Error(`Course "${snapshot.course_id}" is invalid:\n- ${problems.join("\n- ")}`);
   return buildCourse(
-    { id: snapshot.course_id, title: snapshot.title, misconceptions: snapshot.misconceptions },
+    {
+      id: snapshot.course_id,
+      title: snapshot.title,
+      misconceptions: snapshot.misconceptions,
+      ...(snapshot.objectives && { objectives: snapshot.objectives }),
+    },
     lessons.map((lesson) => ({
       id: lesson.id,
       title: lesson.title,
@@ -240,6 +245,7 @@ export function courseFromSnapshot(snapshot: CourseSnapshot): Course {
       prerequisites: lesson.prerequisites,
       body: renderLesson(lesson),
       quiz: lesson.quiz,
+      ...(lesson.exam && { exam: lesson.exam }),
     })),
   );
 }

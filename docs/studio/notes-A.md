@@ -24,3 +24,18 @@ Branch `studio/assessment`. What changed, decisions, and what other workstreams 
 Besides `src/eval/reference.test.ts`, I hashed `scenarioPerformance` (5 seeds per scenario),
 `releasePerformance` and a seeded `simulate(..., { retakes: true })` for every scenario before the
 first change, and compared after each item: identical throughout.
+
+## 8. Fixture (done early, so others can build on it)
+
+`src/course/fixtures/studio-course.ts` exports:
+
+- `studioSnapshot()`: a fresh `CourseSnapshot` (v1.0.0) of a made-up 3-lesson course, "Caching basics":
+  `cache-hits` → `eviction` → `invalidation`. 2 objectives per lesson, 3 scored items per objective
+  (`2 × per_objective + 1`, B's rule), one pilot item in `cache-hits`, `exam: { per_objective: 1 }` on
+  every lesson, 6 misconceptions, prerequisite-gap tags, text blocks citing pages, one check per section.
+  Item types: single_choice, multi_select, two_tier, ordering (the ones B generates).
+- `STUDIO_OBJECTIVES`, `STUDIO_SOURCES` (one Markdown source, 6 pages the blocks cite), `STUDIO_COURSE_ID`.
+- `STUDIO_MISSING_PREREQ`: a `Scenario` with the eviction → invalidation edge removed.
+
+`courseFromSnapshot` now passes `objectives` and each lesson's `exam` through to the `Course` view, and
+`Lesson` (src/course/schema.ts) has `exam?: ExamConfig`.
