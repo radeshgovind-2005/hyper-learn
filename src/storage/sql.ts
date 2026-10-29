@@ -185,4 +185,8 @@ export class SqlProfiles {
   delete(userId: string) {
     this.sql`DELETE FROM hl_profiles WHERE user_id = ${userId}`;
   }
+  /** Records a role change made in the app, so lists show it before the person next signs in. */
+  setRole(userId: string, role: string) {
+    this.sql`UPDATE hl_profiles SET role = ${role} WHERE user_id = ${userId}`;
+  }
 }

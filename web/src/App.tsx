@@ -140,7 +140,12 @@ export function App() {
             <MyProgress key={progress.length} call={call} onOpenLesson={openLesson} />
           ) : learnerMatch && mayViewLearners ? (
             learnerMatch[1] ? (
-              <LearnerDetail call={call} userId={decodeURIComponent(learnerMatch[1])} onBack={() => navigate("/learners")} />
+              <LearnerDetail
+                call={call}
+                userId={decodeURIComponent(learnerMatch[1])}
+                onBack={() => navigate("/learners")}
+                roles={me?.permissions.includes("manage_roles") ? { self: me.userId, configured: me.rolesConfigured } : null}
+              />
             ) : (
               <Learners call={call} onOpen={(id) => navigate(`/learners/${encodeURIComponent(id)}`)} />
             )

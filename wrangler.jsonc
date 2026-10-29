@@ -29,7 +29,8 @@
     // Point MODEL_BASE_URL at an AI Gateway to log every model call. Set MODEL_API_KEY as a secret:
     //   npx wrangler secret put MODEL_API_KEY      (locally: .dev.vars)
     // Sign-in (Clerk): set CLERK_JWT_KEY (Clerk dashboard → API keys → JWT public key) as a secret. Without it the
-    // Worker refuses every connection. Roles come from the session token's `role` claim.
+    // Worker refuses every connection. Roles come from the session token's `role` claim. For admins to change
+    // roles in the app, also set CLERK_SECRET_KEY (Clerk dashboard → API keys → secret key) as a secret.
     // LangSmith tracing (optional, off by default): set LANGSMITH_API_KEY as a secret, and
     // LANGSMITH_TRACING=true and LANGSMITH_PROJECT here or as secrets.
     // Without a key, runs use the reference stand-ins and make no model calls.

@@ -3,6 +3,7 @@ import { type Permission, permissionsOf, requirePermission } from "../src/app/ac
 import { CourseService, type DataSource, type QuizResult } from "../src/app/service.js";
 import type { Certainty, Response } from "../src/assessment/items.js";
 import { type Identity, identityFrom } from "../src/auth/identity.js";
+import { checkRoleChange, setClerkRole } from "../src/auth/roles.js";
 import { configureModels, modelConfigFromEnv } from "../src/models.js";
 import { LANGSMITH_SETTINGS } from "../src/observability.js";
 import type { ApprovalMode, ApprovalResponse } from "../src/nodes/release.js";
@@ -91,7 +92,22 @@ export class CourseAgent extends Agent<Env, CourseAgentState> {
   @callable()
   me() {
     const identity = this.actor("learn");
-    return { ...identity, permissions: permissionsOf(identity.role) };
+    // Role changes need Clerk's secret key; without it, admins see roles but can't change them here.
+    const rolesConfigured = Boolean((this.env as unknown as { CLERK_SECRET_KEY?: string }).CLERK_SECRET_KEY);
+    return { ...identity, permissions: permissionsOf(identity.role), rolesConfigured };
+  }
+
+  /** Admins: changes someone else's role in Clerk. It applies when their browser next connects. */
+  @callable()
+  async setRole(userId: string, role: string) {
+    const { userId: by } = this.actor("manage_roles");
+    const next = checkRoleChange(by, userId, role);
+    const secretKey = (this.env as unknown as { CLERK_SECRET_KEY?: string }).CLERK_SECRET_KEY;
+    if (!secretKey) throw new Error("Role changes need CLERK_SECRET_KEY on the Worker; set roles in the Clerk dashboard meanwhile");
+    await setClerkRole(secretKey, userId, next);
+    this.app.profiles.setRole(userId, next);
+    console.log(`Role of ${userId} set to ${next} by ${by}`);
+    return { userId, role: next };
   }
 
   @callable()

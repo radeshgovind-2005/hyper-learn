@@ -19,6 +19,8 @@ export interface Me {
   userId: string;
   role: "learner" | "instructor" | "admin";
   permissions: string[];
+  /** Whether the Worker can change roles (has Clerk's secret key). */
+  rolesConfigured: boolean;
 }
 
 /** Calls a method on the course's Durable Object. */

@@ -117,8 +117,66 @@ export function Learners({ call, onOpen }: { call: Call; onOpen: (userId: string
   );
 }
 
-/** Instructors: one learner's progress, and everything they did, newest first. */
-export function LearnerDetail({ call, userId, onBack }: { call: Call; userId: string; onBack: () => void }) {
+const ROLE_HELP: Record<string, string> = {
+  learner: "Lessons, quizzes and their own progress.",
+  instructor: "Also sees every learner and runs course repair.",
+  admin: "Also resets the course and changes roles.",
+};
+
+/** Admins: changes someone's role in Clerk. It applies when their browser next connects. */
+function RoleControl({ call, userId, role, self, configured, onChanged }: { call: Call; userId: string; role: string; self: string; configured: boolean; onChanged: (role: string) => void }) {
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState<string | null>(null);
+  const disabled = busy || !configured || userId === self;
+  const change = (next: string) => {
+    if (next === role) return;
+    setBusy(true);
+    setMessage(null);
+    call<{ role: string }>("setRole", [userId, next])
+      .then((r) => {
+        onChanged(r.role);
+        setMessage("Saved. It applies the next time they open or reload HyperLearn.");
+      })
+      .catch((e: unknown) => setMessage(e instanceof Error ? e.message : String(e)))
+      .finally(() => setBusy(false));
+  };
+  return (
+    <section className="card soft stack" aria-label="Role">
+      <div className="field">
+        <span>Role</span>
+        <div className="segmented" role="group" aria-label="Role">
+          {["learner", "instructor", "admin"].map((r) => (
+            <button key={r} className={role === r ? "on" : ""} disabled={disabled} aria-pressed={role === r} onClick={() => change(r)}>
+              {r[0]!.toUpperCase() + r.slice(1)}
+            </button>
+          ))}
+        </div>
+        <span className="footnote">
+          {userId === self
+            ? "This is you. Another admin can change your role."
+            : !configured
+              ? "Changing roles here needs CLERK_SECRET_KEY on the Worker. Until then, set it in the Clerk dashboard."
+              : ROLE_HELP[role]}
+        </span>
+      </div>
+      {message && <div className="small" role="status">{message}</div>}
+    </section>
+  );
+}
+
+/** Instructors: one learner's progress, and everything they did, newest first. Admins can change their role. */
+export function LearnerDetail({
+  call,
+  userId,
+  onBack,
+  roles,
+}: {
+  call: Call;
+  userId: string;
+  onBack: () => void;
+  /** Set for admins: who they are (they can't change their own role) and whether the Worker can change roles. */
+  roles: { self: string; configured: boolean } | null;
+}) {
   const [data, setData] = useState<Detail | null>(null);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => void call<Detail>("learnerDetail", [userId]).then(setData, (e: unknown) => setError(e instanceof Error ? e.message : String(e))), [call, userId]);
@@ -133,6 +191,16 @@ export function LearnerDetail({ call, userId, onBack }: { call: Call; userId: st
         {data.profile.email && data.profile.name ? `${data.profile.email} · ` : ""}
         {data.profile.role}
       </p>
+      {roles && (
+        <RoleControl
+          call={call}
+          userId={userId}
+          role={data.profile.role}
+          self={roles.self}
+          configured={roles.configured}
+          onChanged={(role) => setData({ ...data, profile: { ...data.profile, role } })}
+        />
+      )}
       <ProgressSections data={data.progress} />
       <section className="section">
         <h2>Timeline</h2>
