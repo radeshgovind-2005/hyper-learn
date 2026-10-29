@@ -1,6 +1,6 @@
 import type { QuizItem } from "../assessment/items.js";
 import { type Intervention, InterventionSchema } from "../interventions/templates.js";
-import { buildCourse } from "./load.js";
+import { buildCourse } from "./validate.js";
 import type { Course, MisconceptionDef } from "./schema.js";
 
 // The course as a content graph: lessons contain sections, sections contain blocks. Compiled once

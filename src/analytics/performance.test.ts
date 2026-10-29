@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { buildCourse } from "../course/load.js";
+import { buildCourse } from "../course/validate.js";
 import type { QuizItem } from "../assessment/items.js";
 import type { Lesson } from "../course/schema.js";
 import { computePerformance, MIN_RELIABLE_ATTEMPTS, wilsonInterval } from "./performance.js";

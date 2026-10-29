@@ -1,6 +1,6 @@
 import { computePerformance } from "../analytics/performance.js";
-import { type CourseSnapshot, compileCourse } from "../course/compile.js";
-import { getCourse } from "../course/load.js";
+import { baseSnapshot, getCourse } from "../course/bundle.js";
+import type { CourseSnapshot } from "../course/compile.js";
 import type { Mutation, NodePerformance } from "../state.js";
 import { publishedGraph, simulate } from "./learners.js";
 import type { Scenario } from "./scenarios.js";
@@ -19,7 +19,7 @@ export function scenarioPerformance(scenario: Scenario, seed?: number): NodePerf
 export function scenarioSnapshot(scenario: Scenario): CourseSnapshot {
   const course = getCourse();
   const published = publishedGraph(course, scenario);
-  const snapshot = compileCourse(course);
+  const snapshot = baseSnapshot();
   for (const lesson of snapshot.lessons) lesson.prerequisites = [...(published[lesson.id] ?? [])];
   return snapshot;
 }

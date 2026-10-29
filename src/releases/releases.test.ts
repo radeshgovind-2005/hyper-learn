@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { compileCourse } from "../course/compile.js";
-import { getCourse } from "../course/load.js";
+import { getCourse } from "../course/bundle.js";
 import { liveInterventions } from "../course/compile.js";
 import { EXEMPLARS } from "../interventions/exemplars.js";
 import { applyChange, applyChanges, type Change, invertChanges, riskTier, semverBump } from "./changes.js";

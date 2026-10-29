@@ -1,4 +1,4 @@
-import "dotenv/config";
+import "../node/setup.js";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { scenarioPerformance } from "../simulation/index.js";
 import { getScenario, type Scenario, SCENARIOS } from "../simulation/scenarios.js";

@@ -1,7 +1,9 @@
 # hyper-learn
 
-Backend for **HyperLearn**, an adaptive learning platform built on a self-correcting hypergraph
-(nodes = docs/exercises, edges = prerequisites). Built with LangGraph.js, LangChain.js and Zod.
+**HyperLearn** is an adaptive learning platform built on a self-correcting hypergraph (lessons → sections →
+blocks, with prerequisites and named misconceptions). Agents diagnose the course from learners' answers and
+propose repairs; a harness in code validates, versions, measures and keeps or reverts them. Built with
+LangGraph.js, LangChain.js and Zod, running in a Cloudflare Worker (Agents SDK + Durable Objects) with a React UI.
 
 ## Architecture
 
@@ -53,12 +55,38 @@ Backend for **HyperLearn**, an adaptive learning platform built on a self-correc
 | `src/config/agents.json` | Agent definitions: role, goal, instructions, model, tools… |
 | `src/agents.ts` | Validates `agents.json` and assembles each system prompt |
 
+## The app
+
+Three panes: the learning path and release history on the left, the lesson and its quiz in the middle, and
+course repair on the right (pick a simulated scenario, run the loop, approve, watch the trial decide).
+
+```bash
+npm run build:web && npm run dev:worker   # http://localhost:8787 — the Worker serves the built UI
+# or, with hot reload for the UI:
+npm run dev:worker                        # terminal 1: the Worker on :8787
+npm run dev                               # terminal 2: Vite on :5173, proxying /agents to :8787
+```
+
+- `worker/` — the Worker. `CourseAgent` (an Agents SDK Durable Object) wraps `CourseService` (`src/app/service.ts`),
+  which owns everything the app remembers in the object's SQLite: releases, the learner event log (each answer
+  pinned to the release the learner saw), and LangGraph checkpoints (`src/storage/checkpointer.ts`), so a run
+  paused for approval survives the object being evicted. Browsers stay in sync through the agent's state.
+- `web/` — the React UI (Vite). It imports only types from the core.
+- The core in `src/` runs in both Node and the Worker; `src/runtime.test.ts` keeps Node-only imports out of it.
+- Workers AI provides Llama Guard (safety) and bge embeddings (paraphrase checks). Both fail open: locally,
+  without `wrangler login`, they're skipped and the code checks still run.
+- Without a model key, runs use the reference stand-ins (rule-based Curator, hand-written exemplars) and make no
+  model calls; the UI says so. With `MODEL_BASE_URL` and `MODEL_API_KEY` set (`.dev.vars` locally,
+  `npx wrangler secret put MODEL_API_KEY` deployed), the "Muse Spark" toggle runs the real agents. Point
+  `MODEL_BASE_URL` at a Cloudflare AI Gateway to log every model call.
+- Deploy: `npx wrangler login`, then `npm run deploy` (Durable Objects need the Workers Paid plan).
+
 ## Setup
 
 ```bash
 npm install
 cp .env.example .env   # points at the local llama.cpp server on :9931 by default
-npm run typecheck
+npm run typecheck      # the Node code, the Worker (against Workers types) and the UI
 npm test               # all deterministic tests: no model server needed, a few seconds
 npm start              # demos against the real model
 npm run eval           # score the agents on the simulated scenarios

@@ -1,18 +1,17 @@
-import "dotenv/config";
+import "../node/setup.js";
 import { randomUUID } from "node:crypto";
 import { createInterface } from "node:readline/promises";
 import { Command, MemorySaver } from "@langchain/langgraph";
-import { getCourse } from "../course/load.js";
-import { referenceCurator } from "../eval/reference.js";
-import { buildGraph, type GraphModels } from "../graph.js";
+import { getCourse } from "../course/bundle.js";
+import { approveWithinCeiling, referenceModels } from "../app/reference.js";
+import { buildGraph } from "../graph.js";
 import { SimMeasurer } from "../measure/measure.js";
-import { referenceDraft } from "../interventions/reference.js";
 import { createApprover } from "../nodes/approver.js";
-import type { ApprovalRequest, ApprovalResponse, Approver, Harness } from "../nodes/release.js";
+import type { ApprovalRequest, ApprovalResponse, Harness } from "../nodes/release.js";
 import { describeChange } from "../releases/changes.js";
 import { MemoryReleaseStore, type ReleaseStore } from "../releases/release.js";
-import { injectedProposal, scenarioPerformance, scenarioSnapshot } from "../simulation/index.js";
-import { getScenario, type Scenario } from "../simulation/scenarios.js";
+import { scenarioPerformance, scenarioSnapshot } from "../simulation/index.js";
+import { getScenario } from "../simulation/scenarios.js";
 import type { State } from "../state.js";
 import { describeMutation, printData } from "./format.js";
 
@@ -28,25 +27,6 @@ import { describeMutation, printData } from "./format.js";
 
 const args = process.argv.slice(2);
 const flag = (name: string) => args.includes(`--${name}`);
-
-const NO_MODEL_REVIEW = { approved: true, critique: "No model review in a reference run: code checks only." };
-
-/**
- * Without --agents: the rule-based reference proposes (or the scenario's injected proposal), a
- * hand-written exemplar stands in for the Author, and review only runs the code checks.
- */
-function referenceModels(scenario: Scenario, data: State["performance_data"], store: ReleaseStore): Partial<GraphModels> {
-  const proposal = injectedProposal(scenario, data) ?? referenceCurator(data);
-  return {
-    curator: { invoke: async () => proposal },
-    reflection: { invoke: async () => NO_MODEL_REVIEW },
-    author: { invoke: async () => referenceDraft(proposal, data, store.live().snapshot.lessons) },
-    reviewer: { invoke: async () => NO_MODEL_REVIEW },
-  };
-}
-
-/** Autopilot's approver without --agents: approves whatever reaches it (the ceiling is enforced in code before it). */
-const approveWithinCeiling: Approver = async (request) => ({ approved: true, note: `within autopilot's ceiling (${request.tier})` });
 
 async function askHuman(request: ApprovalRequest): Promise<ApprovalResponse> {
   console.log(`\n✋ Approval needed${request.escalated ? ` (${request.escalated})` : ""}`);

@@ -1,6 +1,6 @@
 import { writeFileSync } from "node:fs";
 import { compileCourse } from "../course/compile.js";
-import { getCourse } from "../course/load.js";
+import { getCourse } from "../course/bundle.js";
 
 /**
  * Compiles the Markdown course into release v1.0.0: content/agentic-coding.bundle.json.

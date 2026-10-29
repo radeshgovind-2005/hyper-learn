@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { BaseMessage } from "@langchain/core/messages";
-import { getCourse } from "../course/load.js";
+import { getCourse } from "../course/bundle.js";
 import type { ItemOf } from "./items.js";
 import { calibrateGrader, type GraderOutput, gradeShortAnswer, looksLikeInjection } from "./short-answer.js";
 

@@ -3,9 +3,10 @@ import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 import { EXEMPLARS } from "../interventions/exemplars.js";
 import { compileCourse, compileSections, courseFromSnapshot, liveInterventions, renderLesson, splitBlocks } from "./compile.js";
-import { getCourse } from "./load.js";
+import { loadCourse } from "./load.js";
 
-const course = getCourse();
+// Compiled from the Markdown, not the bundle: these tests check the compiler and that the bundle matches.
+const course = loadCourse();
 const snapshot = compileCourse(course);
 const lesson = (id: string) => snapshot.lessons.find((l) => l.id === id)!;
 

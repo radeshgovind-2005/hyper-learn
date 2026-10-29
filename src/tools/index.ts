@@ -1,7 +1,7 @@
 import { type StructuredToolInterface, tool } from "@langchain/core/tools";
 import { z } from "zod";
 import { dependentsOf } from "../course/graph.js";
-import { getCourse } from "../course/load.js";
+import { getCourse } from "../course/bundle.js";
 import { logNode } from "../utils/logger.js";
 
 // Tool results go back into a small (4k) context window, so keep them compact.

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { getCourse } from "../course/load.js";
+import { getCourse } from "../course/bundle.js";
 import type { NodePerformance } from "../state.js";
 import { scenarioPerformance } from "./index.js";
 import { publishedGraph, simulate } from "./learners.js";

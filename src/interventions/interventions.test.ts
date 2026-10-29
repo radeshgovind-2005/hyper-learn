@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { compileCourse } from "../course/compile.js";
-import { getCourse } from "../course/load.js";
+import { getCourse } from "../course/bundle.js";
 import { checkIntervention, overlap } from "./checks.js";
 import { EXEMPLARS } from "./exemplars.js";
 import { referenceCurator } from "../eval/reference.js";

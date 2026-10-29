@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { getCourse } from "../course/load.js";
+import { getCourse } from "../course/bundle.js";
 import { MemoryReleaseStore, planRelease, type Release } from "../releases/release.js";
 import type { Change } from "../releases/changes.js";
 import { EXEMPLARS } from "../interventions/exemplars.js";

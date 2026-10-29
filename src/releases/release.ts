@@ -84,25 +84,25 @@ export interface ReleaseStore {
   update(version: string, patch: Partial<Release>): Release;
 }
 
+/** The first release of a course: its compiled content, live. */
+export const initialRelease = (snapshot: CourseSnapshot, created_at: string): Release => ({
+  version: snapshot.version,
+  parent: null,
+  status: "live",
+  changes: [],
+  inverse: [],
+  tier: "R0",
+  bump: "major",
+  snapshot,
+  rationale: "Compiled from the course content",
+  created_at,
+});
+
 export class MemoryReleaseStore implements ReleaseStore {
   private readonly releases = new Map<string, Release>();
 
-  constructor(
-    initial: CourseSnapshot,
-    now = () => new Date().toISOString(),
-  ) {
-    this.add({
-      version: initial.version,
-      parent: null,
-      status: "live",
-      changes: [],
-      inverse: [],
-      tier: "R0",
-      bump: "major",
-      snapshot: initial,
-      rationale: "Compiled from the course content",
-      created_at: now(),
-    });
+  constructor(initial: CourseSnapshot, now = () => new Date().toISOString()) {
+    this.add(initialRelease(initial, now()));
   }
 
   live(): Release {

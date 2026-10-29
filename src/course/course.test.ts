@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { ancestorsOf, findCycle, randomTopologicalOrder, wouldCreateCycle } from "./graph.js";
-import { getCourse, parseLessonFile, validateCourse } from "./load.js";
+import { getCourse } from "./bundle.js";
+import { loadCourse } from "./load.js";
+import { parseLessonFile, validateCourse } from "./validate.js";
 import { ITEM_TYPES, type QuizItem } from "../assessment/items.js";
 import type { Lesson } from "./schema.js";
 
@@ -27,7 +29,11 @@ const lesson = (id: string, prerequisites: string[], quiz?: QuizItem[]): Lesson 
 });
 
 describe("the agentic-coding course", () => {
-  it("loads and passes validation", () => {
+  it("loads from Markdown and passes validation", () => {
+    assert.equal(loadCourse().lessons.length, 6);
+  });
+
+  it("loads from the bundle and passes validation", () => {
     const course = getCourse();
     assert.equal(course.lessons.length, 6);
     assert.deepEqual(course.graph["multi-agent"], ["tool-calling", "structured-output"]);

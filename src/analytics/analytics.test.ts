@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { Grade } from "../assessment/grade.js";
 import type { QuizItem } from "../assessment/items.js";
-import { buildCourse } from "../course/load.js";
+import { buildCourse } from "../course/validate.js";
 import type { Lesson } from "../course/schema.js";
 import type { QuizAttempt } from "../simulation/learners.js";
 import { bktMastery, bktUpdate, DEFAULT_BKT } from "./bkt.js";
