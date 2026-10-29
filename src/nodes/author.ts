@@ -6,7 +6,7 @@ import type { Course } from "../course/schema.js";
 import { paraphraseLeaks } from "../guards/guards.js";
 import { checkIntervention } from "../interventions/checks.js";
 import { allowedTemplates, interventionQuestions, interventionTexts } from "../interventions/templates.js";
-import { getStructuredModel, type Invokable } from "../models.js";
+import { defaultModels, type Invokable, type ModelProvider } from "../models.js";
 import type { ReleaseStore } from "../releases/release.js";
 import type { Harness } from "./release.js";
 import { authorContext } from "../retrieval/context.js";
@@ -20,9 +20,10 @@ import { logNode } from "../utils/logger.js";
 export type AuthorModel = Invokable<Draft>;
 export type ContentReviewerModel = Invokable<ReflectionVerdict>;
 
-export const createAuthorModel = (): AuthorModel => getStructuredModel(DraftSchema, "write_intervention", getAgent("author").model);
-export const createContentReviewerModel = (): ContentReviewerModel =>
-  getStructuredModel(ReflectionVerdictSchema, "review_intervention", getAgent("reviewer").model);
+export const createAuthorModel = (provider: ModelProvider = defaultModels()): AuthorModel =>
+  provider.structured(DraftSchema, "write_intervention", getAgent("author").model);
+export const createContentReviewerModel = (provider: ModelProvider = defaultModels()): ContentReviewerModel =>
+  provider.structured(ReflectionVerdictSchema, "review_intervention", getAgent("reviewer").model);
 
 /** The proposal being authored, and which templates code allows for it. */
 function target(state: State) {

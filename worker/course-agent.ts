@@ -4,7 +4,7 @@ import { CourseService, type DataSource, type QuizResult } from "../src/app/serv
 import type { Certainty, Response } from "../src/assessment/items.js";
 import { type Identity, identityFrom } from "../src/auth/identity.js";
 import { checkRoleChange, setClerkRole } from "../src/auth/roles.js";
-import { configureModels, modelConfigFromEnv } from "../src/models.js";
+import { ModelProvider, modelConfigFromEnv } from "../src/models.js";
 import { LANGSMITH_SETTINGS } from "../src/observability.js";
 import type { ApprovalMode, ApprovalResponse } from "../src/nodes/release.js";
 import type { Sql } from "../src/storage/sql.js";
@@ -35,11 +35,10 @@ export class CourseAgent extends Agent<Env, CourseAgentState> {
       const env = this.env as unknown as Record<string, string | undefined> & { AI?: Ai };
       // LangChain reads LangSmith settings from process.env; Worker vars and secrets arrive on env.
       for (const key of LANGSMITH_SETTINGS) if (env[key] && !process.env[key]) process.env[key] = env[key];
-      const settings = modelConfigFromEnv(env);
-      configureModels(settings);
       const agentsAvailable = Boolean(env.MODEL_API_KEY && env.MODEL_BASE_URL);
       this.service = new CourseService(this.sql.bind(this) as unknown as Sql, {
         agentsAvailable,
+        models: new ModelProvider(modelConfigFromEnv(env)),
         ...(env.AI && { guard: workersAiGuard(env.AI), embedder: workersAiEmbedder(env.AI) }),
       });
     }

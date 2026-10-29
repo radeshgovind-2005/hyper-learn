@@ -1,7 +1,7 @@
 import { HumanMessage, SystemMessage } from "@langchain/core/messages";
 import { z } from "zod";
 import { getAgent, getSystemPrompt } from "../agents.js";
-import { getStructuredModel, type Invokable } from "../models.js";
+import { defaultModels, type Invokable, type ModelProvider } from "../models.js";
 import type { Approver } from "./release.js";
 
 export const ApproverVerdictSchema = z.object({
@@ -11,8 +11,8 @@ export const ApproverVerdictSchema = z.object({
 export type ApproverVerdict = z.infer<typeof ApproverVerdictSchema>;
 export type ApproverModel = Invokable<ApproverVerdict>;
 
-export const createApproverModel = (): ApproverModel =>
-  getStructuredModel(ApproverVerdictSchema, "approve_release", getAgent("approver").model);
+export const createApproverModel = (provider: ModelProvider = defaultModels()): ApproverModel =>
+  provider.structured(ApproverVerdictSchema, "approve_release", getAgent("approver").model);
 
 /**
  * Autopilot's approver: an agent that decides on a course owner's behalf. It is only ever asked about

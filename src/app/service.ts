@@ -7,17 +7,18 @@ import { type Grade, gradeItem } from "../assessment/grade.js";
 import type { Certainty, Response } from "../assessment/items.js";
 import { getCourse } from "../course/bundle.js";
 import { type CourseSnapshot, courseFromSnapshot, type LiveIntervention, liveInterventions } from "../course/compile.js";
-import { buildGraph } from "../graph.js";
+import { buildGraph, graphModels } from "../graph.js";
 import type { Embedder, Guard } from "../guards/guards.js";
 import { SimMeasurer } from "../measure/measure.js";
 import { type Arm, armOf, isPending, measureReal, type PendingMeasurement, RealMeasurer, realPerformance } from "../measure/real.js";
-import { createApprover } from "../nodes/approver.js";
+import { createApprover, createApproverModel } from "../nodes/approver.js";
 import { type ApprovalMode, type ApprovalRequest, type ApprovalResponse, type Harness, settleTrial } from "../nodes/release.js";
 import { nextSteps, type PathStep } from "../path/route.js";
 import { describeChange } from "../releases/changes.js";
 import { type Release, revert } from "../releases/release.js";
 import { releasePerformance, scenarioSnapshot } from "../simulation/index.js";
 import { getScenario, SCENARIOS } from "../simulation/scenarios.js";
+import { defaultModels, type ModelProvider } from "../models.js";
 import type { State } from "../state.js";
 import { PersistentMemorySaver } from "../storage/checkpointer.js";
 import { type Sql, SqlEventLog, SqlMeta, SqlProfiles, SqlReleaseStore, SqlThreadStore } from "../storage/sql.js";
@@ -126,6 +127,8 @@ export interface ServiceOptions {
   newId?: () => string;
   /** Whether a model is configured; without one, runs use the reference stand-ins. */
   agentsAvailable?: boolean;
+  /** This course's models. Default: the process's (Node); the Worker always passes the course's own. */
+  models?: ModelProvider;
   guard?: Guard;
   embedder?: Embedder;
 }
@@ -147,6 +150,13 @@ const summarize = (r: Release): ReleaseSummary => ({
   ...(r.pending && { pending: r.pending }),
   created_at: r.created_at,
 });
+
+/** Repair runs never reach the Learner Assistant; a stand-in keeps a reference run from creating any model. */
+const NO_ASSISTANT = {
+  invoke: async () => {
+    throw new Error("The Learner Assistant isn't part of repair runs");
+  },
+};
 
 export class CourseService {
   readonly releases: SqlReleaseStore;
@@ -463,12 +473,18 @@ export class CourseService {
       trialSource: real ? "real" : "simulated",
       now: this.now,
       mode: run.mode,
-      approver: run.agents ? createApprover() : approveWithinCeiling,
+      approver: run.agents ? createApprover(createApproverModel(this.models())) : approveWithinCeiling,
       ...(this.options.guard && { guard: this.options.guard }),
       ...(this.options.embedder && { embedder: this.options.embedder }),
     };
-    const models = run.agents ? {} : referenceModels(real ? undefined : scenario, this.diagnosisData(run), this.releases);
+    const models = run.agents
+      ? graphModels(this.models())
+      : { assistant: NO_ASSISTANT, ...referenceModels(real ? undefined : scenario, this.diagnosisData(run), this.releases) };
     return buildGraph(models, { harness, checkpointer: this.saver });
+  }
+
+  private models(): ModelProvider {
+    return this.options.models ?? defaultModels();
   }
 
   private save(run: RunState, onUpdate?: (run: RunState) => void) {

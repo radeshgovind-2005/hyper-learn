@@ -1,13 +1,13 @@
 import { type AIMessageChunk, SystemMessage } from "@langchain/core/messages";
 import { getAgent, getAgentTools, getSystemPrompt } from "../agents.js";
-import { getModel, type Invokable } from "../models.js";
+import { defaultModels, type Invokable, type ModelProvider } from "../models.js";
 import type { State, StateUpdate } from "../state.js";
 import { logNode } from "../utils/logger.js";
 
 export type AssistantModel = Invokable<AIMessageChunk>;
 
-export const createAssistantModel = (): AssistantModel =>
-  getModel(getAgent("assistant").model).bindTools(getAgentTools("assistant"));
+export const createAssistantModel = (provider: ModelProvider = defaultModels()): AssistantModel =>
+  provider.chat(getAgent("assistant").model).bindTools(getAgentTools("assistant"));
 
 export function createAssistantNode(model: AssistantModel = createAssistantModel()) {
   return async function assistantNode(state: State): Promise<StateUpdate> {

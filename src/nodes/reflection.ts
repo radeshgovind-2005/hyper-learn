@@ -1,7 +1,7 @@
 import { END } from "@langchain/langgraph";
 import { HumanMessage, SystemMessage } from "@langchain/core/messages";
 import { getAgent, getSystemPrompt } from "../agents.js";
-import { getStructuredModel, type Invokable } from "../models.js";
+import { defaultModels, type Invokable, type ModelProvider } from "../models.js";
 import { checkMutation } from "../mutations.js";
 import {
   formatPerformanceData,
@@ -15,8 +15,8 @@ import { logNode } from "../utils/logger.js";
 
 export type ReflectionModel = Invokable<ReflectionVerdict>;
 
-export const createReflectionModel = (): ReflectionModel =>
-  getStructuredModel(ReflectionVerdictSchema, "review_mutation", getAgent("reflection").model);
+export const createReflectionModel = (provider: ModelProvider = defaultModels()): ReflectionModel =>
+  provider.structured(ReflectionVerdictSchema, "review_mutation", getAgent("reflection").model);
 
 /** A rejection built from failed code checks, in the same line format the reviewer model uses. */
 const codeCheckVerdict = (problems: string[]): ReflectionVerdict => ({

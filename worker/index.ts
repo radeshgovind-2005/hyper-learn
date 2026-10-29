@@ -2,10 +2,14 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { AsyncLocalStorageProviderSingleton } from "@langchain/core/singletons";
 import { routeAgentRequest } from "agents";
 import { type Identity, roleFrom, verifySessionToken, withIdentity } from "../src/auth/identity.js";
+import { refuseDefaultModels } from "../src/models.js";
 
 // LangGraph finds the running graph (for interrupt() and config propagation) through async-local
 // storage. Its non-Node builds don't set one up, so register the runtime's (nodejs_compat) once.
 AsyncLocalStorageProviderSingleton.initializeGlobalInstance(new AsyncLocalStorage());
+
+// Courses share isolates, so there is no process-wide model here: each course object makes its own.
+refuseDefaultModels("No default models in the Worker: use the course's ModelProvider");
 
 export { CourseAgent } from "./course-agent.js";
 
