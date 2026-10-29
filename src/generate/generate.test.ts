@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { type CourseSnapshot, courseFromSnapshot, isTextBlock } from "../course/compile.js";
 import { buildCourse, MAX_FIX_ROUNDS } from "./build.js";
-import { assessmentSentences, copiedSentence, studioChecks } from "./checks.js";
+import { assessmentSentences, copiedSentence, routeValidationError, studioChecks } from "./checks.js";
 import { EXAM, INPUT, NOTES, spiedModels, totalCalls } from "./fixtures.test-helpers.js";
 import type { PlannedSection } from "./plan.js";
 import { fitParts, thinLines } from "./prompt.js";
@@ -116,6 +116,33 @@ describe("validate → fix rounds", () => {
     const validate = stages(result, "validate");
     assert.equal(validate[0]!.status, "rejected");
     assert.equal(validate.at(-1)!.status, "ok");
+  });
+
+  it("routes the validator's problems to the section or lesson they name", async () => {
+    const snapshot = built(await buildCourse(INPUT, spiedModels(), { review: false, stress: false }));
+    const [l1, l2] = snapshot.lessons;
+    const section = l1!.sections[1]!;
+    const routed = routeValidationError(
+      snapshot,
+      [
+        `Course "${snapshot.course_id}" is invalid:`,
+        `Question "${l2!.quiz[0]!.id}" in "${l2!.id}": it must have exactly one correct option (has 2)`,
+        `Check "${section.blocks.at(-1)!.id}" must have exactly one correct option (has 0)`,
+        `Objective "${snapshot.objectives![0]!.id}" has 1 scored questions`,
+        `Misconception "${snapshot.misconceptions.at(-1)!.id}" is never revealed by any wrong answer`,
+        "Something about the whole course",
+      ].join("\n- "),
+    );
+    assert.deepEqual(
+      routed.map(({ lesson, section }) => ({ lesson, section })),
+      [
+        { lesson: l2!.id, section: undefined },
+        { lesson: undefined, section: section.id },
+        { lesson: l1!.id, section: undefined },
+        { lesson: snapshot.lessons.at(-1)!.id, section: undefined },
+        { lesson: undefined, section: undefined },
+      ],
+    );
   });
 
   it("gives up after the bounded rounds and returns the problems", async () => {
@@ -329,5 +356,32 @@ describe("helpers", () => {
     built(result);
     assert.equal(models.classifier.prompts.length, 1);
     assert.match(models.classifier.prompts[0]!, /<document>\nA bramble clock/);
+  });
+});
+
+describe("small inputs", () => {
+  it("asks for fewer lessons when the material has fewer pages than the minimum", async () => {
+    const models = spiedModels();
+    const result = await buildCourse({ ...INPUT, sources: [{ ...NOTES, pages: NOTES.pages.slice(0, 2) }] }, models, { review: false, stress: false });
+    const snapshot = built(result);
+    assert.match(models.planner.prompts[0]!, /Plan 2 to 8 lessons/);
+    assert.equal(snapshot.lessons.length, 2);
+    assert.ok(result.report.warnings.some((w) => /only 2 page\(s\)/.test(w)));
+  });
+});
+
+describe("budgets on a large input", () => {
+  it("chunks, samples and shortens so that every call fits maxChars", async () => {
+    const page = (n: number) => `Page ${n} explains bramble rule number ${n}. ${"Keepers repeat this rule while they work along the trellis. ".repeat(40)}`;
+    const big = { id: "s1", name: "big-notes.md", pages: Array.from({ length: 60 }, (_, i) => page(i + 1)) };
+    const models = spiedModels();
+    const maxChars = 9_000;
+    const result = await buildCourse({ ...INPUT, sources: [big, EXAM] }, models, { maxChars, stress: false });
+    built(result);
+    for (const [name, model] of Object.entries(models)) {
+      for (const size of model.sizes) assert.ok(size <= maxChars, `${name} call of ${size} characters`);
+    }
+    assert.ok(models.digester.prompts.length > 2, "the material is read in several chunks");
+    assert.ok(result.report.warnings.some((w) => /sample of the material's key ideas/.test(w)));
   });
 });

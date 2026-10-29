@@ -131,3 +131,26 @@ export function studioChecks(snapshot: CourseSnapshot, sources: readonly Source[
   }
   return problems;
 }
+
+/**
+ * Splits a courseFromSnapshot error into its problems and routes each by the first quoted id it names:
+ * a section or block goes to that section (its writer); a lesson, question, misconception or objective
+ * to that lesson (its examiner). Problems that name none stay unrouted.
+ */
+export function routeValidationError(snapshot: CourseSnapshot, error: string): StudioProblem[] {
+  const owner = new Map<string, Omit<StudioProblem, "message">>();
+  for (const l of snapshot.lessons) {
+    owner.set(l.id, { lesson: l.id });
+    for (const item of l.quiz) owner.set(item.id, { lesson: l.id });
+    for (const section of l.sections) {
+      owner.set(section.id, { section: section.id });
+      for (const block of section.blocks) owner.set(block.id, { section: section.id });
+    }
+  }
+  for (const m of snapshot.misconceptions) owner.set(m.id, { lesson: m.lesson });
+  for (const o of snapshot.objectives ?? []) owner.set(o.id, { lesson: o.lesson });
+  return error
+    .split("\n- ")
+    .slice(1)
+    .map((line) => ({ ...[...line.matchAll(/"([^"]+)"/g)].map((match) => owner.get(match[1]!)).find(Boolean), message: line }));
+}

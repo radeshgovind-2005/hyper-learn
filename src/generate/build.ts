@@ -4,7 +4,7 @@ import { type Source, SourceSchema } from "../course/sources.js";
 import type { StructuredFactory } from "../models.js";
 import { assembleSnapshot } from "./assemble.js";
 import { assessmentFromDraft, examinerPrompt, type LessonAssessment } from "./assess.js";
-import { assessmentSentences, studioChecks } from "./checks.js";
+import { assessmentSentences, routeValidationError, studioChecks } from "./checks.js";
 import { type BuilderModels, CallBudgetExceeded, createBuilderModels, ModelCalls } from "./models.js";
 import { type CoursePlan, DEFAULT_PLAN_LIMITS, describePlan, type PlanLimits, type PlannedLesson, type PlannedSection, planFromDraft, plannerPrompt } from "./plan.js";
 import { mapLimit } from "./prompt.js";
@@ -80,7 +80,7 @@ function retryText(agent: AgentName, template: string, draft: unknown, problems:
 export async function buildCourse(input: BuildInput, models: BuilderModels, options: BuildOptions = {}): Promise<BuildResult> {
   const maxChars = options.maxChars ?? DEFAULT_MAX_CHARS;
   const perObjective = options.perObjective ?? 1;
-  const limits: PlanLimits = { ...DEFAULT_PLAN_LIMITS, ...options.limits };
+  let limits: PlanLimits = { ...DEFAULT_PLAN_LIMITS, ...options.limits };
   const concurrency = options.concurrency ?? 4;
   const calls = new ModelCalls(maxChars, options.maxCalls ?? DEFAULT_MAX_CALLS);
   const report: BuildReport = { steps: [], model_calls: 0, warnings: [] };
@@ -125,6 +125,12 @@ export async function buildCourse(input: BuildInput, models: BuilderModels, opti
       return fail(["No key ideas could be read from the teaching material (are the pages empty or images only?)."]);
     }
     const evaluated = digests.filter((d) => d.source.role !== "material");
+    // A two-page handout can't make three lessons: never ask for more lessons than there are material pages.
+    const materialPages = sources.filter((s) => s.role === "material").reduce((n, s) => n + s.pages.filter((p) => p.trim()).length, 0);
+    if (materialPages < limits.minLessons) {
+      limits = { ...limits, minLessons: Math.max(1, materialPages) };
+      warn(`The material has only ${materialPages} page(s), so the course may have fewer than ${DEFAULT_PLAN_LIMITS.minLessons} lessons`);
+    }
 
     // 3. Plan.
     let plan: CoursePlan | undefined;
@@ -219,16 +225,7 @@ export async function buildCourse(input: BuildInput, models: BuilderModels, opti
       try {
         courseFromSnapshot(snapshot);
       } catch (error) {
-        const owner = new Map<string, string>();
-        for (const l of snapshot.lessons) {
-          owner.set(l.id, l.id);
-          for (const item of l.quiz) owner.set(item.id, l.id);
-        }
-        for (const m of snapshot.misconceptions) owner.set(m.id, m.lesson);
-        for (const line of message(error).split("\n- ").slice(1)) {
-          const lesson = [...line.matchAll(/"([^"]+)"/g)].map((match) => owner.get(match[1]!)).find(Boolean);
-          found.push(lesson ? { lesson, message: line } : { message: line });
-        }
+        found.push(...routeValidationError(snapshot, message(error)));
       }
       return found;
     };
