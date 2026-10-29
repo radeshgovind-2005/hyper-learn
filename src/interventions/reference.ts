@@ -1,4 +1,4 @@
-import type { LessonNode } from "../course/compile.js";
+import { isTextBlock, type LessonNode } from "../course/compile.js";
 import type { Draft, Mutation, NodePerformance } from "../state.js";
 import { overlap } from "./checks.js";
 import { exemplarFor } from "./exemplars.js";
@@ -10,7 +10,7 @@ export function bestSection(lesson: LessonNode, text: string): string {
     .filter((s) => !s.archived)
     .map((s) => ({
       id: s.id,
-      score: overlap(text, s.blocks.flatMap((b) => (b.kind !== "intervention" ? [b.markdown] : [])).join(" ")),
+      score: overlap(text, s.blocks.flatMap((b) => (isTextBlock(b) ? [b.markdown] : [])).join(" ")),
     }));
   return scored.reduce((best, s) => (s.score > best.score ? s : best), scored[0]!).id;
 }

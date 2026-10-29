@@ -1,7 +1,7 @@
 import { END } from "@langchain/langgraph";
 import { HumanMessage, SystemMessage } from "@langchain/core/messages";
 import { getAgent, getSystemPrompt, renderTemplate } from "../agents.js";
-import { courseFromSnapshot, liveInterventions } from "../course/compile.js";
+import { courseFromSnapshot, isTextBlock, liveInterventions } from "../course/compile.js";
 import type { Course } from "../course/schema.js";
 import { paraphraseLeaks } from "../guards/guards.js";
 import { checkIntervention } from "../interventions/checks.js";
@@ -126,7 +126,7 @@ export function createReviewContentNode(harness: Harness, model: ContentReviewer
       const { lessonId } = target(state);
       const lesson = store.live().snapshot.lessons.find((l) => l.id === lessonId)!;
       const lessonText = lesson.sections
-        .flatMap((s) => s.blocks.flatMap((b) => (b.kind !== "intervention" && !b.archived ? [b.markdown] : [])))
+        .flatMap((s) => s.blocks.flatMap((b) => (isTextBlock(b) && !b.archived ? [b.markdown] : [])))
         .join("\n");
       logNode("reviewer", "Code checks passed. Reviewing the content...");
       verdict = await model.invoke([

@@ -32,6 +32,8 @@ const base = {
   prompt: z.string().min(1),
   /** Pilot items are shown and recorded but not scored, until their item statistics are known. */
   pilot: z.boolean().default(false),
+  /** The learning objective this item tests (course `objectives`), when the course defines them. */
+  objective: Slug.optional(),
 };
 
 /** Pick exactly one option. */

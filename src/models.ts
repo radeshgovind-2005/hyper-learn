@@ -107,6 +107,9 @@ export function getModel(type: ModelType): ChatOpenAI {
   return model;
 }
 
+/** Makes a schema-bound model. getStructuredModel is one; a per-course provider (with its owner's key) is another. */
+export type StructuredFactory = <T extends Record<string, unknown>>(schema: InteropZodType<T>, name: string, type?: ModelType) => Invokable<T>;
+
 /** A model bound to a Zod schema; `invoke` resolves to the parsed object. */
 export function getStructuredModel<T extends Record<string, unknown>>(
   schema: InteropZodType<T>,

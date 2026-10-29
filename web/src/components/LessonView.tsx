@@ -14,6 +14,8 @@ const TEMPLATE_NAME = { contrast: "Contrast card", practice: "Practice set", ste
 function BlockView({ block, isNew, belief, preview, call }: { block: Block; isNew: boolean; belief: string; preview: boolean; call: Call }) {
   const [open, setOpen] = useState(preview);
   const track = useMemo(() => interventionTracker(call, block.id, "preview"), [call, block.id]);
+  // Section checks get their own view with the exam work; until then they aren't shown.
+  if (block.kind === "check") return null;
   if (block.kind !== "intervention") {
     return <div className={`block prose ${isNew ? "new" : ""} ${block.archived ? "archived" : ""}`} dangerouslySetInnerHTML={html(block.markdown)} />;
   }

@@ -1,7 +1,8 @@
 import type { QuizItem } from "../assessment/items.js";
 import { type Intervention, InterventionSchema } from "../interventions/templates.js";
 import { buildCourse } from "./validate.js";
-import type { Course, MisconceptionDef } from "./schema.js";
+import type { CheckQuestion } from "../interventions/templates.js";
+import type { Citation, Course, ExamConfig, MisconceptionDef, Objective } from "./schema.js";
 
 // The course as a content graph: lessons contain sections, sections contain blocks. Compiled once
 // from the Markdown lessons into release v1.0.0; after that, releases (not the Markdown) are the
@@ -9,7 +10,7 @@ import type { Course, MisconceptionDef } from "./schema.js";
 // its id across releases, so diffs, measurements and learner paths can refer to it.
 
 export type TextKind = "paragraph" | "list" | "code";
-export type BlockKind = TextKind | "intervention";
+export type BlockKind = TextKind | "intervention" | "check";
 
 interface BlockBase {
   /** `<lesson>/<section>/<p|l|c|i><n>`, e.g. `agent-loop/stopping/p1`. */
@@ -21,6 +22,8 @@ export interface TextBlock extends BlockBase {
   kind: TextKind;
   /** The block's Markdown, exactly as it appears in the lesson. */
   markdown: string;
+  /** For generated content: the source pages this block is based on. */
+  cites?: Citation[];
 }
 
 /** A templated intervention aimed at one misconception. Shown to the learners who show that belief. */
@@ -29,7 +32,20 @@ export interface InterventionBlock extends BlockBase {
   intervention: Intervention;
 }
 
-export type Block = TextBlock | InterventionBlock;
+/**
+ * A short practice question right after the text it checks, with feedback on every option. Shown to
+ * everyone, never scored: it's for the learner, and its answers are recorded as evidence.
+ */
+export interface CheckBlock extends BlockBase {
+  kind: "check";
+  check: CheckQuestion;
+  /** The objective it practises, if the course defines objectives. */
+  objective?: string;
+}
+
+export type Block = TextBlock | InterventionBlock | CheckBlock;
+
+export const isTextBlock = (block: Block): block is TextBlock => block.kind !== "intervention" && block.kind !== "check";
 
 export interface Section {
   /** `<lesson>/<slug>`; the text before the first heading is the `intro` section. */
@@ -46,7 +62,10 @@ export interface LessonNode {
   summary: string;
   prerequisites: string[];
   sections: Section[];
+  /** The lesson's exam pool (every item when `exam` is absent). */
   quiz: QuizItem[];
+  /** How an exam is drawn from `quiz`; absent = every item, every attempt. */
+  exam?: ExamConfig;
   archived: boolean;
 }
 
@@ -57,6 +76,8 @@ export interface CourseSnapshot {
   version: string;
   lessons: LessonNode[];
   misconceptions: MisconceptionDef[];
+  /** Learning objectives per lesson; absent for courses that don't define them. */
+  objectives?: Objective[];
 }
 
 export const slugify = (text: string) =>
@@ -66,7 +87,7 @@ export const slugify = (text: string) =>
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-|-$/g, "");
 
-export const KIND_PREFIX: Record<BlockKind, string> = { paragraph: "p", list: "l", code: "c", intervention: "i" };
+export const KIND_PREFIX: Record<BlockKind, string> = { paragraph: "p", list: "l", code: "c", intervention: "i", check: "k" };
 
 /** Splits Markdown into blocks at blank lines, keeping fenced code blocks whole. */
 export function splitBlocks(markdown: string): { kind: TextKind; markdown: string }[] {
@@ -158,7 +179,7 @@ export function renderLesson(lesson: LessonNode): string {
   for (const section of lesson.sections) {
     if (section.archived) continue;
     if (section.title) parts.push(`## ${section.title}`);
-    for (const block of section.blocks) if (!block.archived && block.kind !== "intervention") parts.push(block.markdown);
+    for (const block of section.blocks) if (!block.archived && isTextBlock(block)) parts.push(block.markdown);
   }
   return parts.join("\n\n");
 }

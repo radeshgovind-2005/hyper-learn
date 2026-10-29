@@ -1,7 +1,7 @@
 import { wrongOptions } from "../assessment/answers.js";
 import { checkItem, itemTags, QuizSchema } from "../assessment/items.js";
 import { ancestorsOf, findCycle } from "./graph.js";
-import type { Course, Lesson, LessonMeta, MisconceptionDef, PrereqGraph } from "./schema.js";
+import type { Course, Lesson, LessonMeta, MisconceptionDef, Objective, PrereqGraph } from "./schema.js";
 
 // Course validation and assembly, with no I/O, so it runs anywhere (Node, the Worker, tests).
 
@@ -128,7 +128,7 @@ export function validateCourse(lessons: readonly Lesson[], misconceptions: reado
 }
 
 export function buildCourse(
-  manifest: { id: string; title: string; misconceptions?: MisconceptionDef[] },
+  manifest: { id: string; title: string; misconceptions?: MisconceptionDef[]; objectives?: Objective[] },
   lessons: Lesson[],
 ): Course {
   const misconceptions = manifest.misconceptions ?? [];
@@ -144,6 +144,7 @@ export function buildCourse(
     lessons,
     graph: toGraph(lessons),
     misconceptions,
+    objectives: manifest.objectives ?? [],
     getLesson: (id) => byId.get(id),
     getMisconception: (id) => misconceptionById.get(id),
   };
