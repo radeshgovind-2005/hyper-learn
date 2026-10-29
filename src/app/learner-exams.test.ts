@@ -3,19 +3,16 @@ import { describe, it } from "node:test";
 import { correctResponse, wrongOptions } from "../assessment/answers.js";
 import type { QuizItem } from "../assessment/items.js";
 import { getCourse } from "../course/bundle.js";
-import { studioSnapshot } from "../course/fixtures/studio-course.js";
+import { STUDIO_COURSE_ID, studioSnapshot } from "../course/fixtures/studio-course.js";
 import { realPerformance } from "../measure/real.js";
 import { sqlite } from "../node/sqlite.js";
 import { CourseService } from "./service.js";
 
 const NOW = "2026-10-29T12:00:00.000Z";
 const featured = () => new CourseService(sqlite(), { now: () => NOW });
-/** A service whose releases start from the studio fixture instead of the featured course. */
-function studio() {
-  const s = new CourseService(sqlite(), { now: () => NOW });
-  s.releases.reset(studioSnapshot(), () => NOW);
-  return s;
-}
+/** A service holding the studio fixture as its course. */
+const studio = () =>
+  new CourseService(sqlite(), { now: () => NOW, course: { id: STUDIO_COURSE_ID, base: studioSnapshot(), scenarios: [], exemplars: [] } });
 const ids = (items: readonly QuizItem[]) => items.map((item) => item.id);
 const right = (items: readonly QuizItem[]) => items.map((item) => correctResponse(item));
 const sure = (items: readonly QuizItem[]) => items.map(() => 3 as const);
