@@ -114,6 +114,49 @@ describe("CourseService", () => {
     assert.deepEqual(s.events.forLearner("ada").filter((e) => e.kind === "answer").map((e) => e.release), ["1.0.0", "1.1.0", "1.1.0", "1.1.0"]);
   });
 
+  it("tracks sessions and activity, and summarises them on My progress", async () => {
+    const s = service();
+    s.startSession("ada", "c1");
+    s.track("ada", "c1", { kind: "lesson", lesson: "agent-loop", active_ms: 90_000 });
+    s.submitQuiz("ada", "agent-loop", believerAnswers().answers, believerAnswers().certainty, "c1");
+    s.endSession("ada", "c1");
+
+    const me = s.myProgress("ada");
+    assert.equal(me.totals.sessions, 1);
+    assert.equal(me.totals.quizzes, 1);
+    assert.equal(me.totals.active_ms, 90_000);
+    assert.equal(me.lessons.find((l) => l.lesson === "agent-loop")?.attempts, 1);
+    assert.equal(me.beliefs[0]?.id, "model-executes-actions");
+    assert.equal(me.beliefs[0]?.cleared, false);
+  });
+
+  it("validates activity events against the live release, and rate-limits them", async () => {
+    const s = service();
+    assert.throws(() => s.track("ada", "c1", { kind: "lesson", lesson: "nope", active_ms: 1 }), /No lesson "nope"/);
+    assert.throws(() => s.track("ada", "c1", { kind: "lesson", lesson: "agent-loop", active_ms: 99 * 60_000 }), /Invalid activity event/);
+    assert.throws(() => s.track("ada", "c1", { kind: "intervention", event: "shown", block_id: "x", context: "path" }), /No intervention "x"/);
+    for (let i = 0; i < 60; i++) s.track("ada", "c2", { kind: "lesson", lesson: "agent-loop", active_ms: 1 });
+    assert.throws(() => s.track("ada", "c2", { kind: "lesson", lesson: "agent-loop", active_ms: 1 }), /Too many activity events/);
+  });
+
+  it("records an intervention shown and completed once it's live", async () => {
+    const s = service();
+    await s.startRun({ mode: "autopilot", agents: false });
+    const block = "agent-loop/the-harness-does-the-acting/i1";
+    s.track("ada", "c1", { kind: "intervention", event: "shown", block_id: block, context: "path" });
+    s.track("ada", "c1", { kind: "intervention", event: "completed", block_id: block, context: "path" });
+    assert.deepEqual(s.myProgress("ada").interventions.map((i) => [i.block_id, i.completed]), [[block, true]]);
+  });
+
+  it("deletes only the caller's data", () => {
+    const s = service();
+    s.submitQuiz("ada", "agent-loop", believerAnswers().answers, believerAnswers().certainty);
+    s.submitQuiz("bob", "agent-loop", believerAnswers().answers, believerAnswers().certainty);
+    assert.equal(s.deleteMyData("ada").deleted, 2, "the answer and the path step");
+    assert.equal(s.myProgress("ada").totals.quizzes, 0);
+    assert.equal(s.myProgress("bob").totals.quizzes, 1);
+  });
+
   it("resets to another scenario", () => {
     const s = service();
     s.submitQuiz("ada", "agent-loop", believerAnswers().answers, believerAnswers().certainty);

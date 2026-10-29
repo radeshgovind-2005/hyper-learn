@@ -21,6 +21,7 @@ export function createTables(sql: Sql) {
     data TEXT NOT NULL,
     at TEXT NOT NULL
   )`;
+  sql`CREATE INDEX IF NOT EXISTS hl_events_learner ON hl_events (learner, kind)`;
 }
 
 /** Releases, one JSON row each, in creation order. */
@@ -85,7 +86,11 @@ export class SqlThreadStore implements ThreadStore {
 export interface LearnerEvent {
   id?: number;
   learner: string;
-  kind: "answer" | "path" | "content";
+  /**
+   * answer: a graded quiz · path: the steps the router gave · session: a connection started or ended ·
+   * lesson: active time on a lesson · intervention: one was shown or completed.
+   */
+  kind: "answer" | "path" | "session" | "lesson" | "intervention";
   lesson: string | null;
   release: string;
   data: unknown;
@@ -104,6 +109,16 @@ export class SqlEventLog {
   forLearner(learner: string): LearnerEvent[] {
     return this.sql<{ id: number; learner: string; kind: LearnerEvent["kind"]; lesson: string | null; release: string; data: string; at: string }>`
       SELECT * FROM hl_events WHERE learner = ${learner} ORDER BY id`.map((row) => ({ ...row, data: JSON.parse(row.data) as unknown }));
+  }
+  /** Every learner who has any event, with their latest activity. */
+  learners(): { learner: string; last_at: string }[] {
+    return this.sql<{ learner: string; last_at: string }>`SELECT learner, MAX(at) AS last_at FROM hl_events GROUP BY learner ORDER BY last_at DESC`;
+  }
+  /** Removes one learner's history; returns how many events were deleted. */
+  deleteLearner(learner: string): number {
+    const [{ n }] = this.sql<{ n: number }>`SELECT COUNT(*) AS n FROM hl_events WHERE learner = ${learner}` as [{ n: number }];
+    this.sql`DELETE FROM hl_events WHERE learner = ${learner}`;
+    return n;
   }
   clear() {
     this.sql`DELETE FROM hl_events`;

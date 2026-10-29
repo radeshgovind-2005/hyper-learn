@@ -14,5 +14,12 @@ export interface AgentState {
   overview: Overview | null;
 }
 
+/** Who the server says I am, and what my role allows (see src/app/access.ts). */
+export interface Me {
+  userId: string;
+  role: "learner" | "instructor" | "admin";
+  permissions: string[];
+}
+
 /** Calls a method on the course's Durable Object. */
 export type Call = <T>(method: string, args?: unknown[]) => Promise<T>;

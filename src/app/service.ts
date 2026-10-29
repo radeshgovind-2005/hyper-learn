@@ -1,5 +1,6 @@
 import { Command } from "@langchain/langgraph";
 import { bktMastery, MASTERY_THRESHOLD } from "../analytics/bkt.js";
+import { beliefsOf, interventionsOf, quizHistory, sessionsOf, timePerLesson, TrackEventSchema } from "../analytics/learner.js";
 import { gradeAttempt } from "../analytics/performance.js";
 import { type Grade, gradeItem } from "../assessment/grade.js";
 import type { Certainty, Response } from "../assessment/items.js";
@@ -24,6 +25,9 @@ import { type RunStep, stepFor } from "./timeline.js";
 
 // The application behind the UI, independent of where it runs: the Worker's Durable Object wraps it,
 // tests run it on Node's SQLite. Everything it remembers lives in `sql`.
+
+/** Most activity events one connection may report per minute. */
+export const TRACK_EVENTS_PER_MINUTE = 60;
 
 export interface RunState {
   thread_id: string;
@@ -88,8 +92,6 @@ export interface ServiceOptions {
   newId?: () => string;
   /** Whether a model is configured; without one, runs use the reference stand-ins. */
   agentsAvailable?: boolean;
-  /** Whether changing the course (reset, runs, approvals) needs an admin key. Enforced by the host (the Worker). */
-  adminRequired?: boolean;
   guard?: Guard;
   embedder?: Embedder;
 }
@@ -148,7 +150,6 @@ export class CourseService {
       releases: this.releases.all().map(summarize),
       run: this.run(),
       agentsAvailable: this.options.agentsAvailable ?? false,
-      adminRequired: this.options.adminRequired ?? false,
     };
   }
 
@@ -172,7 +173,7 @@ export class CourseService {
   // ─── Learners ─────────────────────────────────────────────────────
 
   /** Grades a quiz on the live release, records it, and returns the learner's next steps. */
-  submitQuiz(learner: string, lessonId: string, answers: Response[], certainty: Certainty[]): QuizResult {
+  submitQuiz(learner: string, lessonId: string, answers: Response[], certainty: Certainty[], session?: string): QuizResult {
     const live = this.releases.live();
     const course = courseFromSnapshot(live.snapshot);
     const lesson = course.getLesson(lessonId);
@@ -194,8 +195,8 @@ export class CourseService {
     const shown = new Set(steps.flatMap((s) => (s.kind === "intervention" ? [s.block_id] : [])));
 
     const at = this.now();
-    this.events.append({ learner, kind: "answer", lesson: lessonId, release: live.version, data: { responses, certainty, items, passed, score }, at });
-    this.events.append({ learner, kind: "path", lesson: lessonId, release: live.version, data: { steps }, at });
+    this.events.append({ learner, kind: "answer", lesson: lessonId, release: live.version, data: { responses, certainty, items, passed, score, session }, at });
+    this.events.append({ learner, kind: "path", lesson: lessonId, release: live.version, data: { steps, session }, at });
 
     return {
       release: live.version,
@@ -228,6 +229,97 @@ export class CourseService {
         },
       ];
     });
+  }
+
+  // ─── Sessions and activity ────────────────────────────────────────
+
+  /** A connection opened: the start of (or a return to) a visit. */
+  startSession(learner: string, session: string) {
+    this.events.append({ learner, kind: "session", lesson: null, release: this.releases.live().version, data: { event: "start", session }, at: this.now() });
+  }
+
+  /** A connection closed. Its duration runs from its own start. */
+  endSession(learner: string, session: string) {
+    const start = this.events
+      .forLearner(learner)
+      .find((e) => e.kind === "session" && (e.data as { event: string; session: string }).event === "start" && (e.data as { session: string }).session === session);
+    const at = this.now();
+    const duration_ms = start ? Math.max(0, Date.parse(at) - Date.parse(start.at)) : 0;
+    this.events.append({ learner, kind: "session", lesson: null, release: this.releases.live().version, data: { event: "end", session, duration_ms }, at });
+  }
+
+  private readonly trackWindows = new Map<string, { start: number; count: number }>();
+
+  /**
+   * Records activity the browser reports for its own learner: time on a lesson, an intervention shown or
+   * completed. Validated against the live release and rate-limited per connection.
+   */
+  track(learner: string, session: string, raw: unknown) {
+    const parsed = TrackEventSchema.safeParse(raw);
+    if (!parsed.success) throw new Error("Invalid activity event");
+    const event = parsed.data;
+
+    const now = Date.parse(this.now());
+    const window = this.trackWindows.get(session);
+    if (!window || now - window.start > 60_000) this.trackWindows.set(session, { start: now, count: 1 });
+    else if (++window.count > TRACK_EVENTS_PER_MINUTE) throw new Error("Too many activity events; slow down");
+
+    const live = this.releases.live();
+    if (event.kind === "lesson") {
+      if (!live.snapshot.lessons.some((l) => l.id === event.lesson && !l.archived)) throw new Error(`No lesson "${event.lesson}"`);
+      this.events.append({ learner, kind: "lesson", lesson: event.lesson, release: live.version, data: { active_ms: event.active_ms, session }, at: this.now() });
+      return;
+    }
+    const block = liveInterventions(live.snapshot).find((i) => i.block_id === event.block_id);
+    if (!block) throw new Error(`No intervention "${event.block_id}" in v${live.version}`);
+    this.events.append({
+      learner,
+      kind: "intervention",
+      lesson: block.lesson,
+      release: live.version,
+      data: { event: event.event, block_id: event.block_id, misconception: block.intervention.targets, context: event.context, session },
+      at: this.now(),
+    });
+  }
+
+  /** Everything the learner's account shows on "My progress". */
+  myProgress(learner: string) {
+    const events = this.events.forLearner(learner);
+    const course = getCourse();
+    const time = timePerLesson(events);
+    const progress = this.progress(learner);
+    const sessions = sessionsOf(events);
+    const quizzes = quizHistory(events);
+    return {
+      totals: {
+        active_ms: Object.values(time).reduce((a, b) => a + b, 0),
+        sessions: sessions.length,
+        quizzes: quizzes.length,
+        mastered: progress.filter((p) => p.mastered).length,
+        lessons: course.lessons.length,
+      },
+      lessons: course.lessons.map((lesson) => {
+        const p = progress.find((x) => x.lesson === lesson.id);
+        return {
+          lesson: lesson.id,
+          title: lesson.title,
+          active_ms: time[lesson.id] ?? 0,
+          attempts: p?.attempts ?? 0,
+          passed: p?.passed ?? false,
+          mastery: p?.mastery ?? 0,
+          mastered: p?.mastered ?? false,
+        };
+      }),
+      sessions: sessions.reverse().slice(0, 20),
+      quizzes: quizzes.slice(0, 20),
+      beliefs: beliefsOf(events, course.misconceptions),
+      interventions: interventionsOf(events),
+    };
+  }
+
+  /** Removes everything recorded about this learner. Course releases are untouched. */
+  deleteMyData(learner: string) {
+    return { deleted: this.events.deleteLearner(learner) };
   }
 
   // ─── Repair runs ──────────────────────────────────────────────────

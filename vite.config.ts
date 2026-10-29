@@ -5,6 +5,8 @@ import { defineConfig } from "vite";
 // `wrangler dev` on :8787; `npm run build:web` writes web/dist, which the Worker serves as static assets.
 export default defineConfig({
   root: "web",
+  // Read .env from the project root. Only VITE_-prefixed values reach the browser (e.g. the public Clerk key).
+  envDir: "..",
   plugins: [react()],
   build: { outDir: "dist", emptyOutDir: true },
   server: {

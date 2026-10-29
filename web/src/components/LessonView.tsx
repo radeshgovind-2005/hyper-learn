@@ -1,6 +1,7 @@
 import { marked } from "marked";
 import { useMemo, useState } from "react";
-import type { Block, Call, Certainty, CourseSnapshot, QuizResult, Response } from "../types.js";
+import { interventionTracker, useLessonTimer } from "../tracking.js";
+import type { Block, Call, Certainty, CourseSnapshot, Intervention, QuizResult, Response } from "../types.js";
 import { InterventionView } from "./Interventions.js";
 import { QuizFlow } from "./Quiz.js";
 
@@ -10,8 +11,9 @@ const html = (markdown: string) => ({ __html: marked.parse(markdown, { async: fa
 
 const TEMPLATE_NAME = { contrast: "Contrast card", practice: "Practice set", step_through: "Step-through player" } as const;
 
-function BlockView({ block, isNew, belief, preview }: { block: Block; isNew: boolean; belief: string; preview: boolean }) {
+function BlockView({ block, isNew, belief, preview, call }: { block: Block; isNew: boolean; belief: string; preview: boolean; call: Call }) {
   const [open, setOpen] = useState(preview);
+  const track = useMemo(() => interventionTracker(call, block.id, "preview"), [call, block.id]);
   if (block.kind !== "intervention") {
     return <div className={`block prose ${isNew ? "new" : ""} ${block.archived ? "archived" : ""}`} dangerouslySetInnerHTML={html(block.markdown)} />;
   }
@@ -28,11 +30,16 @@ function BlockView({ block, isNew, belief, preview }: { block: Block; isNew: boo
       </div>
       {open && (
         <div className="slot-preview">
-          <InterventionView intervention={block.intervention} />
+          <InterventionView intervention={block.intervention} {...(!preview && { track })} />
         </div>
       )}
     </div>
   );
+}
+
+function PathIntervention({ blockId, intervention, call }: { blockId: string; intervention: Intervention; call: Call }) {
+  const track = useMemo(() => interventionTracker(call, blockId, "path"), [call, blockId]);
+  return <InterventionView intervention={intervention} track={track} />;
 }
 
 function Result({
@@ -42,7 +49,9 @@ function Result({
   onRetake,
   onOpenLesson,
   nextLesson,
+  call,
 }: {
+  call: Call;
   result: QuizResult;
   snapshot: CourseSnapshot;
   beliefOf: (id: string) => string;
@@ -90,7 +99,7 @@ function Result({
                     <span className="chip violet">For you</span>
                     Some answers suggest you think: “{beliefOf(step.misconception)}”
                   </div>
-                  <InterventionView intervention={item.intervention} />
+                  <PathIntervention blockId={item.block_id} intervention={item.intervention} call={call} />
                 </div>
               );
             }
@@ -120,12 +129,11 @@ export function LessonView(props: {
   onBackToLive: () => void;
   approvalWaiting: string | null;
   onReviewApproval: () => void;
-  learner: string;
   call: Call;
   onAnswered: () => void;
   onOpenLesson: (id: string) => void;
 }) {
-  const { snapshot, parent, lessonId, viewingHistory, learner, call } = props;
+  const { snapshot, parent, lessonId, viewingHistory, call } = props;
   const lessons = snapshot.lessons.filter((l) => !l.archived);
   const lesson = lessons.find((l) => l.id === lessonId) ?? lessons[0]!;
   const index = lessons.indexOf(lesson);
@@ -135,6 +143,7 @@ export function LessonView(props: {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  useLessonTimer(lesson.id, call, !viewingHistory);
   const beliefOf = (id: string) => snapshot.misconceptions.find((m) => m.id === id)?.belief ?? id;
   // Blocks that are new in this release, compared with the release it was built on.
   const parentBlocks = useMemo(
@@ -146,7 +155,7 @@ export function LessonView(props: {
     setBusy(true);
     setError(null);
     try {
-      setResult(await call<QuizResult>("submitQuiz", [learner, lesson.id, answers, certainty]));
+      setResult(await call<QuizResult>("submitQuiz", [lesson.id, answers, certainty]));
       props.onAnswered();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -213,6 +222,7 @@ export function LessonView(props: {
                   isNew={parentBlocks !== null && !parentBlocks.has(block.id)}
                   belief={block.kind === "intervention" ? beliefOf(block.intervention.targets) : ""}
                   preview={viewingHistory}
+                  call={call}
                 />
               ))}
           </section>
@@ -228,6 +238,7 @@ export function LessonView(props: {
           {result ? (
             <Result
               result={result}
+              call={call}
               snapshot={snapshot}
               beliefOf={beliefOf}
               nextLesson={next ? { id: next.id, title: next.title } : null}

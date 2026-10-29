@@ -79,13 +79,31 @@ npm run dev                               # terminal 2: Vite on :5173, proxying 
   model calls; the UI says so. With `MODEL_BASE_URL` and `MODEL_API_KEY` set (`.dev.vars` locally,
   `npx wrangler secret put MODEL_API_KEY` deployed), the "Muse Spark" toggle runs the real agents. Point
   `MODEL_BASE_URL` at a Cloudflare AI Gateway to log every model call.
-- Changing the course (reset, runs, approvals) needs the `ADMIN_TOKEN` secret when one is set
-  (`npx wrangler secret put ADMIN_TOKEN`); learners don't need it, and the UI asks for it once per session.
-  Without it, as in local dev, anyone connected can administer: **set it before deploying**.
+- **Accounts (Clerk).** Everything needs sign-in, through a split-screen page (`/sign-in`, `/sign-up`). The
+  browser sends its Clerk session token with the agent connection; the Worker verifies it (networkless, with
+  `CLERK_JWT_KEY`) before anything reaches the Durable Object, which then knows who is on each connection.
+  Roles come from the token's `role` claim (Clerk user public metadata), defaulting to learner:
+
+  | | learner | instructor | admin |
+  | --- | --- | --- | --- |
+  | lessons, quizzes, own progress | ✓ | ✓ | ✓ |
+  | course repair (run, approve), see learners | | ✓ | ✓ |
+  | reset the course, manage roles | | | ✓ |
+
+- **What's recorded per account** (the append-only event log, each event pinned to the release the person saw):
+  connections opening and closing (merged into sessions when less than 30 minutes apart), visible time on each
+  lesson, interventions shown and completed, and every quiz answer with its certainty. The browser can only report
+  its own learner's lesson time and interventions, validated against the live release and rate-limited; everything
+  else is recorded by the server. `/me` ("My progress") shows mastery, time, sessions, quizzes and the beliefs a
+  learner has shown and cleared, and "Delete my data" removes their history.
+
+  Setup: in Clerk, add the session-token claim `{ "role": "{{user.public_metadata.role}}" }` and set your own
+  public metadata to `{ "role": "admin" }`; set `VITE_CLERK_PUBLISHABLE_KEY` (`.env` locally, a GitHub Actions
+  variable for CI) and the Worker secret `CLERK_JWT_KEY` (`.dev.vars` locally).
 - Live at **https://hyperlearn.radesh-govind.com**. `.github/workflows/ci-cd.yml` typechecks, tests and builds every
   push and pull request, and deploys every push to `main` that passes. It needs one repository secret,
   `CLOUDFLARE_API_TOKEN` (a token from Cloudflare's "Edit Cloudflare Workers" template). Worker secrets
-  (`ADMIN_TOKEN`, `MODEL_API_KEY`, `LANGSMITH_API_KEY`) are set once with `wrangler secret put` and survive deploys.
+  (`CLERK_JWT_KEY`, `MODEL_API_KEY`, `LANGSMITH_API_KEY`) are set once with `wrangler secret put` and survive deploys.
 - Manual deploy: `npx wrangler login`, then `npm run deploy`.
 
 ## Setup
