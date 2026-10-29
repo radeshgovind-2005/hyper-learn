@@ -8,6 +8,13 @@ import type { QuizAttempt } from "../simulation/learners.js";
 import { bktMastery, bktUpdate, DEFAULT_BKT } from "./bkt.js";
 import { itemStatistics } from "./items.js";
 import { computePerformance, gradeAttempt } from "./performance.js";
+import { correctResponse, wrongOptions } from "../assessment/answers.js";
+import { drawExam } from "../assessment/exam.js";
+import { courseFromSnapshot } from "../course/compile.js";
+import { studioSnapshot } from "../course/fixtures/studio-course.js";
+import { scenarioPerformance } from "../simulation/index.js";
+import { getScenario } from "../simulation/scenarios.js";
+import { formatPerformanceData } from "../state.js";
 
 describe("BKT", () => {
   it("matches a hand-computed update", () => {
@@ -160,5 +167,36 @@ describe("computePerformance: named misconceptions and broken items", () => {
     const [node] = computePerformance(course, course.graph, sparse);
     assert.deepEqual(node!.excluded_items, ["broken"]);
     assert.equal(node!.fail_rate, 0.5);
+  });
+});
+
+describe("computePerformance: objectives", () => {
+  const course = courseFromSnapshot(studioSnapshot());
+  const lesson = course.getLesson("cache-hits")!;
+  // 40 drawn exams: right on "tell-hit-from-miss", wrong on "compute-hit-ratio".
+  const attempts: QuizAttempt[] = Array.from({ length: 40 }, (_, i) => {
+    const items = drawExam(lesson, course.objectives, { seed: i });
+    return {
+      learner_id: i,
+      lesson_id: lesson.id,
+      item_ids: items.map((item) => item.id),
+      answers: items.map((item) => (item.objective === "compute-hit-ratio" ? wrongOptions(item, lesson.id)[0]!.response : correctResponse(item))),
+      certainty: items.map(() => 2 as const),
+    };
+  });
+  const [node] = computePerformance(course, course.graph, attempts);
+
+  it("reports each objective's miss rate over the answers to its questions", () => {
+    assert.deepEqual(node!.objectives, [
+      { id: "tell-hit-from-miss", miss_rate: 0, responses: 40 },
+      { id: "compute-hit-ratio", miss_rate: 1, responses: 40 },
+    ]);
+  });
+
+  it("leaves objectives out for courses without them, and the Curator's legend as it was", () => {
+    const data = scenarioPerformance(getScenario("control"));
+    assert.ok(data.every((n) => !("objectives" in n)));
+    assert.doesNotMatch(formatPerformanceData(data), /objectives/);
+    assert.match(formatPerformanceData([node!]), /objectives = per learning objective/);
   });
 });

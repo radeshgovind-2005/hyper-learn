@@ -135,6 +135,7 @@ function namedMisconceptions(
  * Grades quiz attempts and summarises each lesson for the Curator. Lessons nobody took are left out.
  * Items with negative discrimination are excluded first, so a broken question can't drive a diagnosis.
  * Wrong answers are attributed to the lesson they reveal a gap in, or to the lesson itself.
+ * Lessons with objectives also get each objective's miss rate (over the attempts that showed its items).
  */
 export function computePerformance(
   course: Course,
@@ -151,8 +152,17 @@ export function computePerformance(
     const wrongBy = new Map<string, number>();
     let wrongTotal = 0;
 
+    const own = course.objectives.filter((o) => o.lesson === lesson.id);
+    const byObjective = new Map(own.map((o): [string, { responses: number; wrong: number }] => [o.id, { responses: 0, wrong: 0 }]));
+
     for (const attempt of lessonAttempts) {
       const { grades, passed } = gradeAttempt(lesson, attempt, excluded);
+      for (const grade of grades) {
+        const counts = grade.objective === undefined ? undefined : byObjective.get(grade.objective);
+        if (!counts) continue;
+        counts.responses++;
+        if (!grade.correct) counts.wrong++;
+      }
       for (const { points_to } of grades.flatMap((grade) => grade.errors)) {
         wrongBy.set(points_to, (wrongBy.get(points_to) ?? 0) + 1);
         wrongTotal++;
@@ -181,6 +191,11 @@ export function computePerformance(
         misconceptions: namedMisconceptions(course, lesson, lessonAttempts, excluded),
         mastery_rate: round2(mastered / lessonAttempts.length),
         excluded_items: [...excluded],
+        ...(own.length > 0 && {
+          objectives: [...byObjective]
+            .filter(([, c]) => c.responses > 0)
+            .map(([id, c]) => ({ id, miss_rate: round2(c.wrong / c.responses), responses: c.responses })),
+        }),
       },
     ];
   });

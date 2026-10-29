@@ -66,6 +66,14 @@ Branch `studio/assessment`. What changed, decisions, and what other workstreams 
 - `liveObjectives(snapshot)` (src/course/compile.ts): objectives of live lessons, with archived sections
   removed. `submitQuiz` passes it to `nextSteps`.
 
+## 5. Analytics
+
+- Sparse item statistics: done in item 1.
+- `NodePerformance.objectives?: { id, miss_rate, responses }[]` (src/state.ts, outside A's listed files,
+  as the plan suggests): only for lessons that have objectives, listing objectives with at least one
+  scored, non-excluded response. `formatPerformanceData` adds one legend clause only when some node has
+  `objectives`, so the featured course's Curator and Reflection prompts are byte-identical.
+
 ## Regression check
 
 Besides `src/eval/reference.test.ts`, I hashed `scenarioPerformance` (5 seeds per scenario),
