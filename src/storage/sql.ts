@@ -34,13 +34,20 @@ export function createTables(sql: Sql) {
 
 /** Releases, one JSON row each, in creation order. */
 export class SqlReleaseStore implements ReleaseStore {
+  /** Without `initial`, an empty store stays empty: a studio course has no release until it's published. */
   constructor(
     private readonly sql: Sql,
-    initial: CourseSnapshot,
+    initial: CourseSnapshot | undefined,
     now = () => new Date().toISOString(),
   ) {
     createTables(sql);
-    if (this.all().length === 0) this.add(initialRelease(initial, now()));
+    if (initial && this.all().length === 0) this.add(initialRelease(initial, now()));
+  }
+
+  /** The first release (v1.0.0), if there is one. */
+  first(): Release | undefined {
+    const [row] = this.sql<{ data: string }>`SELECT data FROM hl_releases ORDER BY seq LIMIT 1`;
+    return row ? (JSON.parse(row.data) as Release) : undefined;
   }
 
   live(): Release {

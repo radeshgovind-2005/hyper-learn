@@ -20,6 +20,10 @@ const GRANTS: Record<Role, readonly Permission[]> = {
   admin: ["learn", "repair", "view_learners", "reset", "manage_roles"],
 };
 
+/** Someone's role in one studio course, stored in that course's object. */
+export const COURSE_ROLES = ["owner", "editor", "learner"] as const;
+export type CourseRole = (typeof COURSE_ROLES)[number];
+
 export const can = (role: Role, permission: Permission) => GRANTS[role].includes(permission);
 
 /** Every permission a role has, for the UI to show or hide controls. */

@@ -1,7 +1,7 @@
-import { Agent, type Connection, type ConnectionContext, callable, getCurrentAgent } from "agents";
+import { Agent, type Connection, type ConnectionContext, callable, getAgentByName, getCurrentAgent } from "agents";
 import { type Permission, permissionsOf, requirePermission } from "../src/app/access.js";
-import { builtInCourse, isBuiltIn } from "../src/app/courses.js";
-import { CourseService, type DataSource, type QuizResult } from "../src/app/service.js";
+import { builtInCourse, DIRECTORY_NAME, isBuiltIn, isStudioId } from "../src/app/courses.js";
+import { CourseService, type DataSource, type DirectoryLink, type QuizResult } from "../src/app/service.js";
 import type { Certainty, Response } from "../src/assessment/items.js";
 import { type Identity, identityFrom } from "../src/auth/identity.js";
 import { checkRoleChange, setClerkRole } from "../src/auth/roles.js";
@@ -33,12 +33,12 @@ export class CourseAgent extends Agent<Env, CourseAgentState> {
 
   /** Whether this object holds a course. The Worker refuses unknown names; this is the second check. */
   private known(): boolean {
-    return isBuiltIn(this.name);
+    return isBuiltIn(this.name) || (isStudioId(this.name) && this.app.initialised());
   }
 
   private get app(): CourseService {
     if (!this.service) {
-      const course = builtInCourse(this.name);
+      const course = builtInCourse(this.name) ?? (isStudioId(this.name) ? "studio" : undefined);
       if (!course) throw new Error("No such course");
       const env = this.env as unknown as Record<string, string | undefined> & { AI?: Ai };
       // LangChain reads LangSmith settings from process.env; Worker vars and secrets arrive on env.
@@ -46,6 +46,7 @@ export class CourseAgent extends Agent<Env, CourseAgentState> {
       const agentsAvailable = Boolean(env.MODEL_API_KEY && env.MODEL_BASE_URL);
       this.service = new CourseService(this.sql.bind(this) as unknown as Sql, {
         course,
+        directory: this.directoryLink(),
         agentsAvailable,
         models: new ModelProvider(modelConfigFromEnv(env)),
         ...(env.AI && { guard: workersAiGuard(env.AI), embedder: workersAiEmbedder(env.AI) }),
@@ -62,6 +63,26 @@ export class CourseAgent extends Agent<Env, CourseAgentState> {
     this.publish();
     // Idempotent: one schedule however often the object wakes.
     await this.scheduleEvery(CourseAgent.TRIAL_CHECK_INTERVAL, "checkTrial");
+  }
+
+  /** The directory, over Durable Object RPC. */
+  private directoryLink(): DirectoryLink {
+    const directory = () => getAgentByName(this.env.DirectoryAgent, DIRECTORY_NAME);
+    return {
+      courseUpdated: async (id, patch) => (await directory()).courseUpdated(id, patch),
+      membershipChanged: async (id, userId, role) => (await directory()).membershipChanged(id, userId, role),
+    };
+  }
+
+  // ─── RPC only (not @callable): the directory ─────────────────────────
+
+  /** Sets up a new studio course. The directory calls this once, right after recording the course. */
+  async initialise(input: { id: string; title: string; description: string; owner: Identity }) {
+    if (input?.id !== this.name) throw new Error("Course id doesn't match this object");
+    const record = this.app.initialise(input);
+    this.publish();
+    await this.scheduleEvery(CourseAgent.TRIAL_CHECK_INTERVAL, "checkTrial");
+    return { id: record.id };
   }
 
   /** Scheduled, not callable by clients: decides an open real trial once both arms have enough learners. */

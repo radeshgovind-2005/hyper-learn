@@ -1,7 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { AsyncLocalStorageProviderSingleton } from "@langchain/core/singletons";
-import { routeAgentRequest } from "agents";
-import { type AgentRoute, routeAllowed } from "../src/app/courses.js";
+import { getAgentByName, routeAgentRequest } from "agents";
+import { type AgentRoute, DIRECTORY_NAME, routeAllowed } from "../src/app/courses.js";
 import { type Identity, roleFrom, verifySessionToken, withIdentity } from "../src/auth/identity.js";
 import { refuseDefaultModels } from "../src/models.js";
 
@@ -13,6 +13,7 @@ AsyncLocalStorageProviderSingleton.initializeGlobalInstance(new AsyncLocalStorag
 refuseDefaultModels("No default models in the Worker: use the course's ModelProvider");
 
 export { CourseAgent } from "./course-agent.js";
+export { DirectoryAgent } from "./directory-agent.js";
 
 interface AuthEnv {
   /** The Clerk instance's JWT public key (PEM): a secret, for networkless token verification. */
@@ -51,8 +52,9 @@ async function authenticate(request: Request, env: AuthEnv): Promise<Request | R
 }
 
 /** Whether a studio course with this id was created by the directory. */
-async function courseExists(_env: Env, _id: string): Promise<boolean> {
-  return false;
+async function courseExists(env: Env, id: string): Promise<boolean> {
+  const directory = await getAgentByName(env.DirectoryAgent, DIRECTORY_NAME);
+  return directory.courseExists(id);
 }
 
 /**

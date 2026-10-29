@@ -1,4 +1,5 @@
 import { Command } from "@langchain/langgraph";
+import { z } from "zod";
 import { bktMastery, MASTERY_THRESHOLD } from "../analytics/bkt.js";
 import { beliefsOf, interventionsOf, quizHistory, sessionsOf, timelineOf, timePerLesson, TrackEventSchema } from "../analytics/learner.js";
 import type { Identity } from "../auth/identity.js";
@@ -23,7 +24,10 @@ import { defaultModels, type ModelProvider } from "../models.js";
 import type { State } from "../state.js";
 import { PersistentMemorySaver } from "../storage/checkpointer.js";
 import { type Sql, SqlEventLog, SqlMeta, SqlProfiles, SqlReleaseStore, SqlThreadStore } from "../storage/sql.js";
-import { builtInCourse, type CourseDefinition, FEATURED_COURSE } from "./courses.js";
+import type { Identity as Person } from "../auth/identity.js";
+import type { CourseRole } from "./access.js";
+import { builtInCourse, type CourseDefinition, FEATURED_COURSE, isStudioId } from "./courses.js";
+import { type CourseDetails, CourseDetailsSchema, type CourseRecord, type CourseStatus, firstIssue } from "./directory.js";
 import { approveWithinCeiling, referenceModels } from "./reference.js";
 import { flushTraces, traceConfig } from "../observability.js";
 import { type RunStep, stepFor } from "./timeline.js";
@@ -124,9 +128,48 @@ export interface RunOptions {
   source?: DataSource;
 }
 
+/** A studio course as its own object stores it. */
+export interface StudioRecord {
+  id: string;
+  title: string;
+  description: string;
+  /** What the owner wants learners to be able to do, in their words: guides the build. */
+  goal: string;
+  /** Language to write in; empty: the material's. */
+  language: string;
+  status: CourseStatus;
+  owner: string;
+  created_at: string;
+}
+
+/** How a course object tells the directory what changed, so course lists stay current. */
+export interface DirectoryLink {
+  courseUpdated(id: string, patch: Partial<Pick<CourseRecord, "title" | "description" | "status">>): Promise<void>;
+  membershipChanged(id: string, userId: string, role: CourseRole | null): Promise<void>;
+}
+
+const DetailsUpdateSchema = z.strictObject({
+  title: CourseDetailsSchema.shape.title.optional(),
+  description: CourseDetailsSchema.shape.description.optional(),
+  goal: z.string().trim().max(2_000).optional(),
+  language: z.string().trim().max(40).optional(),
+});
+
+/** A learner call on a course that has no live release yet. */
+export class NotPublished extends Error {
+  constructor() {
+    super("This course isn't published yet");
+  }
+}
+
 export interface ServiceOptions {
-  /** The course this object holds. Default: the featured course (Node tools and tests). */
-  course?: CourseDefinition;
+  /**
+   * The course this object holds: a built-in definition, or "studio" for a course created in the studio,
+   * whose definition is in this object's storage. Default: the featured course (Node tools and tests).
+   */
+  course?: CourseDefinition | "studio";
+  /** Studio courses report title, status and membership changes here. */
+  directory?: DirectoryLink;
   now?: () => string;
   newId?: () => string;
   /** Whether a model is configured; without one, runs use the reference stand-ins. */
@@ -170,7 +213,8 @@ export class CourseService {
   private readonly saver: PersistentMemorySaver;
   private readonly now: () => string;
   private readonly newId: () => string;
-  private readonly definition: CourseDefinition;
+  /** A built-in course's definition; undefined for a studio course (see definition()). */
+  private readonly fixed?: CourseDefinition;
   private compiled?: Course;
 
   constructor(
@@ -179,9 +223,10 @@ export class CourseService {
   ) {
     this.now = options.now ?? (() => new Date().toISOString());
     this.newId = options.newId ?? (() => crypto.randomUUID());
-    this.definition = options.course ?? builtInCourse(FEATURED_COURSE)!;
+    if (options.course !== "studio") this.fixed = options.course ?? builtInCourse(FEATURED_COURSE)!;
     this.meta = new SqlMeta(sql);
-    this.releases = new SqlReleaseStore(sql, this.startingSnapshot(this.scenarioOf(this.scenario())), this.now);
+    // A studio course has no release until it's published; a built-in one starts from its v1.0.0.
+    this.releases = new SqlReleaseStore(sql, this.fixed && this.startingSnapshot(this.scenarioOf(this.scenario())), this.now);
     this.events = new SqlEventLog(sql);
     this.profiles = new SqlProfiles(sql);
     this.saver = new PersistentMemorySaver(new SqlThreadStore(sql));
@@ -191,27 +236,49 @@ export class CourseService {
 
   /** The current scenario, or "" for a course without simulated learners. */
   scenario(): string {
-    const { scenarios, defaultScenario } = this.definition;
-    return this.meta.get<string>("scenario") ?? defaultScenario ?? scenarios[0]?.id ?? "";
+    const scenarios = this.scenarios();
+    return this.meta.get<string>("scenario") ?? this.fixed?.defaultScenario ?? scenarios[0]?.id ?? "";
+  }
+
+  private scenarios(): readonly Scenario[] {
+    return this.fixed?.scenarios ?? [];
+  }
+
+  /** The course's definition: built in, or for a studio course its published v1.0.0. */
+  private definition(): CourseDefinition {
+    if (this.fixed) return this.fixed;
+    const first = this.releases.first();
+    if (!first) throw new NotPublished();
+    return { id: this.record()?.id ?? first.snapshot.course_id, base: first.snapshot, scenarios: [], exemplars: [] };
+  }
+
+  /** Whether learners can take this course: it has a live release. */
+  published(): boolean {
+    return this.releases.first() !== undefined;
+  }
+
+  private requirePublished() {
+    if (!this.published()) throw new NotPublished();
   }
 
   /** The course as v1.0.0 defines it (lessons, misconceptions), validated once. */
   course(): Course {
-    this.compiled ??= courseFromSnapshot(this.definition.base);
+    this.compiled ??= courseFromSnapshot(this.definition().base);
     return this.compiled;
   }
 
   /** One of this course's scenarios; undefined for "" (none). */
   private scenarioOf(id: string): Scenario | undefined {
     if (!id) return undefined;
-    const scenario = this.definition.scenarios.find((s) => s.id === id);
-    if (!scenario) throw new Error(`Unknown scenario "${id}". Available: ${this.definition.scenarios.map((s) => s.id).join(", ") || "none"}`);
+    const scenario = this.scenarios().find((s) => s.id === id);
+    if (!scenario) throw new Error(`Unknown scenario "${id}". Available: ${this.scenarios().map((s) => s.id).join(", ") || "none"}`);
     return scenario;
   }
 
   /** v1.0.0 as a scenario publishes it (its faults in the prerequisite graph), or the course's own. */
   private startingSnapshot(scenario: Scenario | undefined): CourseSnapshot {
-    return scenario ? scenarioSnapshot(scenario, this.course(), this.definition.base) : structuredClone(this.definition.base);
+    const base = this.definition().base;
+    return scenario ? scenarioSnapshot(scenario, this.course(), base) : structuredClone(base);
   }
 
   run(): RunState | undefined {
@@ -220,9 +287,10 @@ export class CourseService {
 
   overview() {
     return {
+      course: this.courseInfo(),
       scenario: this.scenario(),
-      scenarios: this.definition.scenarios.map((s) => ({ id: s.id, title: s.title, description: s.description })),
-      live: this.releases.live().version,
+      scenarios: this.scenarios().map((s) => ({ id: s.id, title: s.title, description: s.description })),
+      live: this.published() ? this.releases.live().version : null,
       releases: this.releases.all().map(summarize),
       run: this.run(),
       trial: this.trial(),
@@ -232,11 +300,13 @@ export class CourseService {
 
   /** The release learners are served: live, or for half of them the trial while one runs on real learners. */
   servedRelease(learner: string): Release {
+    this.requirePublished();
     const trial = this.openTrial();
     return trial && armOf(learner, trial.version) === "treatment" ? trial : this.releases.live();
   }
 
   myRelease(learner: string): ServedRelease {
+    this.requirePublished();
     const trial = this.openTrial();
     if (!trial) return { version: this.releases.live().version };
     const arm = armOf(learner, trial.version);
@@ -245,6 +315,7 @@ export class CourseService {
 
   /** The full content of a release (default: the live one). */
   snapshot(version?: string): CourseSnapshot {
+    this.requirePublished();
     const release = version ? this.releases.get(version) : this.releases.live();
     if (!release) throw new Error(`No release ${version}`);
     return release.snapshot;
@@ -253,7 +324,8 @@ export class CourseService {
   /** Starts over from a scenario's v1.0.0 (or the course's own, without scenarios): releases, learner history and any run are cleared. */
   reset(scenarioId: string) {
     if (this.run()?.status === "running") throw new Error("A run is in progress; reset once it finishes");
-    const scenario = this.definition.scenarios.length > 0 ? this.scenarioOf(scenarioId) : undefined;
+    this.requirePublished();
+    const scenario = this.scenarios().length > 0 ? this.scenarioOf(scenarioId) : undefined;
     this.meta.set("scenario", scenario?.id ?? "");
     this.meta.set("run", null);
     this.releases.reset(this.startingSnapshot(scenario), this.now);
@@ -325,6 +397,7 @@ export class CourseService {
 
   /** A connection opened: the start of (or a return to) a visit. */
   startSession(learner: string, session: string) {
+    if (!this.published()) return; // an owner working on a draft isn't a visit
     this.events.append({ learner, kind: "session", lesson: null, release: this.releases.live().version, data: { event: "start", session }, at: this.now() });
   }
 
@@ -507,7 +580,7 @@ export class CourseService {
     };
     const models = run.agents
       ? graphModels(this.models())
-      : { assistant: NO_ASSISTANT, ...referenceModels(real ? undefined : scenario, this.diagnosisData(run), this.releases, this.definition.exemplars) };
+      : { assistant: NO_ASSISTANT, ...referenceModels(real ? undefined : scenario, this.diagnosisData(run), this.releases, this.definition().exemplars) };
     return buildGraph(models, { harness, checkpointer: this.saver });
   }
 
@@ -583,7 +656,8 @@ export class CourseService {
     if (current === "awaiting_approval") throw new Error("The current run is waiting for approval; answer it or reset first");
     if (this.openTrial()) throw new Error("A trial is running on real learners; evaluate or stop it first");
     if (agents && !this.options.agentsAvailable) throw new Error("No model is configured, so only reference runs are available");
-    if (source === "simulated" && this.definition.scenarios.length === 0) throw new Error("This course has no simulated learners; run on real learners");
+    this.requirePublished();
+    if (source === "simulated" && this.scenarios().length === 0) throw new Error("This course has no simulated learners; run on real learners");
     const run: RunState = {
       thread_id: this.newId(),
       scenario: this.scenario(),
@@ -715,5 +789,65 @@ export class CourseService {
   /** The long part of an approval claimed with beginApproval. */
   async continueApproval(run: RunState, response: ApprovalResponse, onUpdate?: (run: RunState) => void): Promise<RunState> {
     return this.drive(run, new Command({ resume: response }), onUpdate);
+  }
+
+  // ─── Studio courses ───────────────────────────────────────────────
+
+  /** A studio course's record; undefined for a built-in course or one not initialised yet. */
+  record(): StudioRecord | undefined {
+    return this.fixed ? undefined : this.meta.get<StudioRecord>("course");
+  }
+
+  /** Whether this object holds a course: built in, or a studio course the directory initialised. */
+  initialised(): boolean {
+    return Boolean(this.fixed ?? this.record());
+  }
+
+  private studio(): StudioRecord {
+    const record = this.record();
+    if (!record) throw new Error(this.fixed ? "Built-in courses aren't edited in the studio" : "No such course");
+    return record;
+  }
+
+  /** What every connection shows about the course itself. */
+  courseInfo() {
+    const record = this.record();
+    if (!record) return { id: this.fixed?.id ?? "", title: this.fixed?.base.title ?? "", description: "", status: "published" as CourseStatus, featured: true };
+    return { id: record.id, title: record.title, description: record.description, status: record.status, featured: false };
+  }
+
+  /** Sets up a new studio course: called once, by the directory, right after it recorded the course. */
+  initialise(input: { id: string; owner: Person } & CourseDetails) {
+    if (this.fixed) throw new Error("Built-in courses can't be initialised");
+    if (this.record()) throw new Error("This course already exists");
+    if (!isStudioId(input.id)) throw new Error("Not a studio course id");
+    const parsed = CourseDetailsSchema.safeParse({ title: input.title, description: input.description });
+    if (!parsed.success) throw new Error(firstIssue(parsed.error));
+    const record: StudioRecord = { id: input.id, ...parsed.data, goal: "", language: "", status: "draft", owner: input.owner.userId, created_at: this.now() };
+    this.meta.set("course", record);
+    return record;
+  }
+
+  /** The owner changes the title, description, goal or language. */
+  async updateDetails(input: unknown) {
+    const record = this.studio();
+    const parsed = DetailsUpdateSchema.safeParse(input);
+    if (!parsed.success) throw new Error(firstIssue(parsed.error));
+    const next = { ...record, ...parsed.data };
+    this.meta.set("course", next);
+    if (parsed.data.title !== undefined || parsed.data.description !== undefined) {
+      await this.report((d) => d.courseUpdated(record.id, { title: next.title, description: next.description }));
+    }
+    return this.courseInfo();
+  }
+
+  /** Tells the directory; a failure there is logged, not thrown: this object stays the authority. */
+  private async report(call: (directory: DirectoryLink) => Promise<void>) {
+    if (!this.options.directory) return;
+    try {
+      await call(this.options.directory);
+    } catch (error) {
+      console.error("Couldn't update the directory:", error);
+    }
   }
 }

@@ -15,10 +15,17 @@
     "not_found_handling": "single-page-application",
     "run_worker_first": ["/agents/*"]
   },
+  // One CourseAgent per course (named by course id); one DirectoryAgent ("main") listing courses and members.
   "durable_objects": {
-    "bindings": [{ "name": "CourseAgent", "class_name": "CourseAgent" }]
+    "bindings": [
+      { "name": "CourseAgent", "class_name": "CourseAgent" },
+      { "name": "DirectoryAgent", "class_name": "DirectoryAgent" }
+    ]
   },
-  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["CourseAgent"] }],
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["CourseAgent"] },
+    { "tag": "v2", "new_sqlite_classes": ["DirectoryAgent"] }
+  ],
   // Workers AI: Llama Guard (safety) and bge embeddings (paraphrase checks). Optional at runtime.
   "ai": { "binding": "AI" },
   "observability": { "enabled": true },
