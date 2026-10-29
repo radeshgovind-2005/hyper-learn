@@ -13,6 +13,9 @@ import type { WrittenSection } from "./write.js";
 // misconceptions by number and to prerequisites by the ids it was shown; code assigns every id,
 // checks every tag, and refuses a pool that can't diagnose (a prerequisite or a misconception that no
 // wrong answer reveals) or can't give a fresh retake.
+//
+// One call per objective keeps each answer short (a whole lesson's pool is up to 25 questions). The
+// first call also writes the lesson's misconceptions; the others are given them, so tags agree.
 
 export interface LessonAssessment {
   misconceptions: MisconceptionDef[];
@@ -37,7 +40,19 @@ export interface ExaminerContext {
   perObjective: number;
 }
 
-export function examinerPrompt({ input, lesson, lessons, written, evaluated, perObjective }: ExaminerContext, room: number, retry?: string): string {
+/** Which objective one examiner call writes for (0-based), and the misconceptions the first call wrote. */
+export interface ExaminerPart {
+  objective: number;
+  /** Given to every call but the first, which writes them. */
+  misconceptions?: readonly { name: string; belief: string }[];
+}
+
+export function examinerPrompt(
+  { input, lesson, lessons, written, evaluated, perObjective }: ExaminerContext,
+  room: number,
+  retry?: string,
+  part: ExaminerPart = { objective: 0 },
+): string {
   const prerequisites = lesson.prerequisites.map((id) => {
     const p = lessons.find((l) => l.id === id)!;
     return `- ${id}: ${p.title}. ${p.summary}`;
@@ -47,7 +62,10 @@ export function examinerPrompt({ input, lesson, lessons, written, evaluated, per
     `Course: ${input.title}`,
     `Lesson "${lesson.title}": ${lesson.summary}`,
     `Objectives (set objective to the number):\n${lesson.objectives.map((o, i) => `O${i + 1}: ${o.statement}`).join("\n")}`,
-    `Write ${n} questions per objective (${n * lesson.objectives.length} in all) and ${MIN_MISCONCEPTIONS} to ${MAX_MISCONCEPTIONS} misconceptions. Mix the question types.`,
+    part.misconceptions
+      ? `Misconceptions of this lesson (set misconception to the number; leave misconceptions empty, they are written):\n${part.misconceptions.map((m, i) => `M${i + 1}: ${m.name}: ${m.belief}`).join("\n")}`
+      : `Write ${MIN_MISCONCEPTIONS} to ${MAX_MISCONCEPTIONS} misconceptions for the whole lesson.`,
+    `Write ${n} questions for objective O${part.objective + 1} only. Mix the question types.`,
     prerequisites.length > 0
       ? `Prerequisites (gap ids; most questions need a wrong option tagged with each):\n${prerequisites.join("\n")}`
       : "This lesson has no prerequisites: leave every gap null.",
@@ -70,6 +88,49 @@ export function examinerPrompt({ input, lesson, lessons, written, evaluated, per
     ],
     room,
   );
+}
+
+/** One draft from the per-objective drafts: the first call's misconceptions, every call's questions in order. */
+export function mergeDrafts(parts: readonly AssessmentDraft[]): { draft: AssessmentDraft; owners: number[] } {
+  const owners: number[] = [];
+  const items = parts.flatMap((part, k) =>
+    part.items.map((item) => {
+      owners.push(k);
+      // Code knows which objective each call wrote for.
+      return { ...item, objective: k + 1 };
+    }),
+  );
+  return { draft: { misconceptions: parts[0]?.misconceptions ?? [], items }, owners };
+}
+
+/**
+ * Sends each of a lesson's problems to the examiner call(s) that can fix it: a question's to the call that
+ * wrote it (renumbered as that call saw it), an objective's to its call, the misconceptions' to the first,
+ * and lesson-wide ones (a gap or misconception no question reveals, whole-course checks) to every call.
+ */
+export function problemsByPart(problems: readonly string[], owners: readonly number[], parts: number, lessonId: string): string[][] {
+  const byPart: string[][] = Array.from({ length: parts }, () => []);
+  const local = (n: number) => owners.slice(0, n - 1).filter((k) => k === owners[n - 1]).length + 1;
+  // Lesson ids are slugs made by code, so they need no escaping. The validator names items and objectives by id.
+  const itemId = new RegExp(`"${lessonId}-q(\\d+)"`);
+  const objectiveId = new RegExp(`"${lessonId}-o(\\d+)"`);
+  for (const problem of problems) {
+    const question = /^question (\d+)/.exec(problem) ?? itemId.exec(problem);
+    const objective = /^objective (\d+) has/.exec(problem) ?? objectiveId.exec(problem);
+    const n = Number(question?.[1] ?? 0);
+    const k = Number(objective?.[1] ?? 0);
+    if (n > 0 && owners[n - 1] !== undefined) {
+      // As the call saw it: `Question "l-q7" in "l": …` becomes `question 2 in "l": …`.
+      byPart[owners[n - 1]!]!.push(problem.replace(question![0], `question ${local(n)}`).replace(/^Question question/, "question"));
+    } else if (k > 0 && k <= parts) {
+      byPart[k - 1]!.push(problem);
+    } else if (/^write \d+ to \d+ misconceptions|^misconception \d+ states no belief/.test(problem)) {
+      byPart[0]!.push(problem);
+    } else {
+      for (const list of byPart) list.push(problem);
+    }
+  }
+  return byPart;
 }
 
 /** Builds a lesson's assessment from a draft, or lists every problem to send back. */

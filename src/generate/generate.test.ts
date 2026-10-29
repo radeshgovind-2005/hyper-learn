@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { type CourseSnapshot, courseFromSnapshot, isTextBlock } from "../course/compile.js";
+import { mergeDrafts, problemsByPart } from "./assess.js";
 import { buildCourse, MAX_FIX_ROUNDS } from "./build.js";
 import { assessmentSentences, copiedSentence, routeValidationError, studioChecks } from "./checks.js";
 import { EXAM, INPUT, NOTES, spiedModels, totalCalls } from "./fixtures.test-helpers.js";
 import type { PlannedSection } from "./plan.js";
+import type { AssessmentDraft, ItemDraft } from "./schemas.js";
 import { fitParts, thinLines } from "./prompt.js";
 import { roleFromName } from "./sources.js";
 import { stressTest } from "./stress.js";
@@ -34,10 +36,10 @@ describe("buildCourse (end to end, canned models)", async () => {
     assert.deepEqual(snapshot.lessons[0]!.prerequisites, []);
     assert.deepEqual(snapshot.lessons[2]!.prerequisites, [snapshot.lessons[1]!.id]);
     for (const lesson of snapshot.lessons) {
-      assert.deepEqual(lesson.exam, { per_objective: 1 });
+      assert.deepEqual(lesson.exam, { per_objective: 2 });
       const objectives = snapshot.objectives!.filter((o) => o.lesson === lesson.id);
       assert.ok(objectives.length >= 2);
-      for (const o of objectives) assert.ok(lesson.quiz.filter((item) => item.objective === o.id).length >= 3);
+      for (const o of objectives) assert.ok(lesson.quiz.filter((item) => item.objective === o.id).length >= 5);
       for (const section of lesson.sections) {
         const checks = section.blocks.filter((b) => b.kind === "check");
         assert.equal(checks.length, 1);
@@ -66,8 +68,9 @@ describe("buildCourse (end to end, canned models)", async () => {
   it("classifies by file name without a model call, and counts every call", () => {
     assert.equal(models.classifier.prompts.length, 0);
     assert.equal(result.report.model_calls, totalCalls(models));
-    // 2 digests + plan + 6 sections + 3 lessons + 6 fact checks
-    assert.equal(result.report.model_calls, 18);
+    // 2 digests + plan + 6 sections + 6 objectives (one examiner call each) + 6 fact checks
+    assert.equal(result.report.model_calls, 21);
+    assert.equal(models.examiner.prompts.length, 6);
   });
 
   it("keeps every call within maxChars", () => {
@@ -96,23 +99,25 @@ describe("buildCourse (end to end, canned models)", async () => {
 
 describe("validate → fix rounds", () => {
   it("sends a failing assessment back to the examiner, which repairs it", async () => {
-    let broken = 0;
     const models = spiedModels({
-      // The first draft for the second lesson forgets its prerequisite and gives one question two right answers.
+      // The first drafts for the second lesson forget its prerequisite, and O2's first question has two right answers.
       examiner: (prompt, answer) => {
-        if (!prompt.includes('Lesson "Part 2') || broken++ > 0) return undefined;
+        if (!prompt.includes('Lesson "Part 2') || prompt.includes("REJECTED")) return undefined;
         for (const item of answer.items) for (const o of [...item.options, ...item.wrong_orders]) o.gap = null;
-        answer.items[0]!.options[1]!.correct = true;
+        if (prompt.includes("for objective O2")) answer.items[0]!.options[1]!.correct = true;
         return answer;
       },
     });
     const result = await buildCourse(INPUT, models);
     built(result);
     const part2 = models.examiner.prompts.filter((p) => p.includes('Lesson "Part 2'));
-    assert.equal(part2.length, 2);
-    assert.match(part2[1]!, /REJECTED/);
-    assert.match(part2[1]!, /no wrong option reveals a gap in prerequisite/);
-    assert.match(part2[1]!, /exactly one correct option/);
+    // Both objectives' calls, then both again: a missing gap is the whole lesson's problem.
+    assert.equal(part2.length, 4);
+    const [o1, o2] = [1, 2].map((k) => part2.find((p) => p.includes("REJECTED") && p.includes(`for objective O${k}`))!);
+    for (const retry of [o1!, o2!]) assert.match(retry, /no wrong option reveals a gap in prerequisite/);
+    // The broken question goes back only to the call that wrote it, numbered as that call saw it.
+    assert.match(o2!, /question 1: .*exactly one correct option/);
+    assert.doesNotMatch(o1!, /exactly one correct option/);
     const validate = stages(result, "validate");
     assert.equal(validate[0]!.status, "rejected");
     assert.equal(validate.at(-1)!.status, "ok");
@@ -156,7 +161,8 @@ describe("validate → fix rounds", () => {
     const result = await buildCourse(INPUT, models, { review: false, stress: false });
     assert.equal(result.ok, false);
     assert.ok(!result.ok && result.problems.some((p) => /misconceptions \(there are 0\)/.test(p)));
-    assert.equal(models.examiner.prompts.filter((p) => p.includes('Lesson "Part 3')).length, 1 + MAX_FIX_ROUNDS);
+    // Without misconceptions, both objectives' calls are made again every round.
+    assert.equal(models.examiner.prompts.filter((p) => p.includes('Lesson "Part 3')).length, 2 * (1 + MAX_FIX_ROUNDS));
     assert.equal(stages(result, "done")[0]!.status, "rejected");
   });
 
@@ -274,7 +280,11 @@ describe("assessments are never copied", () => {
     });
     const result = await buildCourse(INPUT, models, { review: false, stress: false });
     const snapshot = built(result);
-    assert.match(models.examiner.prompts.filter((p) => p.includes('Lesson "Part 1'))[1]!, /question 1 copies an assessment question \(s2 p\.1\)/);
+    const retries = models.examiner.prompts.filter((p) => p.includes('Lesson "Part 1') && p.includes("REJECTED"));
+    // Only the call that wrote the copy is asked again.
+    assert.equal(retries.length, 1);
+    assert.match(retries[0]!, /for objective O1/);
+    assert.match(retries[0]!, /question 1 copies an assessment question \(s2 p\.1\)/);
     assert.ok(snapshot.lessons.every((l) => l.quiz.every((item) => !item.prompt.startsWith("Describe how a keeper"))));
   });
 
@@ -313,17 +323,66 @@ describe("stress test", () => {
   it("misses the removed edge when few questions can reveal it, and says so", async () => {
     // Only the first question of each lesson keeps its gap tag: valid, but thin evidence.
     const models = spiedModels({
-      examiner: (_, answer) => {
-        answer.items.slice(1).forEach((item) => [...item.options, ...item.wrong_orders].forEach((o) => (o.gap = null)));
+      examiner: (prompt, answer) => {
+        answer.items.slice(prompt.includes("for objective O1") ? 1 : 0).forEach((item) => [...item.options, ...item.wrong_orders].forEach((o) => (o.gap = null)));
         return answer;
       },
     });
     const result = await buildCourse(INPUT, models, { review: false });
     const snapshot = built(result);
-    assert.ok(result.report.warnings.some((w) => /Only 1 of 6 questions .* can reveal a gap/.test(w)));
+    assert.ok(result.report.warnings.some((w) => /Only 1 of 10 questions .* can reveal a gap/.test(w)));
     const outcome = stressTest(snapshot);
     assert.equal(outcome.outcome, "missed");
     assert.ok(result.report.warnings.some((w) => /^Stress test: /.test(w)));
+  });
+});
+
+describe("one examiner call per objective", () => {
+  const item = (prompt: string): ItemDraft => ({
+    objective: 9,
+    type: "single_choice",
+    prompt,
+    options: [],
+    reason_prompt: null,
+    reasons: [],
+    steps: [],
+    wrong_orders: [],
+  });
+  const part = (prompts: string[], misconceptions: AssessmentDraft["misconceptions"] = []): AssessmentDraft => ({ misconceptions, items: prompts.map(item) });
+
+  it("merges the calls' questions in order, with the first call's misconceptions and each call's objective", () => {
+    const { draft, owners } = mergeDrafts([part(["a", "b"], [{ name: "m", belief: "x" }]), part(["c"], [{ name: "ignored", belief: "y" }])]);
+    assert.deepEqual(draft.items.map((i) => [i.prompt, i.objective]), [["a", 1], ["b", 1], ["c", 2]]);
+    assert.deepEqual(draft.misconceptions.map((m) => m.name), ["m"]);
+    assert.deepEqual(owners, [0, 0, 1]);
+  });
+
+  it("sends each problem to the call that can fix it, numbered as that call saw it", () => {
+    const owners = [0, 0, 1, 1, 1];
+    const byPart = problemsByPart(
+      [
+        "question 4, option 2: gap \"x\" is not a prerequisite",
+        'Question "part-2-q2" in "part-2": it must have exactly one correct option',
+        "objective 2 has 3 questions; write at least 5",
+        'Objective "part-2-o1" has 1 scored questions',
+        "write 2 to 4 misconceptions (there are 0)",
+        'no wrong option reveals a gap in prerequisite "part-1"; tag one in most questions',
+      ],
+      owners,
+      2,
+      "part-2",
+    );
+    assert.deepEqual(byPart[0], [
+      'question 2 in "part-2": it must have exactly one correct option',
+      'Objective "part-2-o1" has 1 scored questions',
+      "write 2 to 4 misconceptions (there are 0)",
+      'no wrong option reveals a gap in prerequisite "part-1"; tag one in most questions',
+    ]);
+    assert.deepEqual(byPart[1], [
+      "question 2, option 2: gap \"x\" is not a prerequisite",
+      "objective 2 has 3 questions; write at least 5",
+      'no wrong option reveals a gap in prerequisite "part-1"; tag one in most questions',
+    ]);
   });
 });
 

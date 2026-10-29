@@ -85,8 +85,12 @@ const ITEM_TYPES = ["single_choice", "multi_select", "two_tier", "ordering"] as 
 
 export function cannedAssessment(prompt: string): AssessmentDraft {
   const lesson = /Lesson "([^"]+)"/.exec(prompt)?.[1] ?? "the lesson";
-  const objectives = [...prompt.matchAll(/^O(\d+): (.+)$/gm)].map(([, n, statement]) => ({ n: Number(n), statement: statement! }));
-  const perObjective = Number(/Write (\d+) questions per objective/.exec(prompt)?.[1] ?? 3);
+  // One objective per call: the one the prompt names.
+  const target = Number(/Write \d+ questions for objective O(\d+)/.exec(prompt)?.[1] ?? 0);
+  const objectives = [...prompt.matchAll(/^O(\d+): (.+)$/gm)]
+    .map(([, n, statement]) => ({ n: Number(n), statement: statement! }))
+    .filter(({ n }) => !target || n === target);
+  const perObjective = Number(/Write (\d+) questions for objective/.exec(prompt)?.[1] ?? 3);
   const block = /Prerequisites \(gap ids[^\n]*\n((?:- [^\n]*\n?)+)/.exec(prompt)?.[1] ?? "";
   const prereqs = [...block.matchAll(/^- ([a-z0-9]+(?:-[a-z0-9]+)*): /gm)].map((m) => m[1]!);
   const misconceptions = [1, 2].map((k) => ({ name: `${words(lesson, 3)} mix-up ${k}`, belief: `Belief ${k}: ${lesson} works the other way round.` }));

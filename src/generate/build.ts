@@ -3,7 +3,7 @@ import { type CourseSnapshot, courseFromSnapshot } from "../course/compile.js";
 import { type Source, SourceSchema } from "../course/sources.js";
 import type { StructuredFactory } from "../models.js";
 import { assembleSnapshot } from "./assemble.js";
-import { assessmentFromDraft, examinerPrompt, type LessonAssessment } from "./assess.js";
+import { assessmentFromDraft, examinerPrompt, type LessonAssessment, mergeDrafts, problemsByPart } from "./assess.js";
 import { assessmentSentences, routeValidationError, studioChecks } from "./checks.js";
 import { type BuilderModels, CallBudgetExceeded, createBuilderModels, ModelCalls } from "./models.js";
 import { type CoursePlan, DEFAULT_PLAN_LIMITS, describePlan, type PlanLimits, type PlannedLesson, type PlannedSection, planFromDraft, plannerPrompt } from "./plan.js";
@@ -31,7 +31,7 @@ export interface BuildOptions {
   onStep?: (step: BuildStep) => void;
   maxChars?: number;
   maxCalls?: number;
-  /** Exam items per objective (ExamConfig.per_objective). */
+  /** Exam items per objective (ExamConfig.per_objective). Default 2: with one, a single slip fails a short exam. */
   perObjective?: number;
   limits?: Partial<PlanLimits>;
   /** Fact-check every section with a model (default true). */
@@ -79,7 +79,7 @@ function retryText(agent: AgentName, template: string, draft: unknown, problems:
 
 export async function buildCourse(input: BuildInput, models: BuilderModels, options: BuildOptions = {}): Promise<BuildResult> {
   const maxChars = options.maxChars ?? DEFAULT_MAX_CHARS;
-  const perObjective = options.perObjective ?? 1;
+  const perObjective = options.perObjective ?? 2;
   let limits: PlanLimits = { ...DEFAULT_PLAN_LIMITS, ...options.limits };
   const concurrency = options.concurrency ?? 4;
   const calls = new ModelCalls(maxChars, options.maxCalls ?? DEFAULT_MAX_CALLS);
@@ -181,25 +181,56 @@ export async function buildCourse(input: BuildInput, models: BuilderModels, opti
       sectionUnits.set(section.id, await writeSection(lesson, section));
     });
 
-    // 5. Assess.
+    // 5. Assess: one examiner call per objective; the first also writes the lesson's misconceptions.
     const sentences = assessmentSentences(sources);
     const lessonUnits = new Map<string, Unit<LessonAssessment, AssessmentDraft>>();
+    /** Per lesson: each objective's latest draft, and which call wrote each question of the merged pool. */
+    const examParts = new Map<string, { drafts: (AssessmentDraft | undefined)[]; owners: number[] }>();
     const assessLesson = async (lesson: PlannedLesson, problems?: string[]) => {
-      const room = calls.room("examiner");
-      const extra = problems && retryText("examiner", "fix", lessonUnits.get(lesson.id)?.draft, problems, room);
+      const parts = lesson.objectives.length;
+      const previous = examParts.get(lesson.id);
+      const byPart = problems && previous ? problemsByPart(problems, previous.owners, parts, lesson.id) : undefined;
+      const drafts = previous ? [...previous.drafts] : Array.from({ length: parts }, (): AssessmentDraft | undefined => undefined);
+      const failed: string[] = [];
+      const context = { input, lesson, lessons, written: written(), evaluated, perObjective };
+      const examine = async (k: number, misconceptions?: AssessmentDraft["misconceptions"]) => {
+        const room = calls.room("examiner");
+        const fix = byPart?.[k] ?? [];
+        const extra = fix.length > 0 ? retryText("examiner", "fix", drafts[k], fix, room) : undefined;
+        try {
+          drafts[k] = await calls.invoke(models.examiner, "examiner", examinerPrompt(context, room, extra, { objective: k, ...(misconceptions && { misconceptions }) }));
+        } catch (error) {
+          if (error instanceof CallBudgetExceeded) throw error;
+          drafts[k] = undefined;
+          // Phrased so a retry goes to this objective's call only (see problemsByPart).
+          failed.push(`objective ${k + 1} has no questions: the examiner's call failed: ${message(error)}`);
+        }
+      };
+      // New misconceptions mean every call's tags are stale, so all calls are made again. Otherwise only
+      // the calls with problems are, and the first keeps the misconceptions the others were given.
+      const fresh = !byPart || !drafts[0] || byPart[0]!.some((p) => /^write \d+ to \d+ misconceptions|^misconception \d+ states no belief/.test(p));
+      let misconceptions = fresh ? undefined : drafts[0]!.misconceptions;
+      if (fresh) {
+        await examine(0);
+        misconceptions = drafts[0]?.misconceptions;
+      }
+      const todo = Array.from({ length: parts }, (_, k) => k).filter((k) => (fresh ? k > 0 : !drafts[k] || byPart![k]!.length > 0));
+      if (drafts[0]) await mapLimit(todo, concurrency, (k) => examine(k, misconceptions));
+      if (!fresh && drafts[0] && misconceptions) drafts[0] = { ...drafts[0], misconceptions };
+
       let unit: Unit<LessonAssessment, AssessmentDraft>;
-      try {
-        const prompt = examinerPrompt({ input, lesson, lessons, written: written(), evaluated, perObjective }, room, extra);
-        const draft = await calls.invoke(models.examiner, "examiner", prompt);
+      if (failed.length > 0 || drafts.some((d) => !d)) {
+        examParts.set(lesson.id, { drafts, owners: previous?.owners ?? [] });
+        unit = { problems: failed.length > 0 ? failed : ["the examiner wrote no misconceptions, so the other objectives weren't examined"], warnings: [] };
+      } else {
+        const merged = mergeDrafts(drafts as AssessmentDraft[]);
+        examParts.set(lesson.id, { drafts, owners: merged.owners });
         // Misconception ids must be unique across lessons: taken = the other lessons' current ones.
         const takenMisconceptions = new Set(
           [...lessonUnits].flatMap(([id, u]) => (id === lesson.id ? [] : (u.value?.misconceptions ?? []).map((m) => m.id))),
         );
-        const result = assessmentFromDraft(draft, lesson, { perObjective, takenMisconceptions, sentences });
-        unit = { ...(result.assessment && { value: result.assessment }), draft, problems: result.problems, warnings: result.warnings };
-      } catch (error) {
-        if (error instanceof CallBudgetExceeded) throw error;
-        unit = { problems: [`the examiner's call failed: ${message(error)}`], warnings: [] };
+        const result = assessmentFromDraft(merged.draft, lesson, { perObjective, takenMisconceptions, sentences });
+        unit = { ...(result.assessment && { value: result.assessment }), draft: merged.draft, problems: result.problems, warnings: result.warnings };
       }
       // Set before any other conversion can run, so the next lesson sees these misconception ids as taken.
       lessonUnits.set(lesson.id, unit);

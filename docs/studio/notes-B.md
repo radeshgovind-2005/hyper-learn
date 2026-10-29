@@ -18,7 +18,7 @@ createBuilderModels(structured: StructuredFactory): BuilderModels
 formatReport(input: BuildInput, result: BuildResult): string   // Markdown for the owner
 ```
 
-`BuildOptions`: `onStep`, `maxChars` (24 000), `maxCalls` (400), `perObjective` (1), `limits` (3–8 lessons,
+`BuildOptions`: `onStep`, `maxChars` (24 000), `maxCalls` (400), `perObjective` (2, changed at integration), `limits` (3–8 lessons,
 2–5 objectives), `review` (true), `stress` (true), `concurrency` (4). The Phase 0 contract in `types.ts` is
 unchanged. `ok: true` carries a v1.0.0 snapshot that `courseFromSnapshot` accepts; publishing it is the app's job.
 
@@ -30,7 +30,7 @@ unchanged. `ok: true` carries a v1.0.0 snapshot that `courseFromSnapshot` accept
 | 2 Digest | `sources.ts` `digestSource`: consecutive pages packed into chunks that fit; points keep only pages that were in the chunk; assessment/brief points that copy the document's own sentences are dropped | 1 per chunk |
 | 3 Plan | `plan.ts`: `planner` sees key ideas as `[s1 p.3] idea` lines (sampled evenly if too many) and what assessments evaluate; code slugs ids, checks counts, page refs, prerequisites (only earlier lessons, so the graph is a DAG by construction), objective → section refs | 1 (+≤3 fixes) |
 | 4 Write | `write.ts`: `writer` per section, sees only that section's pages; each block must cite one of them; Markdown sanitized; the practice question becomes a check block | 1 per section |
-| 5 Assess | `assess.ts`: `examiner` per lesson writes 2–4 misconceptions and `2×per_objective+1` items per objective; refers to objectives and misconceptions by number, prerequisites by the ids shown; code assigns ids and checks every tag | 1 per lesson |
+| 5 Assess | `assess.ts`: `examiner` once per objective writes `2×per_objective+1` items; the first call also writes the lesson's 2–4 misconceptions, the others are given them; code merges the drafts, assigns ids and checks every tag | 1 per objective |
 | 6 Validate | `build.ts` + `assemble.ts` + `checks.ts`: per-unit problems, then `studioChecks` and `courseFromSnapshot` on the assembled snapshot; problems go back to the writer (per section) or examiner (per lesson), ≤3 rounds, else `ok: false` | fixes only |
 | 7 Review | `review.ts`: `fact_checker` per section against its cited pages; a doubted section is rewritten once and checked again; still doubted = warning; a rewrite that breaks a rule is reverted | 1 per section (+2 per doubted one) |
 | 8 Stress | `stress.ts`: removes one real edge, `simulate` → `computePerformance` → `referenceCurator`; miss = warning | 0 |
@@ -40,8 +40,8 @@ included), stops the build at `maxCalls` (`CallBudgetExceeded` → `ok: false`),
 and counts calls for `report.model_calls`. A per-section or per-lesson call that still fails becomes a
 problem for the next fix round instead of ending the build. Calls run up to `concurrency` at a time.
 
-Typical cost: digest chunks + 1 plan + S sections + L lessons + S fact checks, e.g. ~45 calls for 5 lessons,
-15 sections and 6 chunks of material, before fixes.
+Typical cost: digest chunks + 1 plan + S sections + O objectives + S fact checks, e.g. ~55 calls for 5 lessons,
+15 sections, 15 objectives and 6 chunks of material, before fixes.
 
 ## Decisions
 
@@ -130,8 +130,9 @@ per attempt is what matters, not the pool total; the warning still measures the 
 - **Untested against a real model.** Prompts are designed, not tuned; expect fix rounds on the first runs,
   mostly on the examiner (tag discipline, two-tier/ordering fields, counts). If a lesson can't converge in
   3 rounds the whole build fails; dropping or re-planning that lesson would be a better fallback.
-- **One examiner call per lesson** writes up to 15 items plus misconceptions: a long structured output.
-  Weaker models may need one call per objective (the conversion code already works per item).
+- **One examiner call per objective** (since integration): 5 items each at `per_objective: 2`. Fix rounds
+  re-ask only the calls whose questions have problems (`problemsByPart`), except that new misconceptions
+  re-ask every call of that lesson, since their tags would be stale.
 - **Fact checking is a model's judgement** of claims against (possibly shortened) pages. Long pages are
   cut proportionally to fit `maxChars`, so the writer and checker may not see a whole page; citations
   still point at the page.
