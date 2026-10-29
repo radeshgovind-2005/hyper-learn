@@ -28,9 +28,9 @@ If proposer and reviewer are the same model, they share the same blind spots. Us
     "id": "reflection-q1",
     "prompt": "What does a reflection step do?",
     "options": [
-      { "text": "The same agent repeats its answer twice." },
+      { "text": "The same agent repeats its answer twice.", "misconception": "reflection-is-repetition" },
       { "text": "A reviewer checks a proposal against explicit criteria and approves it or sends it back with a critique.", "correct": true },
-      { "text": "The supervisor reroutes the work to a random agent.", "reveals_gap_in": "multi-agent" },
+      { "text": "The supervisor reroutes the work to a random agent.", "reveals_gap_in": "multi-agent", "misconception": "supervisor-routes-randomly" },
       { "text": "It lowers the temperature." }
     ]
   },
@@ -38,18 +38,18 @@ If proposer and reviewer are the same model, they share the same blind spots. Us
     "id": "reflection-q2",
     "prompt": "Why cap the number of reflection attempts?",
     "options": [
-      { "text": "Shared state can only hold two proposals.", "reveals_gap_in": "multi-agent" },
+      { "text": "Shared state can only hold two proposals.", "reveals_gap_in": "multi-agent", "misconception": "shared-state-capacity" },
       { "text": "Models refuse to answer after two attempts." },
       { "text": "Proposer and reviewer may never agree; a cap guarantees the loop ends.", "correct": true },
-      { "text": "There is no reason; retries are free." }
+      { "text": "There is no reason; retries are free.", "misconception": "retries-are-free" }
     ]
   },
   {
     "id": "reflection-q3",
     "prompt": "Why run code checks before the reviewer model?",
     "options": [
-      { "text": "Code checks replace the reviewer completely." },
-      { "text": "LLMs cannot read JSON.", "reveals_gap_in": "structured-output" },
+      { "text": "Code checks replace the reviewer completely.", "misconception": "code-checks-replace-review" },
+      { "text": "LLMs cannot read JSON.", "reveals_gap_in": "structured-output", "misconception": "models-cant-read-json" },
       { "text": "Code checks make the model smarter." },
       { "text": "They catch invalid proposals instantly and exactly, so the model only judges what needs judgement.", "correct": true }
     ]
@@ -59,8 +59,8 @@ If proposer and reviewer are the same model, they share the same blind spots. Us
     "prompt": "How does the critique reach the proposer on its next attempt?",
     "options": [
       { "text": "It is stored in shared state and included in the proposer's next prompt.", "correct": true },
-      { "text": "Each agent keeps private memory that the others can read.", "reveals_gap_in": "multi-agent" },
-      { "text": "The proposer remembers it automatically between calls." },
+      { "text": "Each agent keeps private memory that the others can read.", "reveals_gap_in": "multi-agent", "misconception": "agents-have-private-memory" },
+      { "text": "The proposer remembers it automatically between calls.", "misconception": "llm-has-memory", "reveals_gap_in": "llm-basics" },
       { "text": "The reviewer edits the proposer's tools." }
     ]
   }

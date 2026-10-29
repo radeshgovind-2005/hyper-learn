@@ -1,0 +1,1431 @@
+{
+  "course_id": "agentic-coding",
+  "title": "Agentic Coding",
+  "version": "1.0.0",
+  "misconceptions": [
+    {
+      "id": "llm-has-memory",
+      "lesson": "llm-basics",
+      "belief": "The model remembers earlier calls and conversations by itself."
+    },
+    {
+      "id": "llm-looks-up-answers",
+      "lesson": "llm-basics",
+      "belief": "The model looks answers up in a database or copies them from its training data."
+    },
+    {
+      "id": "llm-runs-code",
+      "lesson": "llm-basics",
+      "belief": "The model can run code or carry out actions inside itself."
+    },
+    {
+      "id": "llm-output-guaranteed",
+      "lesson": "llm-basics",
+      "belief": "If the prompt or schema asks for something, the model's output is guaranteed to comply."
+    },
+    {
+      "id": "model-executes-actions",
+      "lesson": "agent-loop",
+      "belief": "The model carries out the actions it chooses, so an action's result comes straight from the model."
+    },
+    {
+      "id": "loop-ends-after-action",
+      "lesson": "agent-loop",
+      "belief": "An agent stops after one action; the action's result is the final answer."
+    },
+    {
+      "id": "loop-always-terminates",
+      "lesson": "agent-loop",
+      "belief": "The model always knows when it is done, so the loop needs no iteration cap."
+    },
+    {
+      "id": "agent-runs-own-tools",
+      "lesson": "tool-calling",
+      "belief": "Whichever agent requests a tool also executes it, inside the model or the supervisor."
+    },
+    {
+      "id": "model-reads-tool-code",
+      "lesson": "tool-calling",
+      "belief": "The model learns what a tool does by reading its source code."
+    },
+    {
+      "id": "free-text-handoff",
+      "lesson": "structured-output",
+      "belief": "Free text is as reliable as structured output for passing data between programs or agents."
+    },
+    {
+      "id": "models-cant-read-json",
+      "lesson": "structured-output",
+      "belief": "Models can't read or write JSON reliably at all."
+    },
+    {
+      "id": "optional-not-nullable",
+      "lesson": "structured-output",
+      "belief": "In a strict schema, a field that may have no value should be optional or left out."
+    },
+    {
+      "id": "patch-invalid-output",
+      "lesson": "structured-output",
+      "belief": "Invalid model output can be patched with defaults and used."
+    },
+    {
+      "id": "agents-have-private-memory",
+      "lesson": "multi-agent",
+      "belief": "Each agent keeps its own memory that the other agents can read."
+    },
+    {
+      "id": "supervisor-routes-randomly",
+      "lesson": "multi-agent",
+      "belief": "The supervisor hands work to agents at random."
+    },
+    {
+      "id": "shared-state-capacity",
+      "lesson": "multi-agent",
+      "belief": "Shared state can only hold a small fixed number of items."
+    },
+    {
+      "id": "reflection-is-repetition",
+      "lesson": "reflection",
+      "belief": "Reflection means the same agent repeating or re-reading its answer."
+    },
+    {
+      "id": "retries-are-free",
+      "lesson": "reflection",
+      "belief": "Review loops need no cap because retries cost nothing."
+    },
+    {
+      "id": "code-checks-replace-review",
+      "lesson": "reflection",
+      "belief": "Code checks make a reviewer model unnecessary."
+    }
+  ],
+  "lessons": [
+    {
+      "id": "llm-basics",
+      "title": "LLM Basics",
+      "summary": "Tokens, next-token prediction, chat messages, context windows and why the API is stateless.",
+      "prerequisites": [],
+      "sections": [
+        {
+          "id": "llm-basics/intro",
+          "title": "",
+          "archived": false,
+          "blocks": [
+            {
+              "id": "llm-basics/intro/p1",
+              "kind": "paragraph",
+              "markdown": "A large language model (LLM) generates text one **token** at a time. A token is a chunk of text, often part of a word. At each step the model looks at every token so far and produces a probability for every possible next token. One token is picked, appended, and the process repeats. That is all generation is: repeated next-token prediction.",
+              "archived": false
+            }
+          ]
+        },
+        {
+          "id": "llm-basics/chat-messages",
+          "title": "Chat messages",
+          "archived": false,
+          "blocks": [
+            {
+              "id": "llm-basics/chat-messages/p1",
+              "kind": "paragraph",
+              "markdown": "Chat models take a list of **messages**, each with a role:",
+              "archived": false
+            },
+            {
+              "id": "llm-basics/chat-messages/l1",
+              "kind": "list",
+              "markdown": "- **system**: instructions that shape the model's behaviour (\"You are a helpful tutor…\").\n- **user**: what the person asked.\n- **assistant**: what the model said earlier.",
+              "archived": false
+            },
+            {
+              "id": "llm-basics/chat-messages/p2",
+              "kind": "paragraph",
+              "markdown": "The model continues the conversation by writing the next assistant message.",
+              "archived": false
+            }
+          ]
+        },
+        {
+          "id": "llm-basics/the-context-window",
+          "title": "The context window",
+          "archived": false,
+          "blocks": [
+            {
+              "id": "llm-basics/the-context-window/p1",
+              "kind": "paragraph",
+              "markdown": "The model can only consider a limited number of tokens at once: its **context window**. The prompt *and* the generated answer must both fit. Anything outside the window simply does not exist for the model.",
+              "archived": false
+            }
+          ]
+        },
+        {
+          "id": "llm-basics/the-api-is-stateless",
+          "title": "The API is stateless",
+          "archived": false,
+          "blocks": [
+            {
+              "id": "llm-basics/the-api-is-stateless/p1",
+              "kind": "paragraph",
+              "markdown": "The model keeps no memory between calls. If you want it to remember the conversation, your program must send the whole history again with every request. \"Memory\" in an LLM app is always something your code provides.",
+              "archived": false
+            }
+          ]
+        },
+        {
+          "id": "llm-basics/temperature",
+          "title": "Temperature",
+          "archived": false,
+          "blocks": [
+            {
+              "id": "llm-basics/temperature/p1",
+              "kind": "paragraph",
+              "markdown": "**Temperature** controls how the next token is picked. At 0 the model almost always picks the most likely token, so output is close to deterministic. Higher values sample more freely, giving more varied text and more mistakes.",
+              "archived": false
+            }
+          ]
+        }
+      ],
+      "quiz": [
+        {
+          "type": "single_choice",
+          "id": "llm-basics-q1",
+          "prompt": "What does an LLM do at each step of generating text?",
+          "pilot": false,
+          "options": [
+            {
+              "text": "It looks the answer up in a database of facts.",
+              "correct": false,
+              "misconception": "llm-looks-up-answers"
+            },
+            {
+              "text": "It predicts a probability for every possible next token and picks one.",
+              "correct": true
+            },
+            {
+              "text": "It runs code to compute the answer.",
+              "correct": false,
+              "misconception": "llm-runs-code"
+            },
+            {
+              "text": "It copies the most similar sentence from its training data.",
+              "correct": false,
+              "misconception": "llm-looks-up-answers"
+            }
+          ]
+        },
+        {
+          "type": "single_choice",
+          "id": "llm-basics-q2",
+          "prompt": "What is the context window?",
+          "pilot": false,
+          "options": [
+            {
+              "text": "The part of the screen where the chat is shown.",
+              "correct": false
+            },
+            {
+              "text": "How long the model remembers a user between sessions.",
+              "correct": false,
+              "misconception": "llm-has-memory"
+            },
+            {
+              "text": "The number of past conversations stored on the server.",
+              "correct": false,
+              "misconception": "llm-has-memory"
+            },
+            {
+              "text": "The maximum number of tokens the model can consider in one call, prompt and answer together.",
+              "correct": true
+            }
+          ]
+        },
+        {
+          "type": "single_choice",
+          "id": "llm-basics-q3",
+          "prompt": "Why does a chat app send the whole conversation with every request?",
+          "pilot": false,
+          "options": [
+            {
+              "text": "The API is stateless: the model keeps no memory between calls.",
+              "correct": true
+            },
+            {
+              "text": "To make the model answer faster.",
+              "correct": false
+            },
+            {
+              "text": "Because the server deletes messages after an hour.",
+              "correct": false
+            },
+            {
+              "text": "It doesn't; the model stores the conversation itself.",
+              "correct": false,
+              "misconception": "llm-has-memory"
+            }
+          ]
+        },
+        {
+          "type": "single_choice",
+          "id": "llm-basics-q4",
+          "prompt": "What does setting temperature to 0 do?",
+          "pilot": false,
+          "options": [
+            {
+              "text": "Makes the model refuse to answer.",
+              "correct": false
+            },
+            {
+              "text": "Shortens the answer.",
+              "correct": false
+            },
+            {
+              "text": "Makes output close to deterministic by picking the most likely tokens.",
+              "correct": true
+            },
+            {
+              "text": "Turns off the context window.",
+              "correct": false
+            }
+          ]
+        }
+      ],
+      "archived": false
+    },
+    {
+      "id": "agent-loop",
+      "title": "The Agent Loop",
+      "summary": "An agent is a model in a loop: decide, act, observe the result, repeat until done.",
+      "prerequisites": [
+        "llm-basics"
+      ],
+      "sections": [
+        {
+          "id": "agent-loop/intro",
+          "title": "",
+          "archived": false,
+          "blocks": [
+            {
+              "id": "agent-loop/intro/p1",
+              "kind": "paragraph",
+              "markdown": "A single model call answers once. An **agent** keeps going: it decides on an action, the action runs, the agent looks at the result, and it decides again. It stops when it judges the task is done.",
+              "archived": false
+            },
+            {
+              "id": "agent-loop/intro/c1",
+              "kind": "code",
+              "markdown": "```\ndecide → act → observe → decide → … → done\n```",
+              "archived": false
+            }
+          ]
+        },
+        {
+          "id": "agent-loop/the-harness-does-the-acting",
+          "title": "The harness does the acting",
+          "archived": false,
+          "blocks": [
+            {
+              "id": "agent-loop/the-harness-does-the-acting/p1",
+              "kind": "paragraph",
+              "markdown": "The model cannot run anything by itself; it only produces text. The program around it, the **harness**, reads what the model chose, carries out the action (search, run a command, call an API) and reports back.",
+              "archived": false
+            }
+          ]
+        },
+        {
+          "id": "agent-loop/observing-the-result",
+          "title": "Observing the result",
+          "archived": false,
+          "blocks": [
+            {
+              "id": "agent-loop/observing-the-result/p1",
+              "kind": "paragraph",
+              "markdown": "After an action, the harness appends the result to the message list and calls the model again. Because the API is stateless, this growing message list *is* the agent's memory of what it has done so far.",
+              "archived": false
+            }
+          ]
+        },
+        {
+          "id": "agent-loop/stopping",
+          "title": "Stopping",
+          "archived": false,
+          "blocks": [
+            {
+              "id": "agent-loop/stopping/p1",
+              "kind": "paragraph",
+              "markdown": "An agent stops when the model answers without asking for another action. That is not guaranteed to happen: a confused model can loop forever, repeating the same failing step. Every agent loop therefore needs a guard, such as a maximum number of iterations or a time budget, that ends the run no matter what the model does.",
+              "archived": false
+            }
+          ]
+        },
+        {
+          "id": "agent-loop/why-loops-are-powerful",
+          "title": "Why loops are powerful",
+          "archived": false,
+          "blocks": [
+            {
+              "id": "agent-loop/why-loops-are-powerful/p1",
+              "kind": "paragraph",
+              "markdown": "The loop lets a model correct course. If a step fails, the error message becomes part of the context, and the next decision can account for it. Most of what makes agents useful comes from this cycle, not from a bigger model.",
+              "archived": false
+            }
+          ]
+        }
+      ],
+      "quiz": [
+        {
+          "type": "single_choice",
+          "id": "agent-loop-q1",
+          "prompt": "What makes an agent different from a single LLM call?",
+          "pilot": false,
+          "options": [
+            {
+              "text": "It uses a bigger model.",
+              "correct": false
+            },
+            {
+              "text": "It remembers earlier conversations automatically between API calls.",
+              "correct": false,
+              "reveals_gap_in": "llm-basics",
+              "misconception": "llm-has-memory"
+            },
+            {
+              "text": "It runs in a loop, choosing actions and seeing their results until the task is done.",
+              "correct": true
+            },
+            {
+              "text": "It doesn't need a system prompt.",
+              "correct": false
+            }
+          ]
+        },
+        {
+          "type": "single_choice",
+          "id": "agent-loop-q2",
+          "prompt": "Who actually carries out an action the model chooses?",
+          "pilot": false,
+          "options": [
+            {
+              "text": "The program around the model, often called the harness.",
+              "correct": true
+            },
+            {
+              "text": "The model runs it inside its own weights.",
+              "correct": false,
+              "reveals_gap_in": "llm-basics",
+              "misconception": "llm-runs-code"
+            },
+            {
+              "text": "The API provider runs any code the model writes.",
+              "correct": false,
+              "misconception": "model-executes-actions"
+            },
+            {
+              "text": "The user always has to type it in.",
+              "correct": false
+            }
+          ]
+        },
+        {
+          "type": "single_choice",
+          "id": "agent-loop-q3",
+          "prompt": "Why does an agent loop need a maximum number of iterations?",
+          "pilot": false,
+          "options": [
+            {
+              "text": "Models can only be called three times in a row.",
+              "correct": false
+            },
+            {
+              "text": "To make the answers more creative.",
+              "correct": false
+            },
+            {
+              "text": "Each call permanently uses up part of the model's memory.",
+              "correct": false,
+              "reveals_gap_in": "llm-basics",
+              "misconception": "llm-has-memory"
+            },
+            {
+              "text": "The model might never decide it is done, so the loop could run forever.",
+              "correct": true
+            }
+          ]
+        },
+        {
+          "type": "single_choice",
+          "id": "agent-loop-q4",
+          "prompt": "How does the agent find out what its last action did?",
+          "pilot": false,
+          "options": [
+            {
+              "text": "It doesn't; it guesses whether the action worked.",
+              "correct": false
+            },
+            {
+              "text": "The result is appended to the messages for the next model call.",
+              "correct": true
+            },
+            {
+              "text": "The result is written into the model's weights.",
+              "correct": false,
+              "reveals_gap_in": "llm-basics",
+              "misconception": "llm-has-memory"
+            },
+            {
+              "text": "It only sees the final answer at the end.",
+              "correct": false
+            }
+          ]
+        },
+        {
+          "type": "ordering",
+          "id": "agent-loop-q5",
+          "prompt": "Put one turn of the agent loop in order.",
+          "pilot": false,
+          "steps": [
+            "The model decides on an action.",
+            "The harness carries out the action.",
+            "The result is appended to the messages.",
+            "The model is called again with the result."
+          ],
+          "patterns": [
+            {
+              "first": 2,
+              "second": 1,
+              "misconception": "model-executes-actions"
+            }
+          ]
+        },
+        {
+          "type": "two_tier",
+          "id": "agent-loop-q6",
+          "prompt": "An agent decides to run `ls` in a shell. Does the model itself run the command?",
+          "pilot": false,
+          "options": [
+            {
+              "text": "No.",
+              "correct": true
+            },
+            {
+              "text": "Yes.",
+              "correct": false
+            }
+          ],
+          "reason_prompt": "Why?",
+          "reasons": [
+            {
+              "text": "The model only produces text naming the action; the harness runs it.",
+              "correct": true
+            },
+            {
+              "text": "The model executes the command as part of generating its answer.",
+              "correct": false,
+              "misconception": "model-executes-actions"
+            },
+            {
+              "text": "Shell commands are too slow for the harness to run.",
+              "correct": false
+            }
+          ]
+        },
+        {
+          "type": "parsons",
+          "id": "agent-loop-q7",
+          "prompt": "Arrange the lines into a safe agent loop.",
+          "pilot": false,
+          "lines": [
+            "for (let step = 0; step < MAX_STEPS; step++) {",
+            "  const reply = await callModel(messages);",
+            "  if (!reply.action) return reply.text;",
+            "  messages.push(await harness.run(reply.action));",
+            "}"
+          ],
+          "distractors": [
+            {
+              "text": "while (true) {",
+              "misconception": "loop-always-terminates"
+            },
+            {
+              "text": "  messages.push(reply.result);",
+              "misconception": "model-executes-actions"
+            }
+          ]
+        },
+        {
+          "type": "cloze",
+          "id": "agent-loop-q8",
+          "prompt": "Fill in the blank.",
+          "pilot": false,
+          "text": "The program that carries out the action the model chose is called the {{0}}.",
+          "blanks": [
+            {
+              "accept": [
+                "harness",
+                "agent harness"
+              ],
+              "wrong": [
+                {
+                  "match": "^(the )?(model|llm|ai)$",
+                  "example": "model",
+                  "misconception": "model-executes-actions"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "multi_select",
+          "id": "agent-loop-q9",
+          "prompt": "Which of these guarantee that an agent loop ends? Select all that apply.",
+          "pilot": false,
+          "options": [
+            {
+              "text": "A maximum number of iterations.",
+              "correct": true
+            },
+            {
+              "text": "A time budget.",
+              "correct": true
+            },
+            {
+              "text": "Trusting the model to say when it is done.",
+              "correct": false,
+              "misconception": "loop-always-terminates"
+            },
+            {
+              "text": "Using a larger model.",
+              "correct": false
+            }
+          ]
+        }
+      ],
+      "archived": false
+    },
+    {
+      "id": "tool-calling",
+      "title": "Tool Calling",
+      "summary": "Describing tools with schemas, how the model requests a call, and how results flow back.",
+      "prerequisites": [
+        "agent-loop"
+      ],
+      "sections": [
+        {
+          "id": "tool-calling/intro",
+          "title": "",
+          "archived": false,
+          "blocks": [
+            {
+              "id": "tool-calling/intro/p1",
+              "kind": "paragraph",
+              "markdown": "Tool calling is the standard way for an agent to act. Instead of describing an action in prose, the model emits a structured request that the harness can execute.",
+              "archived": false
+            }
+          ]
+        },
+        {
+          "id": "tool-calling/describing-tools",
+          "title": "Describing tools",
+          "archived": false,
+          "blocks": [
+            {
+              "id": "tool-calling/describing-tools/p1",
+              "kind": "paragraph",
+              "markdown": "With each request you send the model a list of tool definitions. Each has:",
+              "archived": false
+            },
+            {
+              "id": "tool-calling/describing-tools/l1",
+              "kind": "list",
+              "markdown": "- a **name**, such as `query_hypergraph`;\n- a **description** of when to use it, which the model reads to decide;\n- a **JSON schema** for its arguments.",
+              "archived": false
+            },
+            {
+              "id": "tool-calling/describing-tools/p2",
+              "kind": "paragraph",
+              "markdown": "The model never sees your tool's code, only this description. Clear names and descriptions matter more than clever implementations.",
+              "archived": false
+            }
+          ]
+        },
+        {
+          "id": "tool-calling/the-call",
+          "title": "The call",
+          "archived": false,
+          "blocks": [
+            {
+              "id": "tool-calling/the-call/p1",
+              "kind": "paragraph",
+              "markdown": "When the model wants a tool, it answers with a **tool call**: the tool's name, JSON arguments, and an id. It does not run the tool and it does not know the result yet.",
+              "archived": false
+            }
+          ]
+        },
+        {
+          "id": "tool-calling/returning-the-result",
+          "title": "Returning the result",
+          "archived": false,
+          "blocks": [
+            {
+              "id": "tool-calling/returning-the-result/p1",
+              "kind": "paragraph",
+              "markdown": "The harness runs the tool and sends the result back as a **tool message** carrying the same call id, so the model can match result to request. Then the model is called again and decides what to do next: call another tool or answer.",
+              "archived": false
+            }
+          ]
+        },
+        {
+          "id": "tool-calling/validate-arguments",
+          "title": "Validate arguments",
+          "archived": false,
+          "blocks": [
+            {
+              "id": "tool-calling/validate-arguments/p1",
+              "kind": "paragraph",
+              "markdown": "Models sometimes produce malformed or out-of-range arguments. Validate them against the schema before executing, and return a clear error as the tool result if they are wrong. The model can read that error and try again.",
+              "archived": false
+            }
+          ]
+        }
+      ],
+      "quiz": [
+        {
+          "type": "single_choice",
+          "id": "tool-calling-q1",
+          "prompt": "What does the model output when it wants to use a tool?",
+          "pilot": false,
+          "options": [
+            {
+              "text": "A structured tool call: the tool's name and JSON arguments.",
+              "correct": true
+            },
+            {
+              "text": "The finished result of running the tool.",
+              "correct": false,
+              "reveals_gap_in": "agent-loop",
+              "misconception": "model-executes-actions"
+            },
+            {
+              "text": "A paragraph describing what it would like to do.",
+              "correct": false
+            },
+            {
+              "text": "A new system prompt.",
+              "correct": false
+            }
+          ]
+        },
+        {
+          "type": "single_choice",
+          "id": "tool-calling-q2",
+          "prompt": "How does the model know a tool exists and how to call it?",
+          "pilot": false,
+          "options": [
+            {
+              "text": "It searches the internet for available tools.",
+              "correct": false
+            },
+            {
+              "text": "It is retrained for every new tool.",
+              "correct": false
+            },
+            {
+              "text": "It reads the tool's source code.",
+              "correct": false,
+              "misconception": "model-reads-tool-code"
+            },
+            {
+              "text": "Tool definitions (name, description, argument schema) are sent with the request.",
+              "correct": true
+            }
+          ]
+        },
+        {
+          "type": "single_choice",
+          "id": "tool-calling-q3",
+          "prompt": "What happens after the harness runs a tool?",
+          "pilot": false,
+          "options": [
+            {
+              "text": "The loop ends; the tool result is the final answer.",
+              "correct": false,
+              "reveals_gap_in": "agent-loop",
+              "misconception": "loop-ends-after-action"
+            },
+            {
+              "text": "The result is discarded unless it is an error.",
+              "correct": false
+            },
+            {
+              "text": "The result goes back as a tool message with the same call id, and the model is called again.",
+              "correct": true
+            },
+            {
+              "text": "The harness rewrites the model's previous message to include the result.",
+              "correct": false
+            }
+          ]
+        },
+        {
+          "type": "single_choice",
+          "id": "tool-calling-q4",
+          "prompt": "Why validate tool arguments before running the tool?",
+          "pilot": false,
+          "options": [
+            {
+              "text": "Validation makes the model faster.",
+              "correct": false
+            },
+            {
+              "text": "The loop already guarantees the arguments are correct, so it is optional.",
+              "correct": false,
+              "reveals_gap_in": "agent-loop"
+            },
+            {
+              "text": "Schemas are only documentation.",
+              "correct": false
+            },
+            {
+              "text": "The model can produce malformed arguments; catching them prevents errors and unsafe actions.",
+              "correct": true
+            }
+          ]
+        },
+        {
+          "type": "schema_completion",
+          "id": "tool-calling-q5",
+          "prompt": "A learner asks for the weather in Paris. Write the JSON tool call the model emits for a tool named `get_weather` that takes one argument, `city`.",
+          "pilot": false,
+          "example": "{\"name\":\"get_weather\",\"arguments\":{\"city\":\"Paris\"}}",
+          "checks": [
+            {
+              "path": "name",
+              "rule": {
+                "equals": "get_weather"
+              }
+            },
+            {
+              "path": "arguments.city",
+              "rule": {
+                "equals": "Paris"
+              }
+            },
+            {
+              "path": "result",
+              "rule": {
+                "absent": true
+              },
+              "reveals_gap_in": "agent-loop",
+              "misconception": "model-executes-actions"
+            }
+          ],
+          "invalid_json": {}
+        },
+        {
+          "type": "matching",
+          "id": "tool-calling-q6",
+          "prompt": "Match each part of tool calling to what it is.",
+          "pilot": false,
+          "left": [
+            "Tool definition",
+            "Tool call",
+            "Tool message"
+          ],
+          "right": [
+            "Name, description and argument schema, sent with the request",
+            "The model's request: tool name, JSON arguments and an id",
+            "The result, sent back with the same call id"
+          ],
+          "wrong_pairs": [
+            {
+              "left": 1,
+              "right": 2,
+              "reveals_gap_in": "agent-loop",
+              "misconception": "model-executes-actions"
+            },
+            {
+              "left": 0,
+              "right": 1,
+              "misconception": "model-reads-tool-code"
+            }
+          ]
+        }
+      ],
+      "archived": false
+    },
+    {
+      "id": "structured-output",
+      "title": "Structured Output",
+      "summary": "Getting JSON that matches a schema, and validating it before your code trusts it.",
+      "prerequisites": [
+        "llm-basics"
+      ],
+      "sections": [
+        {
+          "id": "structured-output/intro",
+          "title": "",
+          "archived": false,
+          "blocks": [
+            {
+              "id": "structured-output/intro/p1",
+              "kind": "paragraph",
+              "markdown": "Free text is fine for people but hard for programs. When your code needs to act on a model's answer, ask for **structured output**: JSON that matches a schema you define.",
+              "archived": false
+            }
+          ]
+        },
+        {
+          "id": "structured-output/asking-for-a-schema",
+          "title": "Asking for a schema",
+          "archived": false,
+          "blocks": [
+            {
+              "id": "structured-output/asking-for-a-schema/p1",
+              "kind": "paragraph",
+              "markdown": "Most APIs let you attach a JSON schema to the request (often called *JSON schema mode* or *response format*). Others reuse tool calling: you define one \"tool\" whose arguments are the shape you want. Either way, the model is steered to produce matching JSON.",
+              "archived": false
+            }
+          ]
+        },
+        {
+          "id": "structured-output/strict-mode-and-missing-values",
+          "title": "Strict mode and missing values",
+          "archived": false,
+          "blocks": [
+            {
+              "id": "structured-output/strict-mode-and-missing-values/p1",
+              "kind": "paragraph",
+              "markdown": "Strict schema modes usually require **every field to be present**. To express \"this may have no value\", keep the field required and make it **nullable**, rather than optional.",
+              "archived": false
+            }
+          ]
+        },
+        {
+          "id": "structured-output/always-validate",
+          "title": "Always validate",
+          "archived": false,
+          "blocks": [
+            {
+              "id": "structured-output/always-validate/p1",
+              "kind": "paragraph",
+              "markdown": "Steering is not a guarantee. The model is still predicting tokens, so it can produce invalid JSON, a wrong type, or a value outside an enum. Parse and validate every response with a library such as Zod before your code trusts it. Validation gives you two things: a runtime check, and a typed object to work with.",
+              "archived": false
+            }
+          ]
+        },
+        {
+          "id": "structured-output/when-validation-fails",
+          "title": "When validation fails",
+          "archived": false,
+          "blocks": [
+            {
+              "id": "structured-output/when-validation-fails/p1",
+              "kind": "paragraph",
+              "markdown": "Never use an invalid response anyway. Retry, possibly including the validation error in the prompt, or fall back to a safe default. Silently patching the data hides bugs.",
+              "archived": false
+            }
+          ]
+        }
+      ],
+      "quiz": [
+        {
+          "type": "single_choice",
+          "id": "structured-output-q1",
+          "prompt": "Why use structured output instead of free text?",
+          "pilot": false,
+          "options": [
+            {
+              "text": "It makes answers more creative.",
+              "correct": false
+            },
+            {
+              "text": "So your code can parse and act on the answer reliably.",
+              "correct": true
+            },
+            {
+              "text": "It removes the need for a prompt.",
+              "correct": false
+            },
+            {
+              "text": "Because models can only produce JSON.",
+              "correct": false,
+              "reveals_gap_in": "llm-basics"
+            }
+          ]
+        },
+        {
+          "type": "single_choice",
+          "id": "structured-output-q2",
+          "prompt": "In a strict JSON-schema mode, how should you express a field that may have no value?",
+          "pilot": false,
+          "options": [
+            {
+              "text": "Leave it out of the schema.",
+              "correct": false,
+              "misconception": "optional-not-nullable"
+            },
+            {
+              "text": "Mark it optional.",
+              "correct": false,
+              "misconception": "optional-not-nullable"
+            },
+            {
+              "text": "Keep it required, but make it nullable.",
+              "correct": true
+            },
+            {
+              "text": "Always send an empty string.",
+              "correct": false
+            }
+          ]
+        },
+        {
+          "type": "single_choice",
+          "id": "structured-output-q3",
+          "prompt": "The model returns JSON that fails validation. What should your code do?",
+          "pilot": false,
+          "options": [
+            {
+              "text": "Use it anyway; the schema was in the request, so it must be right.",
+              "correct": false,
+              "reveals_gap_in": "llm-basics",
+              "misconception": "llm-output-guaranteed"
+            },
+            {
+              "text": "Reject it and retry or fall back; never trust unvalidated output.",
+              "correct": true
+            },
+            {
+              "text": "Fill the missing fields with defaults and continue.",
+              "correct": false,
+              "misconception": "patch-invalid-output"
+            },
+            {
+              "text": "Raise the temperature and use whatever comes back.",
+              "correct": false
+            }
+          ]
+        },
+        {
+          "type": "single_choice",
+          "id": "structured-output-q4",
+          "prompt": "What does a validation library like Zod give you?",
+          "pilot": false,
+          "options": [
+            {
+              "text": "It forces the model to follow the schema while generating.",
+              "correct": false
+            },
+            {
+              "text": "It compresses the JSON.",
+              "correct": false
+            },
+            {
+              "text": "It replaces the system prompt.",
+              "correct": false
+            },
+            {
+              "text": "A runtime check of the data and a typed result.",
+              "correct": true
+            }
+          ]
+        }
+      ],
+      "archived": false
+    },
+    {
+      "id": "multi-agent",
+      "title": "Multi-Agent Orchestration",
+      "summary": "Splitting work across specialised agents, routing with a supervisor, and sharing state.",
+      "prerequisites": [
+        "tool-calling",
+        "structured-output"
+      ],
+      "sections": [
+        {
+          "id": "multi-agent/intro",
+          "title": "",
+          "archived": false,
+          "blocks": [
+            {
+              "id": "multi-agent/intro/p1",
+              "kind": "paragraph",
+              "markdown": "One agent with every tool and every instruction gets confused. Splitting the work across **specialised agents**, each with its own prompt, tools and model, keeps each one focused.",
+              "archived": false
+            }
+          ]
+        },
+        {
+          "id": "multi-agent/the-supervisor",
+          "title": "The supervisor",
+          "archived": false,
+          "blocks": [
+            {
+              "id": "multi-agent/the-supervisor/p1",
+              "kind": "paragraph",
+              "markdown": "A **supervisor** decides which agent handles the current input and routes to it. When the decision is simple (a scheduled job versus a user question) make it plain code: it is faster, free and never wrong. Use an LLM to route only when the decision really needs judgement.",
+              "archived": false
+            }
+          ]
+        },
+        {
+          "id": "multi-agent/focused-tool-sets",
+          "title": "Focused tool sets",
+          "archived": false,
+          "blocks": [
+            {
+              "id": "multi-agent/focused-tool-sets/p1",
+              "kind": "paragraph",
+              "markdown": "Give each agent only the tools its job needs. Fewer, relevant tools make the model's tool choice more reliable, and they limit what each agent is able to do.",
+              "archived": false
+            }
+          ]
+        },
+        {
+          "id": "multi-agent/shared-state",
+          "title": "Shared state",
+          "archived": false,
+          "blocks": [
+            {
+              "id": "multi-agent/shared-state/p1",
+              "kind": "paragraph",
+              "markdown": "Agents communicate through **shared state**: a typed object every step can read and update. When one agent hands work to another, such as a proposal to review, it should write **structured output** validated against a schema, not free text the next agent has to interpret.",
+              "archived": false
+            }
+          ]
+        },
+        {
+          "id": "multi-agent/running-tools-in-a-graph",
+          "title": "Running tools in a graph",
+          "archived": false,
+          "blocks": [
+            {
+              "id": "multi-agent/running-tools-in-a-graph/p1",
+              "kind": "paragraph",
+              "markdown": "In a graph framework such as LangGraph, an agent's tool calls go to a **tool node**. The tool node executes them and routes the results back to the same agent, which then decides its next step.",
+              "archived": false
+            }
+          ]
+        },
+        {
+          "id": "multi-agent/trade-offs",
+          "title": "Trade-offs",
+          "archived": false,
+          "blocks": [
+            {
+              "id": "multi-agent/trade-offs/p1",
+              "kind": "paragraph",
+              "markdown": "Every extra agent adds model calls, latency and cost. Split only where the specialisation earns it.",
+              "archived": false
+            }
+          ]
+        }
+      ],
+      "quiz": [
+        {
+          "type": "single_choice",
+          "id": "multi-agent-q1",
+          "prompt": "What does a supervisor do in a multi-agent system?",
+          "pilot": false,
+          "options": [
+            {
+              "text": "Runs every tool itself so the other agents don't have to.",
+              "correct": false,
+              "reveals_gap_in": "tool-calling",
+              "misconception": "agent-runs-own-tools"
+            },
+            {
+              "text": "Merges all agents into one large prompt.",
+              "correct": false
+            },
+            {
+              "text": "Decides which specialised agent should handle the current input and routes to it.",
+              "correct": true
+            },
+            {
+              "text": "Trains the other agents on new data.",
+              "correct": false
+            }
+          ]
+        },
+        {
+          "type": "single_choice",
+          "id": "multi-agent-q2",
+          "prompt": "Why give each agent only the tools it needs?",
+          "pilot": false,
+          "options": [
+            {
+              "text": "A tool can technically only be attached to one agent.",
+              "correct": false
+            },
+            {
+              "text": "Fewer, relevant tools make tool choice more reliable and limit what each agent can do.",
+              "correct": true
+            },
+            {
+              "text": "Each tool the model executes internally risks crashing it.",
+              "correct": false,
+              "reveals_gap_in": "tool-calling",
+              "misconception": "agent-runs-own-tools"
+            },
+            {
+              "text": "It makes no difference.",
+              "correct": false
+            }
+          ]
+        },
+        {
+          "type": "single_choice",
+          "id": "multi-agent-q3",
+          "prompt": "How should one agent hand a proposal to another?",
+          "pilot": false,
+          "options": [
+            {
+              "text": "As free text that the next agent interprets.",
+              "correct": false,
+              "reveals_gap_in": "structured-output",
+              "misconception": "free-text-handoff"
+            },
+            {
+              "text": "By editing the other agent's system prompt.",
+              "correct": false
+            },
+            {
+              "text": "It can't; agents never share data.",
+              "correct": false
+            },
+            {
+              "text": "As structured output validated against a schema and stored in shared state.",
+              "correct": true
+            }
+          ]
+        },
+        {
+          "type": "single_choice",
+          "id": "multi-agent-q4",
+          "prompt": "In a LangGraph-style graph, what runs an agent's tool call?",
+          "pilot": false,
+          "options": [
+            {
+              "text": "A tool node that executes the call and routes the result back to the agent.",
+              "correct": true
+            },
+            {
+              "text": "The supervisor, which then ends the graph.",
+              "correct": false,
+              "reveals_gap_in": "tool-calling",
+              "misconception": "agent-runs-own-tools"
+            },
+            {
+              "text": "The model provider's servers.",
+              "correct": false
+            },
+            {
+              "text": "Nothing; the tool call itself is the final answer.",
+              "correct": false
+            }
+          ]
+        }
+      ],
+      "archived": false
+    },
+    {
+      "id": "reflection",
+      "title": "Reflection and Self-Correction",
+      "summary": "A reviewer agent checks proposals, sends them back with a critique, and the loop stays bounded.",
+      "prerequisites": [
+        "multi-agent"
+      ],
+      "sections": [
+        {
+          "id": "reflection/intro",
+          "title": "",
+          "archived": false,
+          "blocks": [
+            {
+              "id": "reflection/intro/p1",
+              "kind": "paragraph",
+              "markdown": "Agents make mistakes. A **reflection** step adds a reviewer: a second agent that checks a proposal against explicit criteria, then either approves it or sends it back with a critique.",
+              "archived": false
+            }
+          ]
+        },
+        {
+          "id": "reflection/explicit-checks",
+          "title": "Explicit checks",
+          "archived": false,
+          "blocks": [
+            {
+              "id": "reflection/explicit-checks/p1",
+              "kind": "paragraph",
+              "markdown": "\"Is this good?\" invites a vague yes. Give the reviewer named checks, such as *Is the target right? Does the action fit the evidence? Do the numbers match the data?*, and ask for a PASS or FAIL with evidence for each. The critique becomes specific and actionable.",
+              "archived": false
+            }
+          ]
+        },
+        {
+          "id": "reflection/feeding-the-critique-back",
+          "title": "Feeding the critique back",
+          "archived": false,
+          "blocks": [
+            {
+              "id": "reflection/feeding-the-critique-back/p1",
+              "kind": "paragraph",
+              "markdown": "The critique is stored in shared state, and the proposer's next prompt includes it along with the rejected proposal. The proposer has no memory of its own; it only knows what the prompt tells it.",
+              "archived": false
+            }
+          ]
+        },
+        {
+          "id": "reflection/bounding-the-loop",
+          "title": "Bounding the loop",
+          "archived": false,
+          "blocks": [
+            {
+              "id": "reflection/bounding-the-loop/p1",
+              "kind": "paragraph",
+              "markdown": "Reviewer and proposer may never agree. Cap the number of attempts so the loop always ends, and decide in advance what happens when the cap is reached: usually, apply nothing.",
+              "archived": false
+            }
+          ]
+        },
+        {
+          "id": "reflection/code-first-judgement-second",
+          "title": "Code first, judgement second",
+          "archived": false,
+          "blocks": [
+            {
+              "id": "reflection/code-first-judgement-second/p1",
+              "kind": "paragraph",
+              "markdown": "Many checks need no model at all: does the id exist, is a required field present, would this edge create a cycle? Run these in code first. They are instant and exact, and the reviewer model is then only asked about things that really need judgement.",
+              "archived": false
+            }
+          ]
+        },
+        {
+          "id": "reflection/the-shared-model-problem",
+          "title": "The shared-model problem",
+          "archived": false,
+          "blocks": [
+            {
+              "id": "reflection/the-shared-model-problem/p1",
+              "kind": "paragraph",
+              "markdown": "If proposer and reviewer are the same model, they share the same blind spots. Using a different model, or a different framing for the reviewer, reduces that risk.",
+              "archived": false
+            }
+          ]
+        }
+      ],
+      "quiz": [
+        {
+          "type": "single_choice",
+          "id": "reflection-q1",
+          "prompt": "What does a reflection step do?",
+          "pilot": false,
+          "options": [
+            {
+              "text": "The same agent repeats its answer twice.",
+              "correct": false,
+              "misconception": "reflection-is-repetition"
+            },
+            {
+              "text": "A reviewer checks a proposal against explicit criteria and approves it or sends it back with a critique.",
+              "correct": true
+            },
+            {
+              "text": "The supervisor reroutes the work to a random agent.",
+              "correct": false,
+              "reveals_gap_in": "multi-agent",
+              "misconception": "supervisor-routes-randomly"
+            },
+            {
+              "text": "It lowers the temperature.",
+              "correct": false
+            }
+          ]
+        },
+        {
+          "type": "single_choice",
+          "id": "reflection-q2",
+          "prompt": "Why cap the number of reflection attempts?",
+          "pilot": false,
+          "options": [
+            {
+              "text": "Shared state can only hold two proposals.",
+              "correct": false,
+              "reveals_gap_in": "multi-agent",
+              "misconception": "shared-state-capacity"
+            },
+            {
+              "text": "Models refuse to answer after two attempts.",
+              "correct": false
+            },
+            {
+              "text": "Proposer and reviewer may never agree; a cap guarantees the loop ends.",
+              "correct": true
+            },
+            {
+              "text": "There is no reason; retries are free.",
+              "correct": false,
+              "misconception": "retries-are-free"
+            }
+          ]
+        },
+        {
+          "type": "single_choice",
+          "id": "reflection-q3",
+          "prompt": "Why run code checks before the reviewer model?",
+          "pilot": false,
+          "options": [
+            {
+              "text": "Code checks replace the reviewer completely.",
+              "correct": false,
+              "misconception": "code-checks-replace-review"
+            },
+            {
+              "text": "LLMs cannot read JSON.",
+              "correct": false,
+              "reveals_gap_in": "structured-output",
+              "misconception": "models-cant-read-json"
+            },
+            {
+              "text": "Code checks make the model smarter.",
+              "correct": false
+            },
+            {
+              "text": "They catch invalid proposals instantly and exactly, so the model only judges what needs judgement.",
+              "correct": true
+            }
+          ]
+        },
+        {
+          "type": "single_choice",
+          "id": "reflection-q4",
+          "prompt": "How does the critique reach the proposer on its next attempt?",
+          "pilot": false,
+          "options": [
+            {
+              "text": "It is stored in shared state and included in the proposer's next prompt.",
+              "correct": true
+            },
+            {
+              "text": "Each agent keeps private memory that the others can read.",
+              "correct": false,
+              "reveals_gap_in": "multi-agent",
+              "misconception": "agents-have-private-memory"
+            },
+            {
+              "text": "The proposer remembers it automatically between calls.",
+              "correct": false,
+              "reveals_gap_in": "llm-basics",
+              "misconception": "llm-has-memory"
+            },
+            {
+              "text": "The reviewer edits the proposer's tools.",
+              "correct": false
+            }
+          ]
+        }
+      ],
+      "archived": false
+    }
+  ]
+}

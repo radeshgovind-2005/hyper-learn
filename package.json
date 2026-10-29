@@ -1,11 +1,12 @@
 {
   "name": "hyper-learn",
   "version": "1.0.0",
-  "description": "HyperLearn — adaptive learning backend on a self-correcting hypergraph (LangGraph multi-agent).",
+  "description": "HyperLearn \u2014 adaptive learning backend on a self-correcting hypergraph (LangGraph multi-agent).",
   "type": "module",
   "scripts": {
     "start": "tsx src/index.ts",
     "eval": "tsx src/eval/run.ts",
+    "bundle": "tsx src/cli/build-bundle.ts",
     "test": "tsx --test \"src/**/*.test.ts\"",
     "typecheck": "tsc --noEmit"
   },

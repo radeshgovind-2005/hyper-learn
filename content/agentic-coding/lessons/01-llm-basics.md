@@ -30,10 +30,10 @@ The model keeps no memory between calls. If you want it to remember the conversa
     "id": "llm-basics-q1",
     "prompt": "What does an LLM do at each step of generating text?",
     "options": [
-      { "text": "It looks the answer up in a database of facts." },
+      { "text": "It looks the answer up in a database of facts.", "misconception": "llm-looks-up-answers" },
       { "text": "It predicts a probability for every possible next token and picks one.", "correct": true },
-      { "text": "It runs code to compute the answer." },
-      { "text": "It copies the most similar sentence from its training data." }
+      { "text": "It runs code to compute the answer.", "misconception": "llm-runs-code" },
+      { "text": "It copies the most similar sentence from its training data.", "misconception": "llm-looks-up-answers" }
     ]
   },
   {
@@ -41,8 +41,8 @@ The model keeps no memory between calls. If you want it to remember the conversa
     "prompt": "What is the context window?",
     "options": [
       { "text": "The part of the screen where the chat is shown." },
-      { "text": "How long the model remembers a user between sessions." },
-      { "text": "The number of past conversations stored on the server." },
+      { "text": "How long the model remembers a user between sessions.", "misconception": "llm-has-memory" },
+      { "text": "The number of past conversations stored on the server.", "misconception": "llm-has-memory" },
       { "text": "The maximum number of tokens the model can consider in one call, prompt and answer together.", "correct": true }
     ]
   },
@@ -53,7 +53,7 @@ The model keeps no memory between calls. If you want it to remember the conversa
       { "text": "The API is stateless: the model keeps no memory between calls.", "correct": true },
       { "text": "To make the model answer faster." },
       { "text": "Because the server deletes messages after an hour." },
-      { "text": "It doesn't; the model stores the conversation itself." }
+      { "text": "It doesn't; the model stores the conversation itself.", "misconception": "llm-has-memory" }
     ]
   },
   {

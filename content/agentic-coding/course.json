@@ -15,35 +15,143 @@
       "title": "The Agent Loop",
       "summary": "An agent is a model in a loop: decide, act, observe the result, repeat until done.",
       "file": "lessons/02-agent-loop.md",
-      "prerequisites": ["llm-basics"]
+      "prerequisites": [
+        "llm-basics"
+      ]
     },
     {
       "id": "tool-calling",
       "title": "Tool Calling",
       "summary": "Describing tools with schemas, how the model requests a call, and how results flow back.",
       "file": "lessons/03-tool-calling.md",
-      "prerequisites": ["agent-loop"]
+      "prerequisites": [
+        "agent-loop"
+      ]
     },
     {
       "id": "structured-output",
       "title": "Structured Output",
       "summary": "Getting JSON that matches a schema, and validating it before your code trusts it.",
       "file": "lessons/04-structured-output.md",
-      "prerequisites": ["llm-basics"]
+      "prerequisites": [
+        "llm-basics"
+      ]
     },
     {
       "id": "multi-agent",
       "title": "Multi-Agent Orchestration",
       "summary": "Splitting work across specialised agents, routing with a supervisor, and sharing state.",
       "file": "lessons/05-multi-agent.md",
-      "prerequisites": ["tool-calling", "structured-output"]
+      "prerequisites": [
+        "tool-calling",
+        "structured-output"
+      ]
     },
     {
       "id": "reflection",
       "title": "Reflection and Self-Correction",
       "summary": "A reviewer agent checks proposals, sends them back with a critique, and the loop stays bounded.",
       "file": "lessons/06-reflection.md",
-      "prerequisites": ["multi-agent"]
+      "prerequisites": [
+        "multi-agent"
+      ]
+    }
+  ],
+  "misconceptions": [
+    {
+      "id": "llm-has-memory",
+      "lesson": "llm-basics",
+      "belief": "The model remembers earlier calls and conversations by itself."
+    },
+    {
+      "id": "llm-looks-up-answers",
+      "lesson": "llm-basics",
+      "belief": "The model looks answers up in a database or copies them from its training data."
+    },
+    {
+      "id": "llm-runs-code",
+      "lesson": "llm-basics",
+      "belief": "The model can run code or carry out actions inside itself."
+    },
+    {
+      "id": "llm-output-guaranteed",
+      "lesson": "llm-basics",
+      "belief": "If the prompt or schema asks for something, the model's output is guaranteed to comply."
+    },
+    {
+      "id": "model-executes-actions",
+      "lesson": "agent-loop",
+      "belief": "The model carries out the actions it chooses, so an action's result comes straight from the model."
+    },
+    {
+      "id": "loop-ends-after-action",
+      "lesson": "agent-loop",
+      "belief": "An agent stops after one action; the action's result is the final answer."
+    },
+    {
+      "id": "loop-always-terminates",
+      "lesson": "agent-loop",
+      "belief": "The model always knows when it is done, so the loop needs no iteration cap."
+    },
+    {
+      "id": "agent-runs-own-tools",
+      "lesson": "tool-calling",
+      "belief": "Whichever agent requests a tool also executes it, inside the model or the supervisor."
+    },
+    {
+      "id": "model-reads-tool-code",
+      "lesson": "tool-calling",
+      "belief": "The model learns what a tool does by reading its source code."
+    },
+    {
+      "id": "free-text-handoff",
+      "lesson": "structured-output",
+      "belief": "Free text is as reliable as structured output for passing data between programs or agents."
+    },
+    {
+      "id": "models-cant-read-json",
+      "lesson": "structured-output",
+      "belief": "Models can't read or write JSON reliably at all."
+    },
+    {
+      "id": "optional-not-nullable",
+      "lesson": "structured-output",
+      "belief": "In a strict schema, a field that may have no value should be optional or left out."
+    },
+    {
+      "id": "patch-invalid-output",
+      "lesson": "structured-output",
+      "belief": "Invalid model output can be patched with defaults and used."
+    },
+    {
+      "id": "agents-have-private-memory",
+      "lesson": "multi-agent",
+      "belief": "Each agent keeps its own memory that the other agents can read."
+    },
+    {
+      "id": "supervisor-routes-randomly",
+      "lesson": "multi-agent",
+      "belief": "The supervisor hands work to agents at random."
+    },
+    {
+      "id": "shared-state-capacity",
+      "lesson": "multi-agent",
+      "belief": "Shared state can only hold a small fixed number of items."
+    },
+    {
+      "id": "reflection-is-repetition",
+      "lesson": "reflection",
+      "belief": "Reflection means the same agent repeating or re-reading its answer."
+    },
+    {
+      "id": "retries-are-free",
+      "lesson": "reflection",
+      "belief": "Review loops need no cap because retries cost nothing."
+    },
+    {
+      "id": "code-checks-replace-review",
+      "lesson": "reflection",
+      "belief": "Code checks make a reviewer model unnecessary."
     }
   ]
 }

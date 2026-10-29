@@ -38,16 +38,19 @@
       "instructions": [
         "Ignore lessons with low_sample = true: their fail rate is not reliable.",
         "A lesson is a problem if its fail_rate is 0.35 or more.",
-        "The root cause is not always the lesson with the highest fail rate. For each problem lesson, read its largest misconception.",
+        "The root cause is not always the lesson with the highest fail rate. For each problem lesson, read its largest gap (where its wrong answers point).",
         "If it points to a lesson that is already a prerequisite (directly or through other lessons), the problem is upstream: examine that lesson instead.",
         "If it points to a lesson that is not a prerequisite, use add_prerequisite with target_node_id = that lesson.",
-        "If it points to the lesson itself, the lesson is too large or hard: use split_node.",
+        "If it points to the lesson itself, look at the lesson's misconceptions that point to the lesson itself.",
+        "If one of them has share 0.5 or more, one belief dominates: use add_intervention with misconception_id = that misconception.",
+        "Otherwise the mistakes are diffuse and the lesson is too large or hard: use split_node.",
         "If no lesson is a problem, use flag_for_review.",
         "Use merge_nodes or remove_prerequisite only with clear evidence of redundancy."
       ],
       "constraints": [
         "Use target_node_id = null when the action has no target.",
-        "In your reason, cite the node's fail_rate and the misconception share you relied on, exactly as they appear in the data."
+        "Use misconception_id = null for every action except add_intervention.",
+        "In your reason, cite the node's fail_rate and the gap share you relied on, exactly as they appear in the data."
       ],
       "templates": {
         "retry": "Your previous proposal was REJECTED by the reviewer.\nRejected proposal: {mutation}\nReviewer critique: {critique}\nPropose a different or corrected mutation that addresses the critique."
@@ -64,15 +67,15 @@
       "checks": [
         {
           "name": "TARGET",
-          "rule": "node_id is the root cause: not low_sample, and its largest misconception does not point to one of its prerequisites (that would mean the problem is upstream). For flag_for_review: no reliable lesson has fail_rate 0.35 or more."
+          "rule": "node_id is the root cause: not low_sample, and its largest gap does not point to one of its prerequisites (that would mean the problem is upstream). For flag_for_review: no reliable lesson has fail_rate 0.35 or more."
         },
         {
           "name": "ACTION",
-          "rule": "the action matches the largest misconception: another lesson that is not a prerequisite → add_prerequisite with that lesson as target_node_id; the lesson itself → split_node; no problem lesson → flag_for_review."
+          "rule": "the action matches the largest gap: another lesson that is not a prerequisite → add_prerequisite with that lesson as target_node_id; the lesson itself with one of its own misconceptions at share 0.5 or more → add_intervention targeting it; the lesson itself otherwise → split_node; no problem lesson → flag_for_review."
         },
         {
           "name": "EVIDENCE",
-          "rule": "the reason cites the evidence it relies on (at least the node's fail_rate and the deciding misconception share), and every number in it matches the data. A reason with no numbers FAILS."
+          "rule": "the reason cites the evidence it relies on (at least the node's fail_rate and the deciding gap share), and every number in it matches the data. A reason with no numbers FAILS."
         }
       ],
       "constraints": [

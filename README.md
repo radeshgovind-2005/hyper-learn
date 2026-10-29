@@ -24,9 +24,11 @@ Backend for **HyperLearn**, an adaptive learning platform built on a self-correc
 | Path | Purpose |
 | --- | --- |
 | `content/agentic-coding/` | The course: `course.json` plus one Markdown lesson per file, each ending in a quiz |
-| `src/course/` | Course schemas, loader, validation and graph helpers |
+| `content/agentic-coding.bundle.json` | The course compiled into release v1.0.0 (`npm run bundle`) |
+| `src/assessment/` | Question types, their graders, and correct/wrong responses for the simulation |
+| `src/course/` | Course schemas, loader, validation, graph helpers and the content-graph compiler |
 | `src/simulation/` | Seeded learner simulation and the evaluation scenarios |
-| `src/analytics/` | Turns quiz attempts into per-lesson performance data |
+| `src/analytics/` | Turns quiz attempts into per-lesson performance data: gaps, named misconceptions, BKT mastery, item quality |
 | `src/eval/` | Rule-based reference Curator, scoring and the `npm run eval` runner |
 | `src/mutations.ts` | Code checks a mutation must pass before Reflection |
 | `src/index.ts` | Demo runner |
@@ -58,15 +60,39 @@ llm-basics → agent-loop → tool-calling ─┐
 llm-basics → structured-output ─────────┴→ multi-agent → reflection
 ```
 
-`course.json` lists each lesson's id, title, summary, file and prerequisites. Each lesson is a Markdown file
-ending in a fenced `quiz` block of multiple-choice questions. A wrong option can carry
-`reveals_gap_in: "<lesson-id>"`: the earlier lesson a learner who picks it probably missed. Untagged wrong
-options are gaps in the lesson itself.
+`course.json` lists each lesson's id, title, summary, file and prerequisites, plus a catalog of named
+**misconceptions**: beliefs a wrong answer can reveal, each tied to the lesson that teaches the correct idea
+(e.g. `model-executes-actions`: "The model carries out the actions it chooses"). Each lesson is a Markdown
+file ending in a fenced `quiz` block.
+
+Quiz items come in eight types, all graded in code (`src/assessment/grade.ts`) into the same result: a score,
+whether it was correct, and the wrong answers it revealed. Analytics never needs to know an item's type.
+
+| Type | The learner… | A wrong answer is tagged on… |
+| --- | --- | --- |
+| `single_choice` (default) | picks one option | the option |
+| `multi_select` | picks every correct option (partial credit) | each wrongly picked option |
+| `two_tier` | picks an answer, then the reason for it | the answer or the reason |
+| `ordering` | orders steps | a pattern: step *a* placed before step *b* |
+| `matching` | matches terms to descriptions | a wrong pair |
+| `cloze` | fills blanks (answers normalized) | a regex over the typed answer |
+| `parsons` | orders code lines, avoiding distractor lines | the distractor line |
+| `schema_completion` | writes JSON, e.g. a tool call | a failed check on a path |
+
+A tag can carry `reveals_gap_in: "<lesson-id>"` (the earlier lesson the learner probably missed) and
+`misconception: "<id>"` (the belief behind it). Untagged wrong answers are gaps in the lesson itself.
+Answers also record the learner's **certainty** (1–3): confidently wrong suggests a held belief, unsure
+and wrong a knowledge gap. Items marked `pilot` are shown but not scored.
 
 The loader validates the course on startup: unknown fields, unknown or cyclic prerequisites, questions without
 exactly one correct option, and tags that don't point at a real prerequisite all fail. It also requires every
 direct prerequisite to be tagged on at least one wrong option, so a missing prerequisite always shows up in
-the data.
+the data. Misconception tags must exist in the catalog and point at the lesson that teaches them; every
+tagged wrong answer must be reachable, and every catalog misconception must be revealed by some answer.
+
+`npm run bundle` compiles the course into a content graph: lessons → sections (`## ` headings) → blocks
+(paragraphs, lists, code), with stable ids such as `agent-loop/stopping/p1`. This is release v1.0.0, which
+later releases change; a test fails if the bundle is out of date with the Markdown.
 
 ## Evaluating the Curator
 
@@ -75,8 +101,10 @@ The evaluation answers one question: **does the Curator find and fix a planted f
 1. **Plant a fault.** A scenario publishes a broken copy of the course's prerequisite graph, or makes a lesson too hard.
 2. **Simulate learners.** 300 seeded learners take lessons in an order the *published* graph allows. They can only
    master a lesson if they mastered its *true* prerequisites, and their wrong answers tend to reveal the real gap.
-3. **Analyse in code.** Each lesson gets a fail rate, a 95% confidence interval, a `low_sample` flag and its top
-   misconceptions (which lesson its wrong answers point to).
+3. **Analyse in code.** Each lesson gets a fail rate, a 95% confidence interval, a `low_sample` flag, its
+   **gaps** (which lessons its wrong answers point to), its named **misconceptions** (share of failed attempts
+   showing each belief, and how confidently), and a BKT mastery rate. Questions whose statistics show they are
+   broken (negative point-biserial discrimination) are excluded first.
 4. **Run the agents** (Curator → code checks → Reflection) and score the result against the known fix.
 
 Everything except the model is deterministic: the same seed always produces the same data.
@@ -85,7 +113,8 @@ Everything except the model is deterministic: the same seed always produces the 
 | --- | --- | --- |
 | `control` | Nothing | `flag_for_review` |
 | `missing-prereq` | multi-agent no longer requires tool-calling | `add_prerequisite(multi-agent ← tool-calling)` |
-| `overloaded` | agent-loop is too hard; its dependents fail too, so the highest fail rate isn't the cause | `split_node(agent-loop)` |
+| `overloaded` | agent-loop is too hard, with diffuse mistakes; its dependents fail too, so the highest fail rate isn't the cause | `split_node(agent-loop)` |
+| `dominant-misconception` | agent-loop fails because most learners confidently believe the model runs its own actions | `add_intervention(agent-loop : model-executes-actions)` |
 | `low-sample-trap` | missing-prereq, plus a 10-attempt lesson with a 90% fail rate | `add_prerequisite(multi-agent ← tool-calling)` |
 
 A **rule-based reference Curator** (`src/eval/reference.ts`) must solve every scenario; the tests check it on 21
@@ -97,7 +126,7 @@ npm run eval -- missing-prereq          # one scenario, with the agents
 npm run eval                            # everything (slow on a local model)
 ```
 
-Scores: `exact` (the planted fault's fix), `right_lesson` (right lesson, wrong action or target), `miss`.
+Scores: `exact` (the planted fault's fix, including the targeted misconception), `right_lesson` (right lesson, wrong action or target), `miss`.
 The report shows both what would be applied (only if Reflection approved) and the Curator's last proposal,
 which separates Curator mistakes from Reflection mistakes. If a step fails (say, Reflection runs out of context), the
 Curator's proposal is still recorded and scored. Each run writes `reports/eval-<timestamp>.json`
@@ -128,7 +157,8 @@ from these fields, in this order:
 
 ### Tests
 
-`npm test` covers the course loader, simulation, analytics, code checks and reference Curator. `src/agents.test.ts` covers config validation and prompt assembly. `src/graph.test.ts` builds the graph with scripted fake models (`buildGraph({ curator, reflection, assistant })`)
+`npm test` covers the question types and graders, course loader and compiler, simulation, analytics (BKT,
+item statistics, misconceptions), code checks and reference Curator. `src/agents.test.ts` covers config validation and prompt assembly. `src/graph.test.ts` builds the graph with scripted fake models (`buildGraph({ curator, reflection, assistant })`)
 and checks the routing, not the model's judgement:
 
 - an approved proposal ends after one round

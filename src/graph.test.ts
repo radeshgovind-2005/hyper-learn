@@ -37,7 +37,10 @@ const lessonData = (node_id: string, fail_rate: number, prerequisites: string[])
   fail_rate_ci: [fail_rate - 0.05, fail_rate + 0.05],
   low_sample: false,
   prerequisites,
-  misconceptions: [{ points_to: node_id, share: 1 }],
+  gaps: [{ points_to: node_id, share: 1 }],
+  misconceptions: [],
+  mastery_rate: 0.3,
+  excluded_items: [],
 });
 
 const PERFORMANCE_DATA: NodePerformance[] = [
@@ -51,6 +54,7 @@ const mutation = (node_id: string): Mutation => ({
   action: "split_node",
   node_id,
   target_node_id: null,
+  misconception_id: null,
   reason: `${node_id} fails ${PERFORMANCE_DATA.find((n) => n.node_id === node_id)?.fail_rate ?? 0} of attempts`,
 });
 

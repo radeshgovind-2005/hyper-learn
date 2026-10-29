@@ -28,7 +28,7 @@ Every extra agent adds model calls, latency and cost. Split only where the speci
     "id": "multi-agent-q1",
     "prompt": "What does a supervisor do in a multi-agent system?",
     "options": [
-      { "text": "Runs every tool itself so the other agents don't have to.", "reveals_gap_in": "tool-calling" },
+      { "text": "Runs every tool itself so the other agents don't have to.", "reveals_gap_in": "tool-calling", "misconception": "agent-runs-own-tools" },
       { "text": "Merges all agents into one large prompt." },
       { "text": "Decides which specialised agent should handle the current input and routes to it.", "correct": true },
       { "text": "Trains the other agents on new data." }
@@ -40,7 +40,7 @@ Every extra agent adds model calls, latency and cost. Split only where the speci
     "options": [
       { "text": "A tool can technically only be attached to one agent." },
       { "text": "Fewer, relevant tools make tool choice more reliable and limit what each agent can do.", "correct": true },
-      { "text": "Each tool the model executes internally risks crashing it.", "reveals_gap_in": "tool-calling" },
+      { "text": "Each tool the model executes internally risks crashing it.", "reveals_gap_in": "tool-calling", "misconception": "agent-runs-own-tools" },
       { "text": "It makes no difference." }
     ]
   },
@@ -48,7 +48,7 @@ Every extra agent adds model calls, latency and cost. Split only where the speci
     "id": "multi-agent-q3",
     "prompt": "How should one agent hand a proposal to another?",
     "options": [
-      { "text": "As free text that the next agent interprets.", "reveals_gap_in": "structured-output" },
+      { "text": "As free text that the next agent interprets.", "reveals_gap_in": "structured-output", "misconception": "free-text-handoff" },
       { "text": "By editing the other agent's system prompt." },
       { "text": "It can't; agents never share data." },
       { "text": "As structured output validated against a schema and stored in shared state.", "correct": true }
@@ -59,7 +59,7 @@ Every extra agent adds model calls, latency and cost. Split only where the speci
     "prompt": "In a LangGraph-style graph, what runs an agent's tool call?",
     "options": [
       { "text": "A tool node that executes the call and routes the result back to the agent.", "correct": true },
-      { "text": "The supervisor, which then ends the graph.", "reveals_gap_in": "tool-calling" },
+      { "text": "The supervisor, which then ends the graph.", "reveals_gap_in": "tool-calling", "misconception": "agent-runs-own-tools" },
       { "text": "The model provider's servers." },
       { "text": "Nothing; the tool call itself is the final answer." }
     ]

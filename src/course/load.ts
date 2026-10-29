@@ -1,14 +1,16 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { wrongOptions } from "../assessment/answers.js";
+import { checkItem, itemTags, QuizSchema } from "../assessment/items.js";
 import { ancestorsOf, findCycle } from "./graph.js";
 import {
   type Course,
   CourseManifestSchema,
   type Lesson,
   type LessonMeta,
+  type MisconceptionDef,
   type PrereqGraph,
-  QuizSchema,
 } from "./schema.js";
 
 export const DEFAULT_COURSE_DIR = fileURLToPath(new URL("../../content/agentic-coding/", import.meta.url));
@@ -41,11 +43,12 @@ export const toGraph = (lessons: readonly LessonMeta[]): PrereqGraph =>
   Object.fromEntries(lessons.map((lesson) => [lesson.id, lesson.prerequisites]));
 
 /**
- * Cross-lesson rules the schemas can't express. Returns every problem found (empty = valid):
- * unique ids, known acyclic prerequisites, one correct option per question, gap tags that point
- * at real ancestors, and every direct prerequisite tagged at least once so its absence is detectable.
+ * Rules the schemas can't express. Returns every problem found (empty = valid):
+ * unique ids; known, acyclic prerequisites; well-formed items; gap tags that point at real
+ * ancestors; misconception tags that exist and point at the lesson that teaches them; every tagged
+ * wrong answer reachable; every direct prerequisite and every named misconception detectable.
  */
-export function validateCourse(lessons: readonly Lesson[]): string[] {
+export function validateCourse(lessons: readonly Lesson[], misconceptions: readonly MisconceptionDef[] = []): string[] {
   const problems: string[] = [];
   const ids = new Set<string>();
   const questionIds = new Set<string>();
@@ -62,6 +65,13 @@ export function validateCourse(lessons: readonly Lesson[]): string[] {
     }
   }
 
+  const catalog = new Map<string, MisconceptionDef>();
+  for (const m of misconceptions) {
+    if (catalog.has(m.id)) problems.push(`Duplicate misconception id "${m.id}"`);
+    if (!ids.has(m.lesson)) problems.push(`Misconception "${m.id}" belongs to unknown lesson "${m.lesson}"`);
+    catalog.set(m.id, m);
+  }
+
   const graph = toGraph(lessons);
   const cycle = findCycle(graph);
   if (cycle) {
@@ -69,24 +79,44 @@ export function validateCourse(lessons: readonly Lesson[]): string[] {
     return problems; // ancestor checks below assume an acyclic graph
   }
 
+  const detected = new Set<string>();
   for (const lesson of lessons) {
     const ancestors = ancestorsOf(graph, lesson.id);
     const tagged = new Set<string>();
 
-    for (const question of lesson.quiz) {
-      const where = `Question "${question.id}" in "${lesson.id}"`;
-      if (questionIds.has(question.id)) problems.push(`Duplicate question id "${question.id}"`);
-      questionIds.add(question.id);
+    for (const item of lesson.quiz) {
+      const where = `Question "${item.id}" in "${lesson.id}"`;
+      if (questionIds.has(item.id)) problems.push(`Duplicate question id "${item.id}"`);
+      questionIds.add(item.id);
 
-      const correct = question.options.filter((option) => option.correct);
-      if (correct.length !== 1) problems.push(`${where} must have exactly one correct option (has ${correct.length})`);
+      for (const problem of checkItem(item)) problems.push(`${where}: ${problem}`);
 
-      for (const option of question.options) {
-        const gap = option.reveals_gap_in;
-        if (gap === undefined) continue;
-        if (option.correct) problems.push(`${where}: the correct option can't reveal a gap`);
-        else if (!ancestors.has(gap)) problems.push(`${where}: reveals_gap_in "${gap}" is not a prerequisite of "${lesson.id}"`);
-        tagged.add(gap);
+      for (const tag of itemTags(item)) {
+        const gap = tag.reveals_gap_in;
+        if (gap !== undefined) {
+          if (!ancestors.has(gap)) problems.push(`${where}: reveals_gap_in "${gap}" is not a prerequisite of "${lesson.id}"`);
+          tagged.add(gap);
+        }
+        if (tag.misconception !== undefined) {
+          const m = catalog.get(tag.misconception);
+          if (!m) problems.push(`${where}: unknown misconception "${tag.misconception}"`);
+          else if (m.lesson !== (gap ?? lesson.id)) {
+            problems.push(
+              `${where}: misconception "${m.id}" belongs to "${m.lesson}", so the answer must point there ` +
+                `(reveals_gap_in ${gap === undefined ? "is missing" : `is "${gap}"`})`,
+            );
+          }
+          detected.add(tag.misconception);
+        }
+      }
+
+      if (problems.length === 0) {
+        const reachable = new Set(wrongOptions(item, lesson.id).map((o) => o.reveals.misconception));
+        for (const tag of itemTags(item)) {
+          if (tag.misconception && !reachable.has(tag.misconception)) {
+            problems.push(`${where}: no answer can reveal "${tag.misconception}"`);
+          }
+        }
       }
     }
 
@@ -97,21 +127,32 @@ export function validateCourse(lessons: readonly Lesson[]): string[] {
     }
   }
 
+  for (const m of misconceptions) {
+    if (!detected.has(m.id)) problems.push(`Misconception "${m.id}" is never revealed by any wrong answer`);
+  }
+
   return problems;
 }
 
-export function buildCourse(manifest: { id: string; title: string }, lessons: Lesson[]): Course {
-  const problems = validateCourse(lessons);
+export function buildCourse(
+  manifest: { id: string; title: string; misconceptions?: MisconceptionDef[] },
+  lessons: Lesson[],
+): Course {
+  const misconceptions = manifest.misconceptions ?? [];
+  const problems = validateCourse(lessons, misconceptions);
   if (problems.length > 0) {
     throw new Error(`Course "${manifest.id}" is invalid:\n- ${problems.join("\n- ")}`);
   }
   const byId = new Map(lessons.map((lesson) => [lesson.id, lesson]));
+  const misconceptionById = new Map(misconceptions.map((m) => [m.id, m]));
   return {
     id: manifest.id,
     title: manifest.title,
     lessons,
     graph: toGraph(lessons),
+    misconceptions,
     getLesson: (id) => byId.get(id),
+    getMisconception: (id) => misconceptionById.get(id),
   };
 }
 
