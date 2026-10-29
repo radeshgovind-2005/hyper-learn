@@ -2,6 +2,7 @@ import { referenceCurator } from "../eval/reference.js";
 import type { GraphModels } from "../graph.js";
 import { referenceDraft } from "../interventions/reference.js";
 import type { Approver } from "../nodes/release.js";
+import type { Intervention } from "../interventions/templates.js";
 import type { ReleaseStore } from "../releases/release.js";
 import { injectedProposal } from "../simulation/index.js";
 import type { Scenario } from "../simulation/scenarios.js";
@@ -11,15 +12,21 @@ const NO_MODEL_REVIEW = { approved: true, critique: "No model review in a refere
 
 /**
  * Stand-ins for the agents when no model is available: the rule-based reference proposes (or, on
- * simulated data, the scenario's injected proposal), a hand-written exemplar stands in for the Author, and review only runs
- * the code checks. Everything after (release, approval, trial, decision) is the real harness.
+ * simulated data, the scenario's injected proposal), a hand-written exemplar stands in for the Author (if the
+ * course has none for the belief, it throws NoExemplar and the run ends saying a model is needed), and review
+ * only runs the code checks. Everything after (release, approval, trial, decision) is the real harness.
  */
-export function referenceModels(scenario: Scenario | undefined, data: readonly NodePerformance[], store: ReleaseStore): Partial<GraphModels> {
+export function referenceModels(
+  scenario: Scenario | undefined,
+  data: readonly NodePerformance[],
+  store: ReleaseStore,
+  exemplars?: readonly Intervention[],
+): Partial<GraphModels> {
   const proposal = (scenario && injectedProposal(scenario, data)) ?? referenceCurator(data);
   return {
     curator: { invoke: async () => proposal },
     reflection: { invoke: async () => NO_MODEL_REVIEW },
-    author: { invoke: async () => referenceDraft(proposal, data, store.live().snapshot.lessons) },
+    author: { invoke: async () => referenceDraft(proposal, data, store.live().snapshot.lessons, exemplars) },
     reviewer: { invoke: async () => NO_MODEL_REVIEW },
   };
 }

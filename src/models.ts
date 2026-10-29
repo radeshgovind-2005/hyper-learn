@@ -6,8 +6,9 @@ import { ChatOpenAI } from "@langchain/openai";
  * Model factory.
  *
  * Every model talks to an OpenAI-compatible endpoint, so the same code runs against the local
- * llama.cpp / LM Studio server and Meta's API. Settings come from `configureModels()` (the Worker
- * passes its environment) or, by default, from environment variables (Node reads `.env`).
+ * llama.cpp / LM Studio server and Meta's API. Each course has its own
+ * ModelProvider (the Worker builds one per course object, from its env or the owner's key). Node entry
+ * points use the default provider, from `configureModels()` or environment variables (Node reads `.env`).
  *
  * ▶ Switching to the real Meta Model API (Muse Spark):
  *   1. Set MODEL_BASE_URL to Meta's OpenAI-compatible base URL.
@@ -71,50 +72,99 @@ export function modelConfigFromEnv(env: ModelEnv): ModelConfig {
   };
 }
 
-let config: ModelConfig | undefined;
-const cache = new Map<ModelType, ChatOpenAI>();
+/** Models a course owner may pick (MODEL_CHOICES, comma-separated; default: REASONING_MODEL). */
+export function modelChoicesFromEnv(env: ModelEnv): string[] {
+  const listed = (env.MODEL_CHOICES ?? "").split(",").map((m) => m.trim()).filter(Boolean);
+  if (listed.length > 0) return [...new Set(listed)];
+  return env.REASONING_MODEL ? [env.REASONING_MODEL] : [];
+}
 
-/** Sets (or adjusts) the model settings; models created before are discarded. */
+/**
+ * The models for one course: its settings in, chat models and schema-bound models out. Each course
+ * object makes its own, so two courses in one isolate never share a key or a cached model.
+ */
+export class ModelProvider {
+  readonly #config: ModelConfig;
+  readonly #cache = new Map<ModelType, ChatOpenAI>();
+
+  constructor(config: ModelConfig) {
+    this.#config = config;
+  }
+
+  /** The model names, for display. The key is never exposed. */
+  get models(): Readonly<Record<ModelType, string>> {
+    return this.#config.models;
+  }
+
+  chat(type: ModelType): ChatOpenAI {
+    const cached = this.#cache.get(type);
+    if (cached) return cached;
+    const settings = this.#config;
+    const model = new ChatOpenAI({
+      model: settings.models[type],
+      temperature: TEMPERATURE[type],
+      apiKey: settings.apiKey,
+      timeout: settings.timeoutMs,
+      maxRetries: settings.maxRetries,
+      configuration: {
+        baseURL: settings.baseURL,
+        ...(settings.fetch && { fetch: settings.fetch }),
+        ...(settings.fetchOptions && { fetchOptions: settings.fetchOptions }),
+      },
+    });
+    this.#cache.set(type, model);
+    return model;
+  }
+
+  /** A model bound to a Zod schema; `invoke` resolves to the parsed object. */
+  readonly structured: StructuredFactory = (schema, name, type = "reasoning") =>
+    this.chat(type).withStructuredOutput(schema, { name, method: this.#config.structuredOutputMethod });
+}
+
+// The default provider, for Node entry points (npm start, eval, loop) and tests: one process, one
+// configuration. The Worker turns it off (refuseDefaultModels) so a course can only use its own provider.
+let fallback: ModelProvider | undefined;
+let refused: string | undefined;
+
+/** Sets (or adjusts) the default provider's settings; models created before are discarded. */
 export function configureModels(settings: Partial<ModelConfig> = {}) {
   config = { ...currentConfig(), ...settings };
-  cache.clear();
+  fallback = undefined;
+  refused = undefined;
 }
+
+let config: ModelConfig | undefined;
 
 export function currentConfig(): ModelConfig {
   config ??= modelConfigFromEnv(typeof process === "undefined" ? {} : process.env);
   return config;
 }
 
+/** Makes every later use of the default provider throw `reason`. */
+export function refuseDefaultModels(reason: string) {
+  refused = reason;
+  fallback = undefined;
+}
+
+/** The process-wide provider, for Node entry points. */
+export function defaultModels(): ModelProvider {
+  if (refused) throw new Error(refused);
+  fallback ??= new ModelProvider(currentConfig());
+  return fallback;
+}
+
 export function getModel(type: ModelType): ChatOpenAI {
-  const cached = cache.get(type);
-  if (cached) return cached;
-
-  const settings = currentConfig();
-  const model = new ChatOpenAI({
-    model: settings.models[type],
-    temperature: TEMPERATURE[type],
-    apiKey: settings.apiKey,
-    timeout: settings.timeoutMs,
-    maxRetries: settings.maxRetries,
-    configuration: {
-      baseURL: settings.baseURL,
-      ...(settings.fetch && { fetch: settings.fetch }),
-      ...(settings.fetchOptions && { fetchOptions: settings.fetchOptions }),
-    },
-  });
-
-  cache.set(type, model);
-  return model;
+  return defaultModels().chat(type);
 }
 
 /** Makes a schema-bound model. getStructuredModel is one; a per-course provider (with its owner's key) is another. */
 export type StructuredFactory = <T extends Record<string, unknown>>(schema: InteropZodType<T>, name: string, type?: ModelType) => Invokable<T>;
 
-/** A model bound to a Zod schema; `invoke` resolves to the parsed object. */
+/** A model bound to a Zod schema on the default provider; `invoke` resolves to the parsed object. */
 export function getStructuredModel<T extends Record<string, unknown>>(
   schema: InteropZodType<T>,
   name: string,
   type: ModelType = "reasoning",
 ): Invokable<T> {
-  return getModel(type).withStructuredOutput(schema, { name, method: currentConfig().structuredOutputMethod });
+  return defaultModels().structured(schema, name, type);
 }

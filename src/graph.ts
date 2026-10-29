@@ -1,16 +1,19 @@
 import { type BaseCheckpointSaver, END, START, StateGraph } from "@langchain/langgraph";
 import { ToolNode, toolsCondition } from "@langchain/langgraph/prebuilt";
 import { getAgentTools } from "./agents.js";
-import { type AssistantModel, createAssistantNode } from "./nodes/assistant.js";
+import type { ModelProvider } from "./models.js";
+import { type AssistantModel, createAssistantModel, createAssistantNode } from "./nodes/assistant.js";
 import {
   type AuthorModel,
   type ContentReviewerModel,
+  createAuthorModel,
   createAuthorNode,
+  createContentReviewerModel,
   createReviewContentNode,
   routeFromReviewContent,
 } from "./nodes/author.js";
-import { createCuratorNode, type CuratorModel } from "./nodes/curator.js";
-import { createReflectionNode, type ReflectionModel, routeFromReflection } from "./nodes/reflection.js";
+import { createCuratorModel, createCuratorNode, type CuratorModel } from "./nodes/curator.js";
+import { createReflectionModel, createReflectionNode, type ReflectionModel, routeFromReflection } from "./nodes/reflection.js";
 import {
   createApprovalNode,
   createDecideNode,
@@ -30,6 +33,15 @@ export interface GraphModels {
   author: AuthorModel;
   reviewer: ContentReviewerModel;
 }
+
+/** Every LLM node's model from one provider: a course's own models, never the process default. */
+export const graphModels = (provider: ModelProvider): GraphModels => ({
+  assistant: createAssistantModel(provider),
+  curator: createCuratorModel(provider),
+  reflection: createReflectionModel(provider),
+  author: createAuthorModel(provider),
+  reviewer: createContentReviewerModel(provider),
+});
 
 export interface GraphOptions {
   /** With a harness, an approved proposal is released, measured and kept or reverted. Without one, the run ends at approval. */

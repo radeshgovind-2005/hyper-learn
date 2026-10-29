@@ -1,13 +1,19 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { AsyncLocalStorageProviderSingleton } from "@langchain/core/singletons";
-import { routeAgentRequest } from "agents";
+import { getAgentByName, routeAgentRequest } from "agents";
+import { type AgentRoute, DIRECTORY_NAME, routeAllowed } from "../src/app/courses.js";
 import { type Identity, roleFrom, verifySessionToken, withIdentity } from "../src/auth/identity.js";
+import { refuseDefaultModels } from "../src/models.js";
 
 // LangGraph finds the running graph (for interrupt() and config propagation) through async-local
 // storage. Its non-Node builds don't set one up, so register the runtime's (nodejs_compat) once.
 AsyncLocalStorageProviderSingleton.initializeGlobalInstance(new AsyncLocalStorage());
 
+// Courses share isolates, so there is no process-wide model here: each course object makes its own.
+refuseDefaultModels("No default models in the Worker: use the course's ModelProvider");
+
 export { CourseAgent } from "./course-agent.js";
+export { DirectoryAgent } from "./directory-agent.js";
 
 interface AuthEnv {
   /** The Clerk instance's JWT public key (PEM): a secret, for networkless token verification. */
@@ -45,14 +51,30 @@ async function authenticate(request: Request, env: AuthEnv): Promise<Request | R
   return withIdentity(new Request(url, request), identity);
 }
 
+/** Whether a studio course with this id was created by the directory. */
+async function courseExists(env: Env, id: string): Promise<boolean> {
+  const directory = await getAgentByName(env.DirectoryAgent, DIRECTORY_NAME);
+  return directory.courseExists(id);
+}
+
+/**
+ * Signed in first (401), then a name that may exist (404). Routing to a Durable Object name creates the
+ * object, so an unknown course id is refused here, before anything is created.
+ */
+async function admit(request: Request, route: AgentRoute, env: Env): Promise<Request | Response> {
+  const authenticated = await authenticate(request, env as unknown as AuthEnv);
+  if (authenticated instanceof Response) return authenticated;
+  if (!(await routeAllowed(route, (id) => courseExists(env, id)))) return new Response("Not found", { status: 404 });
+  return authenticated;
+}
+
 /** WebSocket and RPC traffic for agents goes to their Durable Objects, signed in; everything else is the UI's static assets. */
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
-    const auth = env as unknown as AuthEnv;
     return (
       (await routeAgentRequest(request, env, {
-        onBeforeConnect: (req) => authenticate(req, auth),
-        onBeforeRequest: (req) => authenticate(req, auth),
+        onBeforeConnect: (req, route) => admit(req, route, env),
+        onBeforeRequest: (req, route) => admit(req, route, env),
       })) ?? new Response("Not found", { status: 404 })
     );
   },
