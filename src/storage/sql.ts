@@ -96,9 +96,10 @@ export interface LearnerEvent {
   learner: string;
   /**
    * answer: a graded quiz · path: the steps the router gave · session: a connection started or ended ·
-   * lesson: active time on a lesson · intervention: one was shown or completed.
+   * lesson: active time on a lesson · intervention: one was shown or completed · check: an answer to a
+   * section's practice check (never scored).
    */
-  kind: "answer" | "path" | "session" | "lesson" | "intervention";
+  kind: "answer" | "path" | "session" | "lesson" | "intervention" | "check";
   lesson: string | null;
   release: string;
   data: unknown;

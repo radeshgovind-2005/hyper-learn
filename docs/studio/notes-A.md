@@ -98,6 +98,36 @@ Besides `src/eval/reference.test.ts`, I hashed `scenarioPerformance` (5 seeds pe
 `releasePerformance` and a seeded `simulate(..., { retakes: true })` for every scenario before the
 first change, and compared after each item: identical throughout.
 
+## 7. Service (learners)
+
+- `exam(learner, lessonId): Exam` → `{ release, lesson, attempt, items: QuizItem[] }`: the draw for the
+  learner's next attempt on their served release. Seed = `examSeed(learner, lessonId, attempt, release)`;
+  `seen` = the item ids of their earlier answer events for that lesson (`item_ids`, or for answers stored
+  before this, the `items[].item_id` every stored answer already has). Nothing pending is stored.
+- `submitQuiz(learner, lessonId, answers, certainty, session?, item_ids?)`: recomputes the draw and
+  refuses `item_ids` that differ from it (order included). `item_ids` may be omitted only for a lesson
+  without an exam config (then the whole quiz, in order, as today); a lesson with one refuses a
+  submission without them. Also new: `certainty` must have one entry per question (the web UI already
+  sends one per item). The answer event now stores `item_ids` (always, even for the whole quiz).
+  If the served release changes between `exam()` and the submit (a trial starts or a release is kept),
+  the seed changes and the submit is refused; the client should reload the exam.
+- `answerCheck(learner, blockId, option, session?): { correct, feedback }`: finds a live check block on
+  the served release, refuses unknown blocks and non-integer / out-of-range options, and appends an event
+  `{ kind: "check", lesson, release: <served>, data: { block_id, option, correct, misconception, objective?, session } }`.
+- `LearnerEvent.kind` (src/storage/sql.ts, C's file; one-line change) now includes `"check"`. The only
+  switch on it, `timelineOf`, shows "Practice check in <lesson>: right / wrong, showing “belief”" with
+  outcome pass/fail. Checks are not counted as quizzes and are ignored by measurement (`answers()` reads
+  only `answer` events).
+- `progress(learner)` now iterates the *served release's* lessons (all of them, archived included, so the
+  featured course lists exactly what `getCourse()` listed) instead of `getCourse()`, and adds
+  `missed_objectives?: string[]` (latest attempt, only for lessons with objectives).
+- Not done here (C's files): Worker callables for `exam`, `answerCheck`, and passing `item_ids` through
+  `submitQuiz`; access rules (both are learner actions, like `submitQuiz`). Note that `exam()` returns
+  items with their answer keys, as `snapshot()` already does; hiding keys from learners is a separate,
+  larger change.
+- `learnerDetail` / `myProgress` still read titles and the misconception catalog from `getCourse()`
+  (left for C's course definitions).
+
 ## 8. Fixture (done early, so others can build on it)
 
 `src/course/fixtures/studio-course.ts` exports:
