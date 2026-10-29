@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import { correctResponse } from "../assessment/answers.js";
+import { baseSnapshot } from "../course/bundle.js";
+import { courseFromSnapshot } from "../course/compile.js";
 import { MAX_PAGE_CHARS } from "../course/sources.js";
+import type { BuildInput } from "../generate/types.js";
+import type { CourseBuilder } from "./courses.js";
 import { modelConfigFromEnv } from "../models.js";
 import { sqlite } from "../node/sqlite.js";
 import type { CourseRole } from "./access.js";
@@ -227,5 +232,128 @@ describe("the owner's model key", () => {
     await s.setModelKey("sk-meta-secret-123", "muse-glimmer");
     // Not published: runs are refused before any model is made.
     assert.throws(() => s.beginRun({ mode: "hitl", agents: true, source: "real" }), /isn't published/);
+  });
+});
+
+describe("studio lifecycle", () => {
+  const KEY = "sk-meta-secret-123";
+  /** A builder that returns a fixed (valid) course and reports two steps. */
+  function fakeBuilder(result?: "fail" | "throw" | "invalid") {
+    const seen: { input?: BuildInput; structured?: unknown } = {};
+    const builder: CourseBuilder = async (input, structured, onStep) => {
+      seen.input = input;
+      seen.structured = structured;
+      onStep({ stage: "classify", title: "Classified 1 source", status: "ok", at: NOW });
+      if (result === "throw") throw new Error(`401 Incorrect API key provided: ${KEY}`);
+      onStep({ stage: "done", title: "Built", status: "ok", at: NOW });
+      const report = { steps: [], model_calls: 3, warnings: ["thin pool in l2"] };
+      if (result === "fail") return { ok: false, problems: ["objective o1 has too few items"], report };
+      const snapshot = { ...baseSnapshot(), course_id: "whatever", version: "9.9.9" };
+      if (result === "invalid") snapshot.lessons[1]!.prerequisites = ["no-such-lesson"];
+      return { ok: true, snapshot, report };
+    };
+    return { builder, seen };
+  }
+
+  async function ready(result?: "fail" | "throw" | "invalid") {
+    const { builder, seen } = fakeBuilder(result);
+    const made = initialisedStudio({ ownerModels: ownerModels(), builder });
+    made.s.addSource({ name: "lecture.md", pages: ["Amdahl's law bounds speedup."] });
+    await made.s.updateDetails({ goal: "Reason about speedup" });
+    await made.s.setModelKey(KEY, "muse-spark-1.3");
+    return { ...made, seen };
+  }
+
+  it("refuses to build without sources, a key or a generator", async () => {
+    const noBuilder = initialisedStudio({ ownerModels: ownerModels() }).s;
+    noBuilder.addSource({ name: "a", pages: ["x"] });
+    await noBuilder.setModelKey(KEY, "muse-spark-1.3");
+    assert.throws(() => noBuilder.beginBuild(), /generation isn't available/);
+
+    const { builder } = fakeBuilder();
+    const empty = initialisedStudio({ ownerModels: ownerModels(), builder }).s;
+    assert.throws(() => empty.beginBuild(), /at least one source/);
+    empty.addSource({ name: "a", pages: ["x"] });
+    assert.throws(() => empty.beginBuild(), /model API key/);
+    assert.throws(() => empty.publish(), /Build the course/);
+  });
+
+  it("builds in the background with the owner's key, then publishes v1.0.0 for learners", async () => {
+    const { s, seen, directory } = await ready();
+    const updates: (string | undefined)[] = [];
+    const build = s.beginBuild(() => updates.push(s.overview().build?.status));
+    assert.equal(s.record()?.status, "building");
+    assert.throws(() => s.beginBuild(), /already running/);
+    assert.throws(() => s.addSource({ name: "b", pages: ["y"] }), /Wait for the build/);
+
+    const done = await s.continueBuild(build, () => updates.push(s.overview().build?.status));
+    assert.equal(done.status, "done");
+    assert.deepEqual(done.steps.map((step) => step.title), ["Classified 1 source", "Built"]);
+    assert.deepEqual(done.warnings, ["thin pool in l2"]);
+    assert.equal(done.model_calls, 3);
+    assert.ok(updates.length >= 3, "the UI hears each step");
+    assert.equal(s.record()?.status, "review");
+    assert.equal(seen.input?.course_id, ID);
+    assert.equal(seen.input?.goal, "Reason about speedup");
+    assert.deepEqual(seen.input?.sources.map((x) => x.id), ["s1"]);
+    assert.equal(typeof seen.structured, "function");
+
+    const draft = s.draft();
+    assert.equal(draft.course_id, ID, "code sets the course id");
+    assert.equal(draft.version, "1.0.0", "and the version");
+    assert.throws(() => s.snapshot(), /isn't published/, "a draft isn't for learners");
+
+    assert.deepEqual(s.publish(), { live: "1.0.0" });
+    assert.equal(s.record()?.status, "published");
+    assert.equal(s.overview().live, "1.0.0");
+    assert.throws(() => s.publish(), /Already published/);
+    assert.throws(() => s.beginBuild(), /published/);
+    assert.throws(() => s.addSource({ name: "b", pages: ["y"] }), /keeps its sources/);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(
+      directory.calls.filter((c) => c[0] === "course" && "status" in (c[2] as object)).map((c) => (c[2] as { status: string }).status),
+      ["building", "review", "published"],
+    );
+
+    // Learners can take it now, on v1.0.0.
+    const lesson = courseFromSnapshot(s.snapshot()).lessons[0]!;
+    const answers = lesson.quiz.map((item) => correctResponse(item));
+    const result = s.submitQuiz("user_bob", lesson.id, answers, answers.map(() => 3 as const));
+    assert.equal(result.release, "1.0.0");
+    assert.equal(s.progress("user_bob")[0]?.lesson, lesson.id);
+    assert.equal(s.overview().scenario, "");
+  });
+
+  it("goes back to draft with the generator's problems when a build fails", async () => {
+    const { s } = await ready("fail");
+    const done = await s.continueBuild(s.beginBuild());
+    assert.equal(done.status, "failed");
+    assert.deepEqual(done.problems, ["objective o1 has too few items"]);
+    assert.equal(s.record()?.status, "draft");
+    assert.throws(() => s.draft(), /Nothing has been built/);
+  });
+
+  it("refuses a built course that doesn't validate", async () => {
+    const { s } = await ready("invalid");
+    const done = await s.continueBuild(s.beginBuild());
+    assert.equal(done.status, "failed");
+    assert.match(done.problems![0]!, /no-such-lesson/);
+  });
+
+  it("never lets the key into state, even when an error quotes it", async () => {
+    const { s } = await ready("throw");
+    const done = await s.continueBuild(s.beginBuild());
+    assert.equal(done.status, "failed");
+    assert.match(done.problems![0]!, /\[model key\]/);
+    assert.ok(!JSON.stringify(s.overview()).includes(KEY));
+  });
+
+  it("marks a build cut off by a restart as failed", async () => {
+    const { s, sql } = await ready();
+    s.beginBuild();
+    const restarted = studioService({ ownerModels: ownerModels() }, sql).s;
+    assert.equal(restarted.record()?.status, "draft");
+    assert.equal(restarted.buildState()?.status, "failed");
+    assert.match(restarted.buildState()!.problems![0]!, /interrupted/);
   });
 });

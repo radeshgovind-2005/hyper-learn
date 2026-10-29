@@ -1,7 +1,9 @@
 import { baseSnapshot } from "../course/bundle.js";
 import type { CourseSnapshot } from "../course/compile.js";
+import type { BuildInput, BuildResult, BuildStep } from "../generate/types.js";
 import { EXEMPLARS } from "../interventions/exemplars.js";
 import type { Intervention } from "../interventions/templates.js";
+import type { StructuredFactory } from "../models.js";
 import { SCENARIOS, type Scenario } from "../simulation/scenarios.js";
 
 // Which courses exist. Built-in ones ship with the code; studio courses are created by the directory
@@ -19,6 +21,12 @@ export interface CourseDefinition {
   /** Hand-written interventions a reference run (no model) can release. */
   exemplars: readonly Intervention[];
 }
+
+/**
+ * Builds a course from its sources (src/generate). Injected, so the app doesn't depend on how generation
+ * works and tests can pass a fake. `structured` makes models with the course owner's key.
+ */
+export type CourseBuilder = (input: BuildInput, structured: StructuredFactory, onStep: (step: BuildStep) => void) => Promise<BuildResult>;
 
 /** The course everyone sees, with global roles: production data lives in its object, so its name never changes. */
 export const FEATURED_COURSE = "agentic-coding";

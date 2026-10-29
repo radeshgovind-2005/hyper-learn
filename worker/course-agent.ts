@@ -10,6 +10,7 @@ import { LANGSMITH_SETTINGS } from "../src/observability.js";
 import type { ApprovalMode, ApprovalResponse } from "../src/nodes/release.js";
 import type { Sql } from "../src/storage/sql.js";
 import { workersAiEmbedder, workersAiGuard } from "./ai.js";
+import { courseBuilder } from "./builder.js";
 
 /** What every connected browser sees, kept in sync by the Agents SDK. */
 export interface CourseAgentState {
@@ -51,6 +52,7 @@ export class CourseAgent extends Agent<Env, CourseAgentState> {
         ...(builtIn
           ? { agentsAvailable: Boolean(env.MODEL_API_KEY && env.MODEL_BASE_URL), models: new ModelProvider(modelConfigFromEnv(env)) }
           : {
+              ...(courseBuilder && { builder: courseBuilder }),
               ownerModels: {
                 secret: env.KEY_ENCRYPTION_SECRET,
                 // The Worker's endpoint and limits; the key comes from the owner, opened only when used.
@@ -69,7 +71,7 @@ export class CourseAgent extends Agent<Env, CourseAgentState> {
 
   override async onStart() {
     if (!this.known()) return;
-    this.publish();
+    this.pushState();
     // Idempotent: one schedule however often the object wakes.
     await this.scheduleEvery(CourseAgent.TRIAL_CHECK_INTERVAL, "checkTrial");
   }
@@ -89,7 +91,7 @@ export class CourseAgent extends Agent<Env, CourseAgentState> {
   async initialise(input: { id: string; title: string; description: string; owner: Identity }) {
     if (input?.id !== this.name) throw new Error("Course id doesn't match this object");
     const record = this.app.initialise(input);
-    this.publish();
+    this.pushState();
     await this.scheduleEvery(CourseAgent.TRIAL_CHECK_INTERVAL, "checkTrial");
     return { id: record.id };
   }
@@ -103,8 +105,8 @@ export class CourseAgent extends Agent<Env, CourseAgentState> {
 
   /** Scheduled, not callable by clients: decides an open real trial once both arms have enough learners. */
   async checkTrial() {
-    const result = this.app.evaluateTrial(() => this.publish());
-    if (result.status !== "none") this.publish();
+    const result = this.app.evaluateTrial(() => this.pushState());
+    if (result.status !== "none") this.pushState();
   }
 
   /** Binds the connection to the person the Worker verified. A connection without one is closed. */
@@ -138,7 +140,7 @@ export class CourseAgent extends Agent<Env, CourseAgentState> {
     if (source !== "server") throw new Error("State is read-only");
   }
 
-  private publish() {
+  private pushState() {
     this.setState({ overview: this.app.overview() });
   }
 
@@ -227,7 +229,7 @@ export class CourseAgent extends Agent<Env, CourseAgentState> {
   async updateDetails(input: unknown) {
     this.actor("manage_course");
     const info = await this.app.updateDetails(input);
-    this.publish();
+    this.pushState();
     return info;
   }
 
@@ -277,7 +279,7 @@ export class CourseAgent extends Agent<Env, CourseAgentState> {
     const { userId } = this.actor("manage_course");
     const settings = await this.app.setModelKey(key, model);
     console.log(`Course ${this.name}: model key set by ${userId} (model ${settings.model})`);
-    this.publish();
+    this.pushState();
     return settings;
   }
 
@@ -285,8 +287,38 @@ export class CourseAgent extends Agent<Env, CourseAgentState> {
   clearModelKey() {
     this.actor("manage_course");
     const settings = this.app.clearModelKey();
-    this.publish();
+    this.pushState();
     return settings;
+  }
+
+  // ─── Lifecycle (owner, or an admin) ──────────────────────────────────
+
+  /**
+   * Builds the course from its sources with the owner's key. Checks happen before returning; the build
+   * continues in the background and its steps reach the UI through state (overview.build).
+   */
+  @callable()
+  build() {
+    this.actor("manage_course");
+    const build = this.app.beginBuild(() => this.pushState());
+    this.background(() => this.app.continueBuild(build, () => this.pushState()));
+  }
+
+  /** The built course, to review before publishing. */
+  @callable()
+  draft() {
+    this.actor("manage_course");
+    return this.app.draft();
+  }
+
+  /** Makes the built course release 1.0.0, live for learners. */
+  @callable()
+  publish() {
+    const { userId } = this.actor("manage_course");
+    const result = this.app.publish();
+    console.log(`Course ${this.name} published by ${userId}`);
+    this.pushState();
+    return result;
   }
 
   private disconnect(userId: string, reason: string) {
@@ -381,7 +413,7 @@ export class CourseAgent extends Agent<Env, CourseAgentState> {
   reset(scenario: string) {
     this.actor("reset");
     this.app.reset(scenario);
-    this.publish();
+    this.pushState();
   }
 
   /**
@@ -392,24 +424,24 @@ export class CourseAgent extends Agent<Env, CourseAgentState> {
   startRun(mode: ApprovalMode, agents: boolean, source: DataSource = "simulated") {
     this.actor("repair");
     if (source !== "simulated" && source !== "real") throw new Error(`Unknown data source "${String(source)}"`);
-    const run = this.app.beginRun({ mode, agents, source }, () => this.publish());
-    this.background(() => this.app.continueRun(run, () => this.publish()));
+    const run = this.app.beginRun({ mode, agents, source }, () => this.pushState());
+    this.background(() => this.app.continueRun(run, () => this.pushState()));
   }
 
   /** Answers the pending approval. A second answer to the same approval is refused here, not lost. */
   @callable()
   approve(response: ApprovalResponse) {
     const { userId } = this.actor("repair");
-    const run = this.app.beginApproval(() => this.publish());
-    this.background(() => this.app.continueApproval(run, { ...response, note: response.note ?? `approved by ${userId}` }, () => this.publish()));
+    const run = this.app.beginApproval(() => this.pushState());
+    this.background(() => this.app.continueApproval(run, { ...response, note: response.note ?? `approved by ${userId}` }, () => this.pushState()));
   }
 
   /** Measures the open real trial now instead of waiting for the hourly check. */
   @callable()
   evaluateTrial() {
     this.actor("repair");
-    const result = this.app.evaluateTrial(() => this.publish());
-    this.publish();
+    const result = this.app.evaluateTrial(() => this.pushState());
+    this.pushState();
     return result;
   }
 
@@ -417,13 +449,13 @@ export class CourseAgent extends Agent<Env, CourseAgentState> {
   @callable()
   stopTrial() {
     const { userId } = this.actor("repair");
-    this.app.stopTrial(userId, () => this.publish());
-    this.publish();
+    this.app.stopTrial(userId, () => this.pushState());
+    this.pushState();
   }
 
   private background(work: () => Promise<unknown>) {
     void this.keepAliveWhile(work)
       .catch((error: unknown) => console.error("Background run failed:", error))
-      .finally(() => this.publish());
+      .finally(() => this.pushState());
   }
 }

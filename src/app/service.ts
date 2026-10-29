@@ -29,7 +29,9 @@ import { type Sql, SqlEventLog, SqlMeta, SqlProfiles, SqlReleaseStore, SqlThread
 import { type Member, SqlMembers, SqlSources, type SourceSummary } from "../storage/studio.js";
 import type { Identity as Person } from "../auth/identity.js";
 import { COURSE_ROLES, type CourseRole } from "./access.js";
-import { builtInCourse, type CourseDefinition, FEATURED_COURSE, isStudioId } from "./courses.js";
+import { builtInCourse, type CourseBuilder, type CourseDefinition, FEATURED_COURSE, isStudioId } from "./courses.js";
+import type { BuildStep } from "../generate/types.js";
+import { initialRelease } from "../releases/release.js";
 import { type CourseDetails, CourseDetailsSchema, type CourseRecord, type CourseStatus, firstIssue } from "./directory.js";
 import { approveWithinCeiling, referenceModels } from "./reference.js";
 import { flushTraces, traceConfig } from "../observability.js";
@@ -214,7 +216,22 @@ interface StoredModelKey {
   set_at: string;
 }
 
+/** A studio course's build, as the owner watches it. */
+export interface BuildState {
+  status: "running" | "done" | "failed";
+  steps: BuildStep[];
+  started_at: string;
+  finished_at?: string;
+  /** Why a build failed: the generator's problems, or an error. */
+  problems?: string[];
+  /** What the owner should look at before publishing. */
+  warnings?: string[];
+  model_calls?: number;
+}
+
 export interface ServiceOptions {
+  /** Generates a studio course from its sources (the Worker passes src/generate's; tests a fake). */
+  builder?: CourseBuilder;
   /** A studio course's owner-key settings (ignored for built-in courses, which use `models`). */
   ownerModels?: OwnerModelSettings;
   /**
@@ -289,6 +306,8 @@ export class CourseService {
     this.members = new SqlMembers(sql);
     this.sources = new SqlSources(sql);
     this.saver = new PersistentMemorySaver(new SqlThreadStore(sql));
+    // A build lives in this instance's memory; one marked running at start was cut off by a restart.
+    if (this.record()?.status === "building") this.endBuild("failed", { problems: ["The build was interrupted (the server restarted); build again"] });
   }
 
   // ─── Course and releases ──────────────────────────────────────────
@@ -354,6 +373,7 @@ export class CourseService {
       run: this.run(),
       trial: this.trial(),
       agentsAvailable: this.agentsAvailable(),
+      build: this.buildState() ?? null,
     };
   }
 
@@ -694,7 +714,7 @@ export class CourseService {
         run.steps.push({ node: "author", actor: "code", title: "Needs a model to write this", detail: error.message, status: "info", at: this.now() });
       } else {
         run.status = "error";
-        run.error = error instanceof Error ? error.message : String(error);
+        run.error = this.redact(error instanceof Error ? error.message : String(error));
       }
     }
     await flushTraces();
@@ -1106,7 +1126,111 @@ export class CourseService {
     if (!owner?.config.baseURL) throw new Error("No model endpoint is configured on the Worker (MODEL_BASE_URL)");
     if (!owner.choices.includes(stored.model)) throw new Error(`${stored.model} is no longer offered; pick another model`);
     const apiKey = await openSecret(stored.sealed, owner.secret, record.id);
+    this.secrets.add(apiKey);
     return new ModelProvider({ ...owner.config, apiKey, models: { reasoning: stored.model, fast: stored.model } });
+  }
+
+  /** Keys opened in this instance, so an error message that quotes one never reaches state. */
+  private readonly secrets = new Set<string>();
+
+  private redact(text: string): string {
+    let out = text;
+    for (const secret of this.secrets) out = out.replaceAll(secret, "[model key]");
+    return out;
+  }
+
+  // ─── Lifecycle (studio courses): draft → building → review → published ──
+
+  buildState(): BuildState | undefined {
+    return this.fixed ? undefined : (this.meta.get<BuildState>("build") ?? undefined);
+  }
+
+  private setStatus(status: CourseStatus) {
+    const record = this.studio();
+    this.meta.set("course", { ...record, status });
+    void this.report((d) => d.courseUpdated(record.id, { status }));
+  }
+
+  private endBuild(status: "done" | "failed", result: Pick<BuildState, "problems" | "warnings" | "model_calls">, onUpdate?: () => void) {
+    const build = this.buildState();
+    this.meta.set("build", { ...(build ?? { steps: [], started_at: this.now() }), ...result, status, finished_at: this.now() } satisfies BuildState);
+    // A failed rebuild leaves the previous build (if any) in review.
+    this.setStatus(status === "done" || this.meta.get<CourseSnapshot>("draft") ? "review" : "draft");
+    onUpdate?.();
+  }
+
+  /**
+   * Checks a build can start and records it, synchronously, so the caller hears why not at once; the
+   * build itself (continueBuild) runs in the background. A draft or a built course in review can be
+   * (re)built; a published one changes through releases instead.
+   */
+  beginBuild(onUpdate?: () => void): BuildState {
+    const record = this.studio();
+    if (record.status === "building") throw new Error("A build is already running");
+    if (record.status === "published") throw new Error("This course is published; it changes through releases now, not rebuilds");
+    if (this.sources.count() === 0) throw new Error("Add at least one source first");
+    if (!this.options.builder) throw new Error("Course generation isn't available on this server yet");
+    if (!this.agentsAvailable()) throw new Error("Set a model API key first");
+    const build: BuildState = { status: "running", steps: [], started_at: this.now() };
+    this.meta.set("build", build);
+    this.setStatus("building");
+    onUpdate?.();
+    return build;
+  }
+
+  /** The long part of a build: runs the generator with the owner's key; never throws. */
+  async continueBuild(build: BuildState, onUpdate?: () => void): Promise<BuildState> {
+    const record = this.studio();
+    try {
+      const provider = await this.ownerProvider();
+      const input = {
+        course_id: record.id,
+        title: record.title,
+        ...(record.goal && { goal: record.goal }),
+        ...(record.description && { description: record.description }),
+        ...(record.language && { language: record.language }),
+        sources: this.sources.all(),
+      };
+      const result = await this.options.builder!(input, provider.structured, (step) => {
+        build.steps.push({ ...step, ...(step.detail && { detail: this.redact(step.detail) }) });
+        this.meta.set("build", build);
+        onUpdate?.();
+      });
+      const report = { warnings: result.report.warnings, model_calls: result.report.model_calls };
+      if (!result.ok) {
+        this.endBuild("failed", { ...report, problems: result.problems }, onUpdate);
+      } else {
+        // Code sets what identifies the release; the generator only supplies content.
+        const snapshot = { ...result.snapshot, course_id: record.id, version: "1.0.0" };
+        courseFromSnapshot(snapshot); // throws if the course isn't valid
+        this.meta.set("draft", snapshot);
+        this.endBuild("done", report, onUpdate);
+      }
+    } catch (error) {
+      this.endBuild("failed", { problems: [this.redact(error instanceof Error ? error.message : String(error))] }, onUpdate);
+    }
+    return this.buildState()!;
+  }
+
+  /** The built course, for the owner to review before publishing. */
+  draft(): CourseSnapshot {
+    this.studio();
+    const draft = this.meta.get<CourseSnapshot>("draft");
+    if (!draft) throw new Error("Nothing has been built yet");
+    return draft;
+  }
+
+  /** Makes the built course release 1.0.0, live: learners can take it from now on. */
+  publish(): { live: string } {
+    const record = this.studio();
+    if (record.status !== "review") throw new Error(record.status === "published" ? "Already published" : "Build the course and review it first");
+    if (this.published()) throw new Error("Already published");
+    const snapshot = this.draft();
+    courseFromSnapshot(snapshot);
+    this.releases.add(initialRelease(snapshot, this.now()));
+    this.compiled = undefined;
+    this.setStatus("published");
+    return { live: this.releases.live().version };
   }
 
   /** Tells the directory; a failure there is logged, not thrown: this object stays the authority. */
