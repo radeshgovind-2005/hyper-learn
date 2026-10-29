@@ -53,6 +53,8 @@ export interface ScoredAnswer {
 /**
  * Grades one attempt's scored items (pilot and excluded items are skipped) and whether the attempt passed.
  * `scored` keys each grade by its item, since a drawn exam shows only some of the pool.
+ * Passing needs the mean score, and for items with objectives at least one fully right answer per
+ * objective shown: partial credit alone (half a multi-select, most of an ordering) isn't mastery of one.
  */
 export function gradeAttempt(
   lesson: Lesson,
@@ -69,7 +71,9 @@ export function gradeAttempt(
   });
   const grades = scored.map((s) => s.grade);
   const score = grades.reduce((sum, grade) => sum + grade.score, 0) / Math.max(1, grades.length);
-  return { grades, passed: score >= PASS_THRESHOLD, scored };
+  const objectives = new Set(scored.flatMap((s) => (s.item.objective ? [s.item.objective] : [])));
+  const everyObjective = [...objectives].every((o) => scored.some((s) => s.item.objective === o && s.grade.correct));
+  return { grades, passed: score >= PASS_THRESHOLD && everyObjective, scored };
 }
 
 /**
