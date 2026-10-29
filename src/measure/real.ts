@@ -25,6 +25,8 @@ export function armOf(userId: string, trialVersion: string): Arm {
 }
 
 interface AnswerEventData {
+  /** Absent on answers recorded before exams were drawn: the whole quiz, in order. */
+  item_ids?: string[];
   responses: QuizAttempt["answers"];
   certainty: QuizAttempt["certainty"];
   attempt?: number;
@@ -46,6 +48,7 @@ export function attemptsFrom(events: readonly LearnerEvent[]): (QuizAttempt & { 
         learner_id: ids.get(e.learner)!,
         learner: e.learner,
         lesson_id: e.lesson!,
+        ...(d.item_ids && { item_ids: d.item_ids }),
         answers: d.responses,
         certainty: d.certainty,
         attempt,

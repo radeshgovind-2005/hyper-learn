@@ -38,8 +38,13 @@ export const toGraph = (lessons: readonly LessonMeta[]): PrereqGraph =>
  * lesson (one that doesn't depend on this one; it needn't be a prerequisite yet, since that is how a
  * missing prerequisite shows up); misconception tags that exist and point at the lesson that teaches them; every tagged
  * wrong answer reachable; every direct prerequisite and every named misconception detectable.
+ * With objectives, also the rules of validateObjectives.
  */
-export function validateCourse(lessons: readonly Lesson[], misconceptions: readonly MisconceptionDef[] = []): string[] {
+export function validateCourse(
+  lessons: readonly Lesson[],
+  misconceptions: readonly MisconceptionDef[] = [],
+  objectives: readonly Objective[] = [],
+): string[] {
   const problems: string[] = [];
   const ids = new Set<string>();
   const questionIds = new Set<string>();
@@ -124,6 +129,42 @@ export function validateCourse(lessons: readonly Lesson[], misconceptions: reado
     if (!detected.has(m.id)) problems.push(`Misconception "${m.id}" is never revealed by any wrong answer`);
   }
 
+  return [...problems, ...validateObjectives(lessons, objectives)];
+}
+
+/**
+ * Objective rules: unique ids, each in a known lesson; every item that names an objective names one of
+ * its own lesson's; in a lesson with objectives, every scored item names one; and each objective has
+ * enough scored items for a retake to be fresh (2 × per_objective with an exam config, else at least 1).
+ */
+export function validateObjectives(lessons: readonly Lesson[], objectives: readonly Objective[]): string[] {
+  const problems: string[] = [];
+  const byId = new Map<string, Objective>();
+  const lessonIds = new Set(lessons.map((lesson) => lesson.id));
+  for (const o of objectives) {
+    if (byId.has(o.id)) problems.push(`Duplicate objective id "${o.id}"`);
+    if (!lessonIds.has(o.lesson)) problems.push(`Objective "${o.id}" belongs to unknown lesson "${o.lesson}"`);
+    byId.set(o.id, o);
+  }
+
+  for (const lesson of lessons) {
+    const own = objectives.filter((o) => o.lesson === lesson.id);
+    for (const item of lesson.quiz) {
+      const where = `Question "${item.id}" in "${lesson.id}"`;
+      if (item.objective === undefined) {
+        if (own.length > 0 && !item.pilot) problems.push(`${where} must name one of the lesson's objectives`);
+        continue;
+      }
+      const o = byId.get(item.objective);
+      if (!o) problems.push(`${where}: unknown objective "${item.objective}"`);
+      else if (o.lesson !== lesson.id) problems.push(`${where}: objective "${o.id}" belongs to "${o.lesson}", not "${lesson.id}"`);
+    }
+    const needed = 2 * (lesson.exam?.per_objective ?? 0) || 1;
+    for (const o of own) {
+      const n = lesson.quiz.filter((item) => !item.pilot && item.objective === o.id).length;
+      if (n < needed) problems.push(`Objective "${o.id}" has ${n} scored question${n === 1 ? "" : "s"}; it needs at least ${needed}`);
+    }
+  }
   return problems;
 }
 
@@ -132,7 +173,7 @@ export function buildCourse(
   lessons: Lesson[],
 ): Course {
   const misconceptions = manifest.misconceptions ?? [];
-  const problems = validateCourse(lessons, misconceptions);
+  const problems = validateCourse(lessons, misconceptions, manifest.objectives ?? []);
   if (problems.length > 0) {
     throw new Error(`Course "${manifest.id}" is invalid:\n- ${problems.join("\n- ")}`);
   }

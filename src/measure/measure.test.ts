@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { getCourse } from "../course/bundle.js";
+import { courseFromSnapshot } from "../course/compile.js";
+import { STUDIO_MISSING_PREREQ, studioSnapshot } from "../course/fixtures/studio-course.js";
 import { MemoryReleaseStore, planRelease, type Release } from "../releases/release.js";
 import type { Change } from "../releases/changes.js";
 import { EXEMPLARS } from "../interventions/exemplars.js";
@@ -104,5 +106,16 @@ describe("SimMeasurer", () => {
   it("uses a different seed from the diagnosis", async () => {
     const { live, candidate, measurer } = trial("missing-prereq", { op: "add_prerequisite", lesson: "multi-agent", prerequisite: "tool-calling" });
     assert.notEqual((await measurer.measure(live, candidate)).seed, getScenario("missing-prereq").seed);
+  });
+
+  it("measures a course with drawn exams: keeps the studio fixture's missing prerequisite once added back", async () => {
+    const published = studioSnapshot();
+    published.lessons.find((l) => l.id === "invalidation")!.prerequisites = [];
+    const store = new MemoryReleaseStore(published);
+    const plan = planRelease(store, [{ op: "add_prerequisite", lesson: "invalidation", prerequisite: "eviction" }], "test");
+    assert.ok(plan.ok, !plan.ok ? plan.problems.join() : "");
+    const m = await new SimMeasurer(courseFromSnapshot(studioSnapshot()), STUDIO_MISSING_PREREQ).measure(store.live(), plan.candidate as Release);
+    assert.equal(m.primary.lesson, "invalidation");
+    assert.equal(decideTrial(m).verdict, "keep", decideTrial(m).reasons.join());
   });
 });

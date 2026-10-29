@@ -1,4 +1,5 @@
 import { type Grade, gradeItem } from "../assessment/grade.js";
+import type { QuizItem } from "../assessment/items.js";
 import type { Course, Lesson, PrereqGraph } from "../course/schema.js";
 import type { QuizAttempt } from "../simulation/learners.js";
 import type { Gap, NamedMisconception, NodePerformance } from "../state.js";
@@ -25,32 +26,63 @@ export function wilsonInterval(hits: number, total: number, z = 1.96): [number, 
   return [Math.max(0, center - margin), Math.min(1, center + margin)];
 }
 
-/** Grades one attempt's scored items (pilot and excluded items are skipped) and whether the attempt passed. */
+/**
+ * The items an attempt showed, in the order of its answers: `item_ids` when the exam was drawn from a
+ * pool, else the whole quiz in order (attempts recorded before exams were drawn have no `item_ids`).
+ */
+export function attemptItems(lesson: Lesson, attempt: QuizAttempt): QuizItem[] {
+  if (!attempt.item_ids) return lesson.quiz;
+  if (attempt.item_ids.length !== attempt.answers.length) {
+    throw new Error(`Attempt for "${lesson.id}" shows ${attempt.item_ids.length} items but has ${attempt.answers.length} answers`);
+  }
+  if (new Set(attempt.item_ids).size !== attempt.item_ids.length) throw new Error(`Attempt for "${lesson.id}" shows an item twice`);
+  return attempt.item_ids.map((id) => {
+    const item = lesson.quiz.find((q) => q.id === id);
+    if (!item) throw new Error(`Attempt for "${lesson.id}" answers "${id}", which is not in its quiz`);
+    return item;
+  });
+}
+
+/** One scored answer: the item, its grade, and where it sat in the attempt (to read its certainty). */
+export interface ScoredAnswer {
+  item: QuizItem;
+  position: number;
+  grade: Grade;
+}
+
+/**
+ * Grades one attempt's scored items (pilot and excluded items are skipped) and whether the attempt passed.
+ * `scored` keys each grade by its item, since a drawn exam shows only some of the pool.
+ */
 export function gradeAttempt(
   lesson: Lesson,
   attempt: QuizAttempt,
   excluded: ReadonlySet<string> = new Set(),
-): { grades: Grade[]; passed: boolean } {
-  const grades = lesson.quiz.flatMap((item, i) => {
+): { grades: Grade[]; passed: boolean; scored: ScoredAnswer[] } {
+  const scored = attemptItems(lesson, attempt).flatMap((item, i): ScoredAnswer[] => {
     const response = attempt.answers[i];
     if (response === undefined) throw new Error(`Attempt for "${lesson.id}" has no answer to question ${i}`);
     if (item.pilot || excluded.has(item.id)) return [];
     const grade = gradeItem(item, response, lesson.id);
     // A model grade that needs a human's review doesn't count until it gets one.
-    return grade.needs_review ? [] : [grade];
+    return grade.needs_review ? [] : [{ item, position: i, grade }];
   });
+  const grades = scored.map((s) => s.grade);
   const score = grades.reduce((sum, grade) => sum + grade.score, 0) / Math.max(1, grades.length);
-  return { grades, passed: score >= PASS_THRESHOLD };
+  return { grades, passed: score >= PASS_THRESHOLD, scored };
 }
 
-/** Items of a lesson whose statistics show they are broken: they would mislead the diagnosis. */
+/**
+ * Items of a lesson whose statistics show they are broken: they would mislead the diagnosis.
+ * Each item is judged only on the attempts that showed it.
+ */
 export function brokenItems(lesson: Lesson, attempts: readonly QuizAttempt[]): ItemStats[] {
-  const scored = lesson.quiz.filter((item) => !item.pilot);
-  const grades = attempts.map((attempt) => gradeAttempt(lesson, attempt).grades);
-  return itemStatistics(
-    scored.map((item) => item.id),
-    grades,
-  ).filter((stats) => stats.flag === "negative_discrimination");
+  const scored = lesson.quiz.filter((item) => !item.pilot).map((item) => item.id);
+  const grades = attempts.map((attempt) => {
+    const byItem = new Map(gradeAttempt(lesson, attempt).scored.map((s) => [s.item.id, s.grade] as const));
+    return scored.map((id) => byItem.get(id));
+  });
+  return itemStatistics(scored, grades).filter((stats) => stats.flag === "negative_discrimination");
 }
 
 /** The named misconceptions a set of attempts show, as a share of the failed attempts. */
@@ -65,23 +97,20 @@ function namedMisconceptions(
   let failed = 0;
 
   for (const attempt of attempts) {
-    const { passed } = gradeAttempt(lesson, attempt, excluded);
+    const { passed, scored } = gradeAttempt(lesson, attempt, excluded);
     if (passed) continue;
     failed++;
     const shown = new Set<string>();
-    lesson.quiz.forEach((item, i) => {
-      if (item.pilot || excluded.has(item.id)) return;
-      const grade = gradeItem(item, attempt.answers[i]!, lesson.id);
-      if (grade.needs_review) return;
+    for (const { grade, position } of scored) {
       for (const { misconception } of grade.errors) {
         if (!misconception) continue;
         shown.add(misconception);
         const counts = confident.get(misconception) ?? { sure: 0, total: 0 };
         counts.total++;
-        if (attempt.certainty[i] === 3) counts.sure++;
+        if (attempt.certainty[position] === 3) counts.sure++;
         confident.set(misconception, counts);
       }
-    });
+    }
     for (const id of shown) shownBy.set(id, (shownBy.get(id) ?? 0) + 1);
   }
 
@@ -106,6 +135,7 @@ function namedMisconceptions(
  * Grades quiz attempts and summarises each lesson for the Curator. Lessons nobody took are left out.
  * Items with negative discrimination are excluded first, so a broken question can't drive a diagnosis.
  * Wrong answers are attributed to the lesson they reveal a gap in, or to the lesson itself.
+ * Lessons with objectives also get each objective's miss rate (over the attempts that showed its items).
  */
 export function computePerformance(
   course: Course,
@@ -122,8 +152,17 @@ export function computePerformance(
     const wrongBy = new Map<string, number>();
     let wrongTotal = 0;
 
+    const own = course.objectives.filter((o) => o.lesson === lesson.id);
+    const byObjective = new Map(own.map((o): [string, { responses: number; wrong: number }] => [o.id, { responses: 0, wrong: 0 }]));
+
     for (const attempt of lessonAttempts) {
       const { grades, passed } = gradeAttempt(lesson, attempt, excluded);
+      for (const grade of grades) {
+        const counts = grade.objective === undefined ? undefined : byObjective.get(grade.objective);
+        if (!counts) continue;
+        counts.responses++;
+        if (!grade.correct) counts.wrong++;
+      }
       for (const { points_to } of grades.flatMap((grade) => grade.errors)) {
         wrongBy.set(points_to, (wrongBy.get(points_to) ?? 0) + 1);
         wrongTotal++;
@@ -152,6 +191,11 @@ export function computePerformance(
         misconceptions: namedMisconceptions(course, lesson, lessonAttempts, excluded),
         mastery_rate: round2(mastered / lessonAttempts.length),
         excluded_items: [...excluded],
+        ...(own.length > 0 && {
+          objectives: [...byObjective]
+            .filter(([, c]) => c.responses > 0)
+            .map(([id, c]) => ({ id, miss_rate: round2(c.wrong / c.responses), responses: c.responses })),
+        }),
       },
     ];
   });

@@ -70,7 +70,10 @@ export type CourseManifest = z.infer<typeof CourseManifestSchema>;
 export interface Lesson extends LessonMeta {
   /** Lesson text in Markdown, without the quiz block. */
   body: string;
+  /** The exam pool: every item when `exam` is absent. */
   quiz: QuizItem[];
+  /** How each attempt's exam is drawn from `quiz` (src/assessment/exam.ts); absent = every item, in order. */
+  exam?: ExamConfig;
 }
 
 /** Lesson id → ids of its direct prerequisites. */

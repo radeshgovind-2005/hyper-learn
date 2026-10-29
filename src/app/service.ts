@@ -4,9 +4,10 @@ import { beliefsOf, interventionsOf, quizHistory, sessionsOf, timelineOf, timePe
 import type { Identity } from "../auth/identity.js";
 import { gradeAttempt } from "../analytics/performance.js";
 import { type Grade, gradeItem } from "../assessment/grade.js";
-import type { Certainty, Response } from "../assessment/items.js";
+import { drawExam, examSeed } from "../assessment/exam.js";
+import type { Certainty, QuizItem, Response } from "../assessment/items.js";
 import { getCourse } from "../course/bundle.js";
-import { type CourseSnapshot, courseFromSnapshot, type LiveIntervention, liveInterventions } from "../course/compile.js";
+import { type CheckBlock, type CourseSnapshot, courseFromSnapshot, type LiveIntervention, liveInterventions, liveObjectives } from "../course/compile.js";
 import { buildGraph } from "../graph.js";
 import type { Embedder, Guard } from "../guards/guards.js";
 import { SimMeasurer } from "../measure/measure.js";
@@ -20,7 +21,7 @@ import { releasePerformance, scenarioSnapshot } from "../simulation/index.js";
 import { getScenario, SCENARIOS } from "../simulation/scenarios.js";
 import type { State } from "../state.js";
 import { PersistentMemorySaver } from "../storage/checkpointer.js";
-import { type Sql, SqlEventLog, SqlMeta, SqlProfiles, SqlReleaseStore, SqlThreadStore } from "../storage/sql.js";
+import { type LearnerEvent, type Sql, SqlEventLog, SqlMeta, SqlProfiles, SqlReleaseStore, SqlThreadStore } from "../storage/sql.js";
 import { approveWithinCeiling, referenceModels } from "./reference.js";
 import { flushTraces, traceConfig } from "../observability.js";
 import { type RunStep, stepFor } from "./timeline.js";
@@ -112,6 +113,22 @@ export interface LessonProgress {
   mastered: boolean;
   /** Misconceptions shown in the latest attempt. */
   beliefs: string[];
+  /** Objectives answered wrongly in the latest attempt; only for lessons with objectives. */
+  missed_objectives?: string[];
+}
+
+/** The questions one attempt at a lesson shows a learner, drawn from its pool (see drawExam). */
+export interface Exam {
+  release: string;
+  lesson: string;
+  /** Which attempt this is for the learner (1 = first). */
+  attempt: number;
+  items: QuizItem[];
+}
+
+export interface CheckResult {
+  correct: boolean;
+  feedback: string;
 }
 
 export interface RunOptions {
@@ -224,30 +241,70 @@ export class CourseService {
 
   // ─── Learners ─────────────────────────────────────────────────────
 
-  /** Grades a quiz on the release this learner is served, records it, and returns their next steps. */
-  submitQuiz(learner: string, lessonId: string, answers: Response[], certainty: Certainty[], session?: string): QuizResult {
-    const live = this.servedRelease(learner);
-    const course = courseFromSnapshot(live.snapshot);
+  /** This learner's graded quizzes on `lessonId`, oldest first, on any release. */
+  private answersTo(learner: string, lessonId: string): LearnerEvent[] {
+    return this.events.forLearner(learner).filter((e) => e.kind === "answer" && e.lesson === lessonId);
+  }
+
+  /**
+   * The draw for a learner's next attempt on a release: seeded by (learner, lesson, attempt, release), and
+   * preferring items they haven't seen, so the server can recompute it at submit without storing it.
+   */
+  private draw(learner: string, release: Release, lessonId: string) {
+    const course = courseFromSnapshot(release.snapshot);
     const lesson = course.getLesson(lessonId);
-    if (!lesson) throw new Error(`No lesson "${lessonId}" in ${live.version}`);
-    if (answers.length !== lesson.quiz.length) throw new Error(`Expected ${lesson.quiz.length} answers, got ${answers.length}`);
+    if (!lesson) throw new Error(`No lesson "${lessonId}" in ${release.version}`);
+    const previous = this.answersTo(learner, lessonId);
+    const attempt = previous.length + 1;
+    // Answers recorded before exams were drawn have no item_ids, but every one lists its graded items.
+    const seen = previous.flatMap((e) => {
+      const d = e.data as { item_ids?: string[]; items?: { item_id: string }[] };
+      return d.item_ids ?? d.items?.map((i) => i.item_id) ?? [];
+    });
+    const items = drawExam(lesson, course.objectives, { seen, seed: examSeed(learner, lessonId, attempt, release.version) });
+    return { lesson, attempt, items };
+  }
+
+  /** The questions this learner's next attempt at a lesson shows, on the release they are served. */
+  exam(learner: string, lessonId: string): Exam {
+    const release = this.servedRelease(learner);
+    const { attempt, items } = this.draw(learner, release, lessonId);
+    return { release: release.version, lesson: lessonId, attempt, items };
+  }
+
+  /**
+   * Grades a quiz on the release this learner is served, records it, and returns their next steps.
+   * `item_ids` are the questions exam() drew, in the order answered; they must match the draw the server
+   * recomputes. They may be left out only for a lesson without an exam config (the whole quiz, in order).
+   */
+  submitQuiz(learner: string, lessonId: string, answers: Response[], certainty: Certainty[], session?: string, item_ids?: string[]): QuizResult {
+    const live = this.servedRelease(learner);
+    const { lesson, attempt, items: drawn } = this.draw(learner, live, lessonId);
+    const expected = drawn.map((item) => item.id);
+    if (item_ids === undefined && lesson.exam) {
+      throw new Error(`The exam for "${lessonId}" is drawn per attempt: send the item_ids exam() returned`);
+    }
+    if (item_ids !== undefined && (item_ids.length !== expected.length || item_ids.some((id, i) => id !== expected[i]))) {
+      throw new Error(`These aren't the questions drawn for this attempt at "${lessonId}" on ${live.version}; load the exam again`);
+    }
+    if (answers.length !== drawn.length) throw new Error(`Expected ${drawn.length} answers, got ${answers.length}`);
+    if (certainty.length !== drawn.length) throw new Error(`Expected ${drawn.length} certainty ratings, got ${certainty.length}`);
 
     // Short answers arrive as plain text. Without a calibrated grader they are kept for a human to review, unscored.
     const responses = answers.map((answer, i) =>
-      lesson.quiz[i]!.type === "short_answer" && typeof answer === "string"
+      drawn[i]!.type === "short_answer" && typeof answer === "string"
         ? { text: answer, criteria: [], detectors: [], needs_review: true }
         : answer,
     );
-    const previous = this.events.forLearner(learner).filter((e) => e.kind === "answer" && e.lesson === lessonId).length;
-    const { grades, passed } = gradeAttempt(lesson, { learner_id: 0, lesson_id: lessonId, answers: responses, certainty, attempt: previous + 1 });
-    const items = lesson.quiz.map((item, i) => ({ item_id: item.id, pilot: item.pilot, grade: gradeItem(item, responses[i]!, lessonId) }));
+    const { grades, passed } = gradeAttempt(lesson, { learner_id: 0, lesson_id: lessonId, item_ids: expected, answers: responses, certainty, attempt });
+    const items = drawn.map((item, i) => ({ item_id: item.id, pilot: item.pilot, grade: gradeItem(item, responses[i]!, lessonId) }));
     const score = grades.reduce((sum, g) => sum + g.score, 0) / Math.max(1, grades.length);
     const live_interventions = liveInterventions(live.snapshot);
-    const steps = nextSteps(lessonId, grades, passed, live_interventions);
+    const steps = nextSteps(lessonId, grades, passed, live_interventions, liveObjectives(live.snapshot));
     const shown = new Set(steps.flatMap((s) => (s.kind === "intervention" ? [s.block_id] : [])));
 
     const at = this.now();
-    this.events.append({ learner, kind: "answer", lesson: lessonId, release: live.version, data: { responses, certainty, items, passed, score, attempt: previous + 1, session }, at });
+    this.events.append({ learner, kind: "answer", lesson: lessonId, release: live.version, data: { item_ids: expected, responses, certainty, items, passed, score, attempt, session }, at });
     this.events.append({ learner, kind: "path", lesson: lessonId, release: live.version, data: { steps, session }, at });
 
     return {
@@ -261,10 +318,52 @@ export class CourseService {
     };
   }
 
-  /** Per lesson: attempts, latest result, BKT mastery over every scored answer, and beliefs shown last time. */
+  /**
+   * A learner's answer to a check block (practice after a section) on the release they are served: the
+   * feedback for the option picked, recorded as evidence. Checks are never scored.
+   */
+  answerCheck(learner: string, blockId: string, option: number, session?: string): CheckResult {
+    const release = this.servedRelease(learner);
+    let found: { lesson: string; block: CheckBlock } | undefined;
+    for (const lesson of release.snapshot.lessons.filter((l) => !l.archived)) {
+      for (const section of lesson.sections.filter((x) => !x.archived)) {
+        for (const block of section.blocks) {
+          if (block.kind === "check" && block.id === blockId && !block.archived) found = { lesson: lesson.id, block };
+        }
+      }
+    }
+    if (!found) throw new Error(`No check "${blockId}" in v${release.version}`);
+    const { lesson, block } = found;
+    const chosen = Number.isInteger(option) ? block.check.options[option] : undefined;
+    if (!chosen) throw new Error(`Check "${blockId}" has no option ${option}`);
+
+    this.events.append({
+      learner,
+      kind: "check",
+      lesson,
+      release: release.version,
+      data: {
+        block_id: blockId,
+        option,
+        correct: chosen.correct,
+        misconception: chosen.misconception,
+        ...(block.objective && { objective: block.objective }),
+        session,
+      },
+      at: this.now(),
+    });
+    return { correct: chosen.correct, feedback: chosen.feedback };
+  }
+
+  /**
+   * Per lesson of the release this learner is served: attempts, latest result, BKT mastery over every
+   * scored answer, beliefs shown last time, and (for lessons with objectives) the objectives missed last time.
+   */
   progress(learner: string): LessonProgress[] {
     const answers = this.events.forLearner(learner).filter((e) => e.kind === "answer");
-    return getCourse().lessons.flatMap((lesson) => {
+    const snapshot = this.servedRelease(learner).snapshot;
+    const withObjectives = new Set((snapshot.objectives ?? []).map((o) => o.lesson));
+    return snapshot.lessons.flatMap((lesson) => {
       const attempts = answers.filter((e) => e.lesson === lesson.id).map((e) => e.data as { items: ItemResult[]; passed: boolean });
       if (attempts.length === 0) return [];
       const scored = attempts.flatMap((a) => a.items.filter((i) => !i.pilot && !i.grade.needs_review).map((i) => i.grade.correct));
@@ -278,6 +377,11 @@ export class CourseService {
           mastery,
           mastered: mastery >= MASTERY_THRESHOLD,
           beliefs: [...new Set(last.items.flatMap((i) => i.grade.errors.flatMap((e) => e.misconception ?? [])))],
+          ...(withObjectives.has(lesson.id) && {
+            missed_objectives: [
+              ...new Set(last.items.flatMap((i) => (!i.pilot && !i.grade.needs_review && !i.grade.correct && i.grade.objective ? [i.grade.objective] : []))),
+            ],
+          }),
         },
       ];
     });
