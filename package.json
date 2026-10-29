@@ -8,6 +8,7 @@
     "eval": "tsx src/eval/run.ts",
     "loop": "tsx src/cli/loop.ts",
     "bundle": "tsx src/cli/build-bundle.ts",
+    "generate": "tsx src/cli/generate.ts",
     "dev": "vite",
     "dev:worker": "wrangler dev --port 8787",
     "build:web": "vite build",
