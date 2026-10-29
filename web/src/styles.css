@@ -92,7 +92,8 @@ code, pre { font-family: var(--mono); font-size: 0.88em; }
 .brand { display: flex; align-items: center; gap: var(--s3); }
 .brand img { height: 17px; display: block; }
 .brand .divider { width: 1px; height: 20px; background: var(--line); }
-.brand .name { font-weight: 700; font-size: var(--t-lg); letter-spacing: -0.01em; }
+/* The wordmark has descenders (y, p), so it sits a little taller than the Meta logo. */
+.brand img.app-logo { height: 24px; }
 .header .spacer { flex: 1; }
 .header .menu-btn { display: none; }
 
@@ -425,6 +426,7 @@ button.act:hover { background: var(--surface-2); }
   border-right: 1px solid var(--line);
 }
 .auth-brand .brand img { height: 18px; }
+.auth-brand .brand img.app-logo { height: 26px; }
 .auth-hero { display: flex; flex-direction: column; align-items: flex-start; gap: var(--s3); }
 .auth-hero h1 { font-size: clamp(34px, 3.8vw, 52px); line-height: 1.05; letter-spacing: -0.03em; margin: 0; }
 .auth-hero p { font-size: var(--t-lg); color: var(--ink-2); margin: 0; max-width: 30ch; }
