@@ -1,7 +1,8 @@
-import "dotenv/config";
+import "../node/setup.js";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { scenarioPerformance } from "../simulation/index.js";
 import { getScenario, type Scenario, SCENARIOS } from "../simulation/scenarios.js";
+import { describeMutation as describe, printData } from "../cli/format.js";
 import type { Mutation, NodePerformance } from "../state.js";
 import { type AgentResult, runAgents } from "./agents.js";
 import { referenceCurator } from "./reference.js";
@@ -26,24 +27,12 @@ interface ScenarioResult {
 }
 
 const SCORE_ICON: Record<Score, string> = { exact: "✅", right_lesson: "🟡", miss: "❌" };
-const describe = (m?: { action: string; node_id: string | null; target_node_id: string | null }) =>
-  m ? `${m.action}(${m.node_id ?? "any"}${m.target_node_id ? ` ← ${m.target_node_id}` : ""})` : "—";
-
-function printData(data: NodePerformance[]) {
-  for (const node of data) {
-    const top = node.misconceptions.map((m) => `${m.points_to} ${Math.round(m.share * 100)}%`).join(", ");
-    console.log(
-      `  ${node.node_id.padEnd(18)} ${String(node.attempts).padStart(4)} attempts  fail ${node.fail_rate.toFixed(2)}` +
-        `${node.low_sample ? " (low sample)" : ""}  wrong answers → ${top}`,
-    );
-  }
-}
-
 async function main() {
   const args = process.argv.slice(2);
   const referenceOnly = args.includes("--reference-only");
   const ids = args.filter((arg) => !arg.startsWith("--"));
-  const scenarios = ids.length > 0 ? ids.map(getScenario) : SCENARIOS;
+  // Some scenarios test the release harness (`npm run loop`), not the Curator.
+  const scenarios = ids.length > 0 ? ids.map(getScenario) : SCENARIOS.filter((s) => !s.harnessOnly);
 
   mkdirSync("reports", { recursive: true });
   const reportPath = `reports/eval-${new Date().toISOString().replace(/[:.]/g, "-")}.json`;

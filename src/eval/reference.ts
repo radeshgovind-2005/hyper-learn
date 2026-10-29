@@ -4,13 +4,16 @@ import type { Mutation, NodePerformance } from "../state.js";
 
 /** A reliable lesson failing at least this often is a problem. Mirrored in the Curator's instructions. */
 export const PROBLEM_FAIL_RATE = 0.35;
+/** A lesson's own misconception shown by at least this share of its failed attempts dominates. Mirrored too. */
+export const DOMINANT_SHARE = 0.5;
 
 const percent = (value: number) => `${Math.round(value * 100)}%`;
 
 /**
  * A rule-based Curator, used as a reference: if it can't solve a scenario, the data doesn't contain
  * the fault and the scenario is broken, not the agent. It follows each problem lesson's largest
- * misconception upstream to the root cause.
+ * gap upstream to the root cause. A gap inside the lesson is one dominant belief (a targeted
+ * intervention) or diffuse mistakes (a split).
  */
 export function referenceCurator(data: readonly NodePerformance[]): Mutation {
   const graph = graphFromPerformance(data);
@@ -19,15 +22,26 @@ export function referenceCurator(data: readonly NodePerformance[]): Mutation {
     .sort((a, b) => b.fail_rate - a.fail_rate);
 
   for (const node of problems) {
-    const top = node.misconceptions[0];
+    const top = node.gaps[0];
     const evidence = `${node.node_id} fails ${percent(node.fail_rate)} of ${node.attempts} attempts`;
 
     if (!top || top.points_to === node.node_id) {
+      const belief = node.misconceptions.find((m) => m.points_to === node.node_id);
+      if (belief && belief.share >= DOMINANT_SHARE) {
+        return {
+          action: "add_intervention",
+          node_id: node.node_id,
+          target_node_id: null,
+          misconception_id: belief.id,
+          reason: `${evidence}; ${percent(belief.share)} of failed attempts show the belief ${belief.id}.`,
+        };
+      }
       return {
         action: "split_node",
         node_id: node.node_id,
         target_node_id: null,
-        reason: `${evidence}; ${percent(top?.share ?? 1)} of wrong answers are gaps inside the lesson itself.`,
+        misconception_id: null,
+        reason: `${evidence}; ${percent(top?.share ?? 1)} of wrong answers are gaps inside the lesson itself, with no dominant belief.`,
       };
     }
     // Wrong answers point at something it already depends on: the problem is upstream.
@@ -37,6 +51,7 @@ export function referenceCurator(data: readonly NodePerformance[]): Mutation {
       action: "add_prerequisite",
       node_id: node.node_id,
       target_node_id: top.points_to,
+      misconception_id: null,
       reason: `${evidence}; ${percent(top.share)} of wrong answers reveal a gap in ${top.points_to}, which is not a prerequisite.`,
     };
   }
@@ -47,6 +62,7 @@ export function referenceCurator(data: readonly NodePerformance[]): Mutation {
     action: "flag_for_review",
     node_id: highest.node_id,
     target_node_id: null,
+    misconception_id: null,
     reason: `No reliable lesson fails ${percent(PROBLEM_FAIL_RATE)} or more; highest is ${highest.node_id} at ${percent(highest.fail_rate)}.`,
   };
 }

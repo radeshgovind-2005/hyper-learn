@@ -1,0 +1,31 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "hyperlearn",
+  "main": "worker/index.ts",
+  "compatibility_date": "2026-10-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "assets": {
+    // The UI, built by `npm run build:web` (Vite) into web/dist.
+    "directory": "./web/dist",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/agents/*"]
+  },
+  "durable_objects": {
+    "bindings": [{ "name": "CourseAgent", "class_name": "CourseAgent" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["CourseAgent"] }],
+  // Workers AI: Llama Guard (safety) and bge embeddings (paraphrase checks). Optional at runtime.
+  "ai": { "binding": "AI" },
+  "observability": { "enabled": true },
+  "vars": {
+    // Point MODEL_BASE_URL at an AI Gateway to log every model call. Set MODEL_API_KEY as a secret:
+    //   npx wrangler secret put MODEL_API_KEY      (locally: .dev.vars)
+    // Without a key, runs use the reference stand-ins and make no model calls.
+    "MODEL_BASE_URL": "",
+    "REASONING_MODEL": "muse-spark-1.3",
+    "FAST_MODEL": "muse-spark-1.3",
+    "STRUCTURED_OUTPUT_METHOD": "jsonSchema",
+    "MODEL_TIMEOUT_MS": "120000",
+    "MODEL_MAX_RETRIES": "1"
+  }
+}

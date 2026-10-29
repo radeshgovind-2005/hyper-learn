@@ -1,26 +1,21 @@
 import { z } from "zod";
+import { type QuizItem, Slug } from "../assessment/items.js";
 
-// Schemas for content/<course>/course.json and the ```quiz block at the end of each lesson file.
+// Schemas for content/<course>/course.json. The ```quiz block at the end of each lesson file holds
+// items from src/assessment/items.ts.
 // Strict objects reject unknown keys, so a typo in the content fails at load time.
 
-const LessonId = z.string().regex(/^[a-z0-9]+(-[a-z0-9]+)*$/, "lesson ids must be kebab-case");
+const LessonId = Slug;
 
-export const QuizOptionSchema = z.strictObject({
-  text: z.string().min(1),
-  correct: z.boolean().default(false),
-  /** The lesson a learner who picks this wrong option probably missed. Untagged = a gap in this lesson. */
-  reveals_gap_in: LessonId.optional(),
+/** A named belief that wrong answers reveal, e.g. "the model runs the tools itself". */
+export const MisconceptionDefSchema = z.strictObject({
+  id: Slug,
+  /** The lesson that teaches the correct idea; wrong answers tagged with it point to this lesson. */
+  lesson: LessonId,
+  /** The belief, stated as the learner would hold it. */
+  belief: z.string().min(1),
 });
-export type QuizOption = z.infer<typeof QuizOptionSchema>;
-
-export const QuizQuestionSchema = z.strictObject({
-  id: z.string().min(1),
-  prompt: z.string().min(1),
-  options: z.array(QuizOptionSchema).min(2),
-});
-export type QuizQuestion = z.infer<typeof QuizQuestionSchema>;
-
-export const QuizSchema = z.array(QuizQuestionSchema).min(1);
+export type MisconceptionDef = z.infer<typeof MisconceptionDefSchema>;
 
 export const LessonMetaSchema = z.strictObject({
   id: LessonId,
@@ -37,13 +32,14 @@ export const CourseManifestSchema = z.strictObject({
   title: z.string().min(1),
   description: z.string().optional(),
   lessons: z.array(LessonMetaSchema).min(1),
+  misconceptions: z.array(MisconceptionDefSchema).default([]),
 });
 export type CourseManifest = z.infer<typeof CourseManifestSchema>;
 
 export interface Lesson extends LessonMeta {
   /** Lesson text in Markdown, without the quiz block. */
   body: string;
-  quiz: QuizQuestion[];
+  quiz: QuizItem[];
 }
 
 /** Lesson id → ids of its direct prerequisites. */
@@ -55,5 +51,7 @@ export interface Course {
   lessons: Lesson[];
   /** The course's intended (correct) prerequisite structure. */
   graph: PrereqGraph;
+  misconceptions: MisconceptionDef[];
   getLesson(id: string): Lesson | undefined;
+  getMisconception(id: string): MisconceptionDef | undefined;
 }

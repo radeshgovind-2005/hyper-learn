@@ -1,4 +1,4 @@
-import "dotenv/config";
+import "./node/setup.js";
 import { HumanMessage } from "@langchain/core/messages";
 import { buildGraph } from "./graph.js";
 import { scenarioPerformance } from "./simulation/index.js";

@@ -31,7 +31,7 @@ Models sometimes produce malformed or out-of-range arguments. Validate them agai
     "prompt": "What does the model output when it wants to use a tool?",
     "options": [
       { "text": "A structured tool call: the tool's name and JSON arguments.", "correct": true },
-      { "text": "The finished result of running the tool.", "reveals_gap_in": "agent-loop" },
+      { "text": "The finished result of running the tool.", "reveals_gap_in": "agent-loop", "misconception": "model-executes-actions" },
       { "text": "A paragraph describing what it would like to do." },
       { "text": "A new system prompt." }
     ]
@@ -42,7 +42,7 @@ Models sometimes produce malformed or out-of-range arguments. Validate them agai
     "options": [
       { "text": "It searches the internet for available tools." },
       { "text": "It is retrained for every new tool." },
-      { "text": "It reads the tool's source code." },
+      { "text": "It reads the tool's source code.", "misconception": "model-reads-tool-code" },
       { "text": "Tool definitions (name, description, argument schema) are sent with the request.", "correct": true }
     ]
   },
@@ -50,7 +50,7 @@ Models sometimes produce malformed or out-of-range arguments. Validate them agai
     "id": "tool-calling-q3",
     "prompt": "What happens after the harness runs a tool?",
     "options": [
-      { "text": "The loop ends; the tool result is the final answer.", "reveals_gap_in": "agent-loop" },
+      { "text": "The loop ends; the tool result is the final answer.", "reveals_gap_in": "agent-loop", "misconception": "loop-ends-after-action" },
       { "text": "The result is discarded unless it is an error." },
       { "text": "The result goes back as a tool message with the same call id, and the model is called again.", "correct": true },
       { "text": "The harness rewrites the model's previous message to include the result." }
@@ -64,6 +64,28 @@ Models sometimes produce malformed or out-of-range arguments. Validate them agai
       { "text": "The loop already guarantees the arguments are correct, so it is optional.", "reveals_gap_in": "agent-loop" },
       { "text": "Schemas are only documentation." },
       { "text": "The model can produce malformed arguments; catching them prevents errors and unsafe actions.", "correct": true }
+    ]
+  },
+  {
+    "type": "schema_completion",
+    "id": "tool-calling-q5",
+    "prompt": "A learner asks for the weather in Paris. Write the JSON tool call the model emits for a tool named `get_weather` that takes one argument, `city`.",
+    "example": "{\"name\":\"get_weather\",\"arguments\":{\"city\":\"Paris\"}}",
+    "checks": [
+      { "path": "name", "rule": {"equals": "get_weather"} },
+      { "path": "arguments.city", "rule": {"equals": "Paris"} },
+      { "path": "result", "rule": {"absent": true}, "reveals_gap_in": "agent-loop", "misconception": "model-executes-actions" }
+    ]
+  },
+  {
+    "type": "matching",
+    "id": "tool-calling-q6",
+    "prompt": "Match each part of tool calling to what it is.",
+    "left": ["Tool definition", "Tool call", "Tool message"],
+    "right": ["Name, description and argument schema, sent with the request", "The model's request: tool name, JSON arguments and an id", "The result, sent back with the same call id"],
+    "wrong_pairs": [
+      { "left": 1, "right": 2, "reveals_gap_in": "agent-loop", "misconception": "model-executes-actions" },
+      { "left": 0, "right": 1, "misconception": "model-reads-tool-code" }
     ]
   }
 ]

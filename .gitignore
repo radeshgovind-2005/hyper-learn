@@ -18,3 +18,9 @@ npm-debug.log*
 .vscode/
 # Eval reports
 reports/
+
+# Build output and local Worker state
+web/dist/
+.wrangler/
+.dev.vars
+worker/worker-configuration.d.ts

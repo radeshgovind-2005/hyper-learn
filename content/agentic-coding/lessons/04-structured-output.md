@@ -34,8 +34,8 @@ Never use an invalid response anyway. Retry, possibly including the validation e
     "id": "structured-output-q2",
     "prompt": "In a strict JSON-schema mode, how should you express a field that may have no value?",
     "options": [
-      { "text": "Leave it out of the schema." },
-      { "text": "Mark it optional." },
+      { "text": "Leave it out of the schema.", "misconception": "optional-not-nullable" },
+      { "text": "Mark it optional.", "misconception": "optional-not-nullable" },
       { "text": "Keep it required, but make it nullable.", "correct": true },
       { "text": "Always send an empty string." }
     ]
@@ -44,9 +44,9 @@ Never use an invalid response anyway. Retry, possibly including the validation e
     "id": "structured-output-q3",
     "prompt": "The model returns JSON that fails validation. What should your code do?",
     "options": [
-      { "text": "Use it anyway; the schema was in the request, so it must be right.", "reveals_gap_in": "llm-basics" },
+      { "text": "Use it anyway; the schema was in the request, so it must be right.", "reveals_gap_in": "llm-basics", "misconception": "llm-output-guaranteed" },
       { "text": "Reject it and retry or fall back; never trust unvalidated output.", "correct": true },
-      { "text": "Fill the missing fields with defaults and continue." },
+      { "text": "Fill the missing fields with defaults and continue.", "misconception": "patch-invalid-output" },
       { "text": "Raise the temperature and use whatever comes back." }
     ]
   },

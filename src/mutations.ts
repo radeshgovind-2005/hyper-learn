@@ -40,6 +40,17 @@ export function checkMutation(mutation: Mutation, data: readonly NodePerformance
     else if (target_node_id === node_id) problems.push("target_node_id must differ from node_id");
   }
 
+  const { misconception_id } = mutation;
+  if (action === "add_intervention") {
+    const named = data.find((node) => node.node_id === node_id)?.misconceptions ?? [];
+    if (misconception_id === null) problems.push("add_intervention needs a misconception_id");
+    else if (!named.some((m) => m.id === misconception_id && m.points_to === node_id)) {
+      problems.push(`"${misconception_id}" is not a misconception of "${node_id}" in the data`);
+    }
+  } else if (misconception_id !== null) {
+    problems.push(`${action} must have misconception_id = null`);
+  }
+
   if (problems.length === 0 && target_node_id !== null) {
     const isPrereq = graph[node_id]!.includes(target_node_id);
     if (action === "add_prerequisite" && isPrereq) {

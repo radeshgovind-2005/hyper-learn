@@ -14,10 +14,13 @@ const data: NodePerformance[] = [
     fail_rate_ci: [0.53, 0.67],
     low_sample: false,
     prerequisites: [],
-    misconceptions: [{ points_to: "a", share: 0.9 }],
+    gaps: [{ points_to: "a", share: 0.9 }],
+    misconceptions: [],
+    mastery_rate: 0.3,
+    excluded_items: [],
   },
 ];
-const expected = { action: "split_node", node_id: "a", target_node_id: null } as const;
+const expected = { action: "split_node", node_id: "a", target_node_id: null, misconception_id: null } as const;
 const proposal: Mutation = { ...expected, reason: "a fails 0.6; 90% of wrong answers are inside it" };
 
 const fake = <T>(respond: () => T) => ({ invoke: async () => respond() });

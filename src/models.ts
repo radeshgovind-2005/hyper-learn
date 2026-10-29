@@ -1,13 +1,13 @@
 import type { BaseMessage } from "@langchain/core/messages";
 import type { InteropZodType } from "@langchain/core/utils/types";
 import { ChatOpenAI } from "@langchain/openai";
-import { Agent, fetch as undiciFetch } from "undici";
 
 /**
  * Model factory.
  *
- * Every model talks to an OpenAI-compatible endpoint configured via env vars,
- * so the same code runs against the local llama.cpp / LM Studio server and Meta's API.
+ * Every model talks to an OpenAI-compatible endpoint, so the same code runs against the local
+ * llama.cpp / LM Studio server and Meta's API. Settings come from `configureModels()` (the Worker
+ * passes its environment) or, by default, from environment variables (Node reads `.env`).
  *
  * ▶ Switching to the real Meta Model API (Muse Spark):
  *   1. Set MODEL_BASE_URL to Meta's OpenAI-compatible base URL.
@@ -27,52 +27,79 @@ export interface Invokable<T> {
 
 const LOCAL_DEFAULT_MODEL = "meta-models/Muse-Glimmer-30B-GGUF:Q4_K_M";
 
-const MODEL_PROFILES: Record<ModelType, { envVar: string; temperature: number }> = {
-  // Curator + Reflection: a little creativity when proposing graph mutations.
-  reasoning: { envVar: "REASONING_MODEL", temperature: 0.2 },
-  // Learner Assistant: deterministic, reliable tool calls.
-  fast: { envVar: "FAST_MODEL", temperature: 0 },
+const TEMPERATURE: Record<ModelType, number> = {
+  // Curator, Reflection, Author, Reviewer, Approver: a little creativity.
+  reasoning: 0.2,
+  // Learner Assistant and Grader: deterministic, reliable tool calls and grades.
+  fast: 0,
 };
 
-/** Reads a numeric env var, falling back to `fallback` when unset or invalid. */
-function numberFromEnv(name: string, fallback: number): number {
-  const value = Number(process.env[name]);
-  return Number.isFinite(value) && value >= 0 ? value : fallback;
+export interface ModelConfig {
+  baseURL: string;
+  apiKey: string;
+  models: Record<ModelType, string>;
+  structuredOutputMethod: StructuredOutputMethod;
+  /** Per-call timeout; a stuck call fails instead of hanging. */
+  timeoutMs: number;
+  maxRetries: number;
+  /** A fetch to use instead of the global one (Node swaps in one without a 5-minute header limit). */
+  fetch?: typeof globalThis.fetch;
+  fetchOptions?: Record<string, unknown>;
 }
 
-const timeoutMs = () => numberFromEnv("MODEL_TIMEOUT_MS", 600_000);
+/** String settings by environment-variable name, e.g. Node's process.env or a Worker's env bindings. */
+export type ModelEnv = Readonly<Record<string, string | undefined>>;
 
-/**
- * Node's fetch gives up if no response headers arrive within 5 minutes. A non-streaming local model
- * sends nothing until its whole answer is generated, so long calls would fail at 5 minutes whatever
- * MODEL_TIMEOUT_MS says. This connection waits as long as the configured timeout instead.
- */
-let dispatcher: Agent | undefined;
-const patientDispatcher = () => {
-  dispatcher ??= new Agent({ headersTimeout: timeoutMs(), bodyTimeout: timeoutMs() });
-  return dispatcher;
+const numberFrom = (value: string | undefined, fallback: number) => {
+  const n = Number(value);
+  return value !== undefined && Number.isFinite(n) && n >= 0 ? n : fallback;
 };
 
+/** Reads model settings from environment variables, with local-server defaults. */
+export function modelConfigFromEnv(env: ModelEnv): ModelConfig {
+  return {
+    baseURL: env.MODEL_BASE_URL ?? "http://localhost:9931/v1",
+    apiKey: env.MODEL_API_KEY ?? "not-needed-locally",
+    models: {
+      reasoning: env.REASONING_MODEL ?? LOCAL_DEFAULT_MODEL,
+      fast: env.FAST_MODEL ?? LOCAL_DEFAULT_MODEL,
+    },
+    structuredOutputMethod: (env.STRUCTURED_OUTPUT_METHOD as StructuredOutputMethod | undefined) ?? "jsonSchema",
+    timeoutMs: numberFrom(env.MODEL_TIMEOUT_MS, 600_000),
+    // LangChain otherwise retries up to 6 times, which turns one timeout into an hour-long wait.
+    maxRetries: numberFrom(env.MODEL_MAX_RETRIES, 1),
+  };
+}
+
+let config: ModelConfig | undefined;
 const cache = new Map<ModelType, ChatOpenAI>();
+
+/** Sets (or adjusts) the model settings; models created before are discarded. */
+export function configureModels(settings: Partial<ModelConfig> = {}) {
+  config = { ...currentConfig(), ...settings };
+  cache.clear();
+}
+
+export function currentConfig(): ModelConfig {
+  config ??= modelConfigFromEnv(typeof process === "undefined" ? {} : process.env);
+  return config;
+}
 
 export function getModel(type: ModelType): ChatOpenAI {
   const cached = cache.get(type);
   if (cached) return cached;
 
-  const profile = MODEL_PROFILES[type];
+  const settings = currentConfig();
   const model = new ChatOpenAI({
-    model: process.env[profile.envVar] ?? LOCAL_DEFAULT_MODEL,
-    temperature: profile.temperature,
-    apiKey: process.env.MODEL_API_KEY ?? "not-needed-locally",
-    // Fail a stuck call instead of hanging. LangChain otherwise retries up to 6 times,
-    // which turns one timeout into an hour-long wait on a slow local model.
-    timeout: timeoutMs(),
-    maxRetries: numberFromEnv("MODEL_MAX_RETRIES", 1),
+    model: settings.models[type],
+    temperature: TEMPERATURE[type],
+    apiKey: settings.apiKey,
+    timeout: settings.timeoutMs,
+    maxRetries: settings.maxRetries,
     configuration: {
-      baseURL: process.env.MODEL_BASE_URL ?? "http://localhost:9931/v1",
-      // undici's own fetch, so the dispatcher below is guaranteed to be compatible with it.
-      fetch: undiciFetch as unknown as typeof globalThis.fetch,
-      fetchOptions: { dispatcher: patientDispatcher() },
+      baseURL: settings.baseURL,
+      ...(settings.fetch && { fetch: settings.fetch }),
+      ...(settings.fetchOptions && { fetchOptions: settings.fetchOptions }),
     },
   });
 
@@ -86,6 +113,5 @@ export function getStructuredModel<T extends Record<string, unknown>>(
   name: string,
   type: ModelType = "reasoning",
 ): Invokable<T> {
-  const method = (process.env.STRUCTURED_OUTPUT_METHOD ?? "jsonSchema") as StructuredOutputMethod;
-  return getModel(type).withStructuredOutput(schema, { name, method });
+  return getModel(type).withStructuredOutput(schema, { name, method: currentConfig().structuredOutputMethod });
 }

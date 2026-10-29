@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { getCourse } from "../course/load.js";
+import { getCourse } from "../course/bundle.js";
 import type { NodePerformance } from "../state.js";
 import { scenarioPerformance } from "./index.js";
 import { publishedGraph, simulate } from "./learners.js";
@@ -39,14 +39,27 @@ describe("simulation", () => {
     const multiAgent = byId(data, "multi-agent");
     assert.deepEqual(multiAgent.prerequisites, ["structured-output"], "the edge is missing from the published graph");
     assert.ok(multiAgent.fail_rate >= 0.35);
-    assert.equal(multiAgent.misconceptions[0]?.points_to, "tool-calling");
+    assert.equal(multiAgent.gaps[0]?.points_to, "tool-calling");
   });
 
   it("overloaded: agent-loop fails with gaps inside itself, and its dependents point back at it", () => {
     const data = scenarioPerformance(getScenario("overloaded"));
-    assert.equal(byId(data, "agent-loop").misconceptions[0]?.points_to, "agent-loop");
-    assert.equal(byId(data, "tool-calling").misconceptions[0]?.points_to, "agent-loop");
+    assert.equal(byId(data, "agent-loop").gaps[0]?.points_to, "agent-loop");
+    assert.equal(byId(data, "tool-calling").gaps[0]?.points_to, "agent-loop");
     assert.ok(byId(data, "agent-loop").fail_rate >= 0.35);
+  });
+
+  it("dominant-misconception: agent-loop fails with one confidently held belief", () => {
+    const [top] = byId(scenarioPerformance(getScenario("dominant-misconception")), "agent-loop").misconceptions;
+    assert.equal(top?.id, "model-executes-actions");
+    assert.ok(top.share >= 0.5 && top.confident >= 0.5, JSON.stringify(top));
+  });
+
+  it("overloaded: agent-loop's own beliefs are diffuse, none dominant", () => {
+    const own = byId(scenarioPerformance(getScenario("overloaded")), "agent-loop").misconceptions.filter(
+      (m) => m.points_to === "agent-loop",
+    );
+    for (const m of own) assert.ok(m.share < 0.5, JSON.stringify(m));
   });
 
   it("low-sample-trap: reflection has 10 attempts and is flagged low_sample", () => {

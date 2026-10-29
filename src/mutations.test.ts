@@ -11,13 +11,17 @@ const node = (node_id: string, prerequisites: string[]): NodePerformance => ({
   fail_rate_ci: [0.4, 0.6],
   low_sample: false,
   prerequisites,
+  gaps: [],
   misconceptions: [],
+  mastery_rate: 0.5,
+  excluded_items: [],
 });
 const DATA = [node("a", []), node("b", ["a"]), node("c", ["b"])];
 const m = (action: Mutation["action"], node_id: string, target_node_id: string | null): Mutation => ({
   action,
   node_id,
   target_node_id,
+  misconception_id: null,
   reason: `${node_id} fails 0.5 of attempts`,
 });
 
@@ -48,6 +52,32 @@ describe("checkMutation", () => {
     assert.match(checkMutation(m("add_prerequisite", "b", "a"), DATA).join(), /already a prerequisite/);
     assert.match(checkMutation(m("add_prerequisite", "a", "c"), DATA).join(), /would create a cycle/);
     assert.match(checkMutation(m("remove_prerequisite", "c", "a"), DATA).join(), /not a prerequisite/);
+  });
+});
+
+describe("checkMutation: add_intervention", () => {
+  const withBelief: NodePerformance[] = [
+    { ...node("a", []), misconceptions: [{ id: "model-acts", points_to: "a", share: 0.7, confident: 0.8 }] },
+    { ...node("b", ["a"]), misconceptions: [{ id: "model-acts", points_to: "a", share: 0.9, confident: 0.2 }] },
+  ];
+  const intervene = (node_id: string, misconception_id: string | null): Mutation => ({
+    ...m("add_intervention", node_id, null),
+    misconception_id,
+  });
+
+  it("accepts a misconception of the lesson itself", () => {
+    assert.deepEqual(checkMutation(intervene("a", "model-acts"), withBelief), []);
+  });
+
+  it("rejects a missing, unknown or upstream misconception", () => {
+    assert.match(checkMutation(intervene("a", null), withBelief).join(), /needs a misconception_id/);
+    assert.match(checkMutation(intervene("a", "nope"), withBelief).join(), /"nope" is not a misconception of "a"/);
+    assert.match(checkMutation(intervene("b", "model-acts"), withBelief).join(), /not a misconception of "b"/);
+  });
+
+  it("requires misconception_id = null for other actions", () => {
+    const split = { ...m("split_node", "a", null), misconception_id: "model-acts" };
+    assert.match(checkMutation(split, withBelief).join(), /split_node must have misconception_id = null/);
   });
 });
 

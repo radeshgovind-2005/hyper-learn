@@ -4,6 +4,12 @@ const NODE_TAGS = {
   tools: "🛠️  [Tools]",
   curator: "🟣 [Curator]",
   reflection: "🟠 [Reflection]",
+  author: "✍️  [Author]",
+  reviewer: "🔎 [Reviewer]",
+  release: "📦 [Release]",
+  approval: "✋ [Approval]",
+  measure: "📏 [Measure]",
+  decide: "⚖️  [Decide]",
 } as const;
 
 export type LoggedNode = keyof typeof NODE_TAGS;
