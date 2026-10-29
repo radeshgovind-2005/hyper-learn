@@ -90,16 +90,14 @@ Typical cost: digest chunks + 1 plan + S sections + O objectives + S fact checks
   `fixtures.test-helpers.ts`). They are prompt-driven, not call-order scripted, so concurrency doesn't
   break tests.
 
-## A's rules, checked here
+## Generation's own checks
 
-`checks.ts` `studioChecks` mirrors PLAN A item 3 for generated courses: objective ids unique, objective's
-lesson exists and its sections belong to it, every scored item of a lesson with objectives names one of
-its objectives, ≥ `2×per_objective` scored items per objective, check blocks with exactly one correct
-option and `misconception: null` on it, known misconceptions, check objective in its lesson. Plus: only
-the four generated item types, every text block cites a real material page, no copied assessment
-questions. These run in the validate step next to `courseFromSnapshot`; after integration, A's validator
-runs inside `courseFromSnapshot` too, and any problem it reports that names a lesson, item or
-misconception id in quotes is routed back to that lesson's examiner.
+`checks.ts` `studioChecks` used to mirror PLAN A item 3 while A's validator wasn't on this branch. Since
+integration it keeps only generation's own rules: the four generated item types, every text block cites a
+real material page, no copied assessment questions. The objective, pool-size and check-block rules come
+from A's validator inside `courseFromSnapshot`; any problem it reports that names an id in quotes is routed
+back to the section's writer or the lesson's examiner (`routeValidationError`), and within a lesson to the
+examiner call that wrote the question (`problemsByPart`).
 
 ## Stress test
 
