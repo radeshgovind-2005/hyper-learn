@@ -323,8 +323,44 @@ export class CourseService {
     this.members = new SqlMembers(sql);
     this.sources = new SqlSources(sql);
     this.saver = new PersistentMemorySaver(new SqlThreadStore(sql));
-    // A build lives in this instance's memory; one marked running at start was cut off by a restart.
+    // Builds and runs live in this instance's memory, so one still marked running at start was cut off by a restart.
     if (this.record()?.status === "building") this.endBuild("failed", { problems: ["The build was interrupted (the server restarted); build again"] });
+    if (this.run()?.status === "running") this.recoverInterruptedRun();
+  }
+
+  /**
+   * Ends a run a restart cut off, so it can't block new runs and reset forever. Where it stopped decides
+   * what's left: an answer to an approval that never took effect is asked for again (the graph's
+   * checkpoint is still at the interrupt); a trial on real learners keeps collecting answers; a simulated
+   * trial that was never measured is reverted; anything else ends in an error, and the run can start again.
+   */
+  private recoverInterruptedRun() {
+    const run = this.run()!;
+    const at = this.now();
+    if (run.approval && !this.releases.get(run.approval.version)) {
+      run.status = "awaiting_approval";
+      run.steps.push({
+        node: "approve",
+        actor: "human",
+        title: `Waiting for approval of ${run.approval.version}`,
+        detail: "The server restarted before the answer took effect; answer again.",
+        status: "waiting",
+        at,
+      });
+    } else {
+      for (const release of this.releases.all()) {
+        if (release.status !== "trial" || release.trial_source === "real") continue;
+        revert(this.releases, release.version);
+        this.releases.update(release.version, { decision: { verdict: "revert", reasons: ["The server restarted before this trial was measured."] } });
+      }
+      if (this.openTrial()) {
+        run.status = "trial_running";
+      } else {
+        run.status = "error";
+        run.error = "The server restarted during this run; start it again";
+      }
+    }
+    this.meta.set("run", run);
   }
 
   // ─── Course and releases ──────────────────────────────────────────
