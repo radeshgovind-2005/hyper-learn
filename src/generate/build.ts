@@ -116,8 +116,9 @@ export async function buildCourse(input: BuildInput, models: BuilderModels, opti
 
     // 2. Digest.
     const digests: SourceDigest[] = await mapLimit(sources, concurrency, async (source) => {
-      const { digest, calls: n } = await digestSource(source, models, calls);
-      step("digest", `Read ${source.name}`, "ok", `${source.pages.length} page(s) in ${n} call(s): ${digest.points.length} point(s).`);
+      const { digest, calls: n, copied } = await digestSource(source, models, calls);
+      const dropped = copied > 0 ? ` ${copied} point(s) that copied the document's wording were dropped.` : "";
+      step("digest", `Read ${source.name}`, "ok", `${source.pages.length} page(s) in ${n} call(s): ${digest.points.length} point(s).${dropped}`);
       return digest;
     });
     if (!digests.some((d) => d.source.role === "material" && d.points.length > 0)) {

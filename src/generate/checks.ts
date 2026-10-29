@@ -20,20 +20,19 @@ export interface AssessmentSentence {
   text: string;
 }
 
+/** A source's sentences long enough to be recognisably copied. */
+export const sentencesOf = (source: Source): AssessmentSentence[] =>
+  source.pages.flatMap((text, i) =>
+    text
+      .split(/(?<=[.?!])\s+|\n+/)
+      .map((sentence) => sentence.trim())
+      .filter((sentence) => contentWords(sentence).size >= MIN_COPY_WORDS)
+      .map((sentence) => ({ source: source.id, page: i + 1, text: sentence })),
+  );
+
 /** The sentences of the assessment sources long enough to be recognisably copied. */
-export function assessmentSentences(sources: readonly Source[]): AssessmentSentence[] {
-  return sources
-    .filter((s) => s.role === "assessment")
-    .flatMap((s) =>
-      s.pages.flatMap((text, i) =>
-        text
-          .split(/(?<=[.?!])\s+|\n+/)
-          .map((sentence) => sentence.trim())
-          .filter((sentence) => contentWords(sentence).size >= MIN_COPY_WORDS)
-          .map((sentence) => ({ source: s.id, page: i + 1, text: sentence })),
-      ),
-    );
-}
+export const assessmentSentences = (sources: readonly Source[]): AssessmentSentence[] =>
+  sources.filter((s) => s.role === "assessment").flatMap(sentencesOf);
 
 /** The assessment sentence `text` copies (shares at least PROMPT_OVERLAP_LIMIT of the vocabulary with), if any. */
 export function copiedSentence(text: string, sentences: readonly AssessmentSentence[]): AssessmentSentence | undefined {

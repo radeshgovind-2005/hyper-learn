@@ -1,4 +1,5 @@
 import type { Source, SourceRole } from "../course/sources.js";
+import { copiedSentence, sentencesOf } from "./checks.js";
 import type { BuilderModels, ModelCalls } from "./models.js";
 import { fitParts } from "./prompt.js";
 
@@ -88,11 +89,14 @@ export async function digestSource(
   source: Source & { role: SourceRole },
   models: BuilderModels,
   calls: ModelCalls,
-): Promise<{ digest: SourceDigest; calls: number }> {
+): Promise<{ digest: SourceDigest; calls: number; copied: number }> {
   const header = `Source ${source.id} "${source.name}".\n${TASK[source.role]}`;
   const room = calls.room("digester") - header.length - 200;
   const points: DigestPoint[] = [];
   const chunks = pageChunks(source, room);
+  // What an assessment or brief evaluates is passed on; its wording is not, even if the digester copies it.
+  const own = source.role === "material" ? [] : sentencesOf(source);
+  let copied = 0;
   for (const chunk of chunks) {
     const pages = chunk.map((page) => ({
       text: source.pages[page - 1]!,
@@ -105,8 +109,10 @@ export async function digestSource(
       const text = point.text.trim();
       const valid = [...new Set(point.pages.filter((page) => chunk.includes(page)))];
       // A material point must say where it comes from, or nothing can be written from it.
-      if (text && (valid.length > 0 || source.role !== "material")) points.push({ text, pages: valid });
+      if (!text || (valid.length === 0 && source.role === "material")) continue;
+      if (copiedSentence(text, own)) copied++;
+      else points.push({ text, pages: valid });
     }
   }
-  return { digest: { source, points }, calls: chunks.length };
+  return { digest: { source, points }, calls: chunks.length, copied };
 }

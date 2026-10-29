@@ -251,6 +251,19 @@ describe("assessments are never copied", () => {
     assert.ok(snapshot.lessons.every((l) => l.quiz.every((item) => !item.prompt.startsWith("Describe how a keeper"))));
   });
 
+  it("drops digest points that copy an exam's wording", async () => {
+    const models = spiedModels({
+      digester: (prompt, answer) =>
+        prompt.includes("This is an assessment")
+          ? { points: [...answer.points, { text: "A clock has started running late during a dry week; explain the cause and the remedy.", pages: [1] }] }
+          : undefined,
+    });
+    const result = await buildCourse(INPUT, models, { review: false, stress: false });
+    built(result);
+    assert.match(stages(result, "digest")[1]!.detail!, /1 point\(s\) that copied the document's wording were dropped/);
+    for (const prompt of [...models.planner.prompts, ...models.examiner.prompts]) assert.ok(!prompt.includes("running late during a dry week"));
+  });
+
   it("never shows the examiner the exam's own text", async () => {
     const models = spiedModels();
     built(await buildCourse(INPUT, models, { review: false, stress: false }));
