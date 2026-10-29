@@ -82,7 +82,11 @@ npm run dev                               # terminal 2: Vite on :5173, proxying 
 - Changing the course (reset, runs, approvals) needs the `ADMIN_TOKEN` secret when one is set
   (`npx wrangler secret put ADMIN_TOKEN`); learners don't need it, and the UI asks for it once per session.
   Without it, as in local dev, anyone connected can administer: **set it before deploying**.
-- Deploy: `npx wrangler login`, then `npm run deploy` (Durable Objects need the Workers Paid plan).
+- Live at **https://hyperlearn.radesh-govind.com**. `.github/workflows/ci-cd.yml` typechecks, tests and builds every
+  push and pull request, and deploys every push to `main` that passes. It needs one repository secret,
+  `CLOUDFLARE_API_TOKEN` (a token from Cloudflare's "Edit Cloudflare Workers" template). Worker secrets
+  (`ADMIN_TOKEN`, `MODEL_API_KEY`, `LANGSMITH_API_KEY`) are set once with `wrangler secret put` and survive deploys.
+- Manual deploy: `npx wrangler login`, then `npm run deploy`.
 
 ## Setup
 

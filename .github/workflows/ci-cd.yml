@@ -1,0 +1,56 @@
+# Every push and pull request: typecheck, test and build. Every push to main that passes: deploy to
+# Cloudflare (https://hyperlearn.radesh-govind.com).
+#
+# Needs one repository secret, CLOUDFLARE_API_TOKEN: a Cloudflare API token from the "Edit Cloudflare
+# Workers" template, scoped to this account and the radesh-govind.com zone. The account id is in
+# wrangler.jsonc. Worker secrets (ADMIN_TOKEN, MODEL_API_KEY, LANGSMITH_API_KEY) are set once with
+# `wrangler secret put` and kept across deploys, so CI never sees them.
+name: CI/CD
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Typecheck, test, build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build:web
+
+  deploy:
+    name: Deploy to Cloudflare
+    needs: check
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+      url: https://hyperlearn.radesh-govind.com
+    # One deploy at a time; a newer push waits rather than racing an older one.
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run build:web
+      - run: npx wrangler deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
