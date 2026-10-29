@@ -170,6 +170,25 @@ export interface DirectoryLink {
   membershipChanged(id: string, userId: string, role: CourseRole | null): Promise<void>;
 }
 
+// Callable arguments arrive from browsers untyped: `approved: "false"` is truthy, so check shapes here.
+const RunOptionsSchema = z.strictObject({
+  mode: z.enum(["hitl", "autopilot"]),
+  agents: z.boolean(),
+  source: z.enum(["simulated", "real"]).optional(),
+});
+
+const ApprovalResponseSchema = z.strictObject({
+  approved: z.boolean(),
+  note: z.string().trim().max(1_000).optional(),
+});
+
+/** An approval answer from a browser, checked. */
+export function parseApproval(input: unknown): ApprovalResponse {
+  const parsed = ApprovalResponseSchema.safeParse(input);
+  if (!parsed.success) throw new Error(`Invalid approval: ${firstIssue(parsed.error)}`);
+  return parsed.data;
+}
+
 const DetailsUpdateSchema = z.strictObject({
   title: CourseDetailsSchema.shape.title.optional(),
   description: CourseDetailsSchema.shape.description.optional(),
@@ -503,6 +522,9 @@ export class CourseService {
    * recomputes. They may be left out only for a lesson without an exam config (the whole quiz, in order).
    */
   submitQuiz(learner: string, lessonId: string, answers: Response[], certainty: Certainty[], session?: string, item_ids?: string[]): QuizResult {
+    if (!Array.isArray(answers) || !Array.isArray(certainty)) throw new Error("Send answers and certainty as lists");
+    if (item_ids !== undefined && !(Array.isArray(item_ids) && item_ids.every((id) => typeof id === "string"))) throw new Error("item_ids must be a list of question ids");
+    if (certainty.some((c) => c !== 1 && c !== 2 && c !== 3)) throw new Error("Certainty is 1, 2 or 3");
     const live = this.servedRelease(learner);
     const { lesson, attempt, items: drawn } = this.draw(learner, live, lessonId);
     const expected = drawn.map((item) => item.id);
@@ -871,7 +893,10 @@ export class CourseService {
    * Checks a run can start and records it, synchronously, so a caller that runs the rest in the
    * background (the Worker) can still report "already running" to whoever asked.
    */
-  beginRun({ mode, agents, source = "simulated" }: RunOptions, onUpdate?: (run: RunState) => void): RunState {
+  beginRun(options: RunOptions, onUpdate?: (run: RunState) => void): RunState {
+    const parsed = RunOptionsSchema.safeParse(options);
+    if (!parsed.success) throw new Error(`Invalid run options: ${firstIssue(parsed.error)}`);
+    const { mode, agents, source = "simulated" } = parsed.data;
     const current = this.run()?.status;
     if (current === "running") throw new Error("A run is already in progress");
     if (current === "awaiting_approval") throw new Error("The current run is waiting for approval; answer it or reset first");
@@ -994,7 +1019,8 @@ export class CourseService {
 
   /** A human's answer to the pending approval; the run continues from where it paused. */
   async approve(response: ApprovalResponse, onUpdate?: (run: RunState) => void): Promise<RunState> {
-    return this.continueApproval(this.beginApproval(onUpdate), response, onUpdate);
+    const answer = parseApproval(response);
+    return this.continueApproval(this.beginApproval(onUpdate), answer, onUpdate);
   }
 
   /** Checks something is waiting for approval and claims it, synchronously, so a second answer is refused. */

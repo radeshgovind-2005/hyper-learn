@@ -147,6 +147,20 @@ describe("CourseService", () => {
     assert.equal(done.status, "done");
   });
 
+  it("checks arguments that arrive untyped from browsers", async () => {
+    const s = service();
+    assert.throws(() => s.beginRun({ mode: "yolo", agents: false } as never), /Invalid run options/);
+    assert.throws(() => s.beginRun({ mode: "hitl", agents: "false" } as never), /Invalid run options/);
+    assert.throws(() => s.beginRun({ mode: "hitl", agents: false, source: "everyone" } as never), /Invalid run options/);
+    await s.startRun({ mode: "hitl", agents: false });
+    await assert.rejects(s.approve({ approved: "false" } as never), /Invalid approval/);
+    assert.equal(s.run()?.status, "awaiting_approval", "a refused answer doesn't claim the approval");
+    const { answers, certainty } = believerAnswers();
+    assert.throws(() => s.submitQuiz("ada", "agent-loop", answers, certainty.map(() => 5) as never), /Certainty is 1, 2 or 3/);
+    assert.throws(() => s.submitQuiz("ada", "agent-loop", answers, certainty, undefined, "q1" as never), /item_ids must be a list/);
+    assert.throws(() => s.submitQuiz("ada", "agent-loop", "all right" as never, certainty), /as lists/);
+  });
+
   it("refuses a run with agents when no model is configured", async () => {
     await assert.rejects(service().startRun({ mode: "hitl", agents: true }), /No model is configured/);
   });

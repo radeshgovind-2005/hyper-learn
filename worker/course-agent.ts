@@ -1,13 +1,13 @@
 import { Agent, type Connection, type ConnectionContext, callable, getAgentByName, getCurrentAgent } from "agents";
 import { coursePermissions, mayEnter, type Permission, requireCoursePermission } from "../src/app/access.js";
 import { builtInCourse, DIRECTORY_NAME, isBuiltIn, isStudioId } from "../src/app/courses.js";
-import { CourseService, type DataSource, type DirectoryLink, type QuizResult } from "../src/app/service.js";
+import { CourseService, type DataSource, type DirectoryLink, parseApproval, type QuizResult } from "../src/app/service.js";
 import type { Certainty, Response } from "../src/assessment/items.js";
 import { type Identity, identityFrom } from "../src/auth/identity.js";
 import { checkRoleChange, setClerkRole } from "../src/auth/roles.js";
 import { ModelProvider, modelChoicesFromEnv, modelConfigFromEnv } from "../src/models.js";
 import { LANGSMITH_SETTINGS } from "../src/observability.js";
-import type { ApprovalMode, ApprovalResponse } from "../src/nodes/release.js";
+import type { ApprovalMode } from "../src/nodes/release.js";
 import type { Sql } from "../src/storage/sql.js";
 import { workersAiEmbedder, workersAiGuard } from "./ai.js";
 import { courseBuilder } from "./builder.js";
@@ -359,10 +359,25 @@ export class CourseAgent extends Agent<Env, CourseAgentState> {
     return this.app.myRelease(userId);
   }
 
+  /** The questions the caller's next attempt at a lesson shows (drawn per attempt for lessons with an exam). */
   @callable()
-  submitQuiz(lesson: string, answers: Response[], certainty: Certainty[]): QuizResult {
+  exam(lesson: string) {
     const { userId } = this.actor("learn");
-    return this.app.submitQuiz(userId, lesson, answers, certainty, this.connectionId());
+    return this.app.exam(userId, String(lesson));
+  }
+
+  /** `item_ids`: the questions exam() returned, in the order answered. */
+  @callable()
+  submitQuiz(lesson: string, answers: Response[], certainty: Certainty[], item_ids?: string[]): QuizResult {
+    const { userId } = this.actor("learn");
+    return this.app.submitQuiz(userId, String(lesson), answers, certainty, this.connectionId(), item_ids);
+  }
+
+  /** An answer to a practice check after a section: its feedback, recorded as evidence. */
+  @callable()
+  answerCheck(blockId: string, option: number) {
+    const { userId } = this.actor("learn");
+    return this.app.answerCheck(userId, String(blockId), option, this.connectionId());
   }
 
   /** Time on a lesson, or an intervention shown or completed, reported by the learner's own browser. */
@@ -423,17 +438,17 @@ export class CourseAgent extends Agent<Env, CourseAgentState> {
   @callable()
   startRun(mode: ApprovalMode, agents: boolean, source: DataSource = "simulated") {
     this.actor("repair");
-    if (source !== "simulated" && source !== "real") throw new Error(`Unknown data source "${String(source)}"`);
     const run = this.app.beginRun({ mode, agents, source }, () => this.pushState());
     this.background(() => this.app.continueRun(run, () => this.pushState()));
   }
 
   /** Answers the pending approval. A second answer to the same approval is refused here, not lost. */
   @callable()
-  approve(response: ApprovalResponse) {
+  approve(response: unknown) {
     const { userId } = this.actor("repair");
+    const answer = parseApproval(response);
     const run = this.app.beginApproval(() => this.pushState());
-    this.background(() => this.app.continueApproval(run, { ...response, note: response.note ?? `approved by ${userId}` }, () => this.pushState()));
+    this.background(() => this.app.continueApproval(run, { ...answer, note: answer.note ?? `${answer.approved ? "approved" : "rejected"} by ${userId}` }, () => this.pushState()));
   }
 
   /** Measures the open real trial now instead of waiting for the hourly check. */
