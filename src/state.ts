@@ -2,6 +2,7 @@ import { Annotation, MessagesAnnotation } from "@langchain/langgraph";
 import { z } from "zod";
 import { InterventionSchema } from "./interventions/templates.js";
 import type { Measurement, TrialDecision } from "./measure/decide.js";
+import type { PendingMeasurement } from "./measure/real.js";
 import type { Approval, Release } from "./releases/release.js";
 
 // ─── Domain schemas ────────────────────────────────────────────────
@@ -136,6 +137,8 @@ export const GraphState = Annotation.Root({
   release_problems: Annotation<string[] | undefined>(),
   approval: Annotation<Approval | undefined>(),
   measurement: Annotation<Measurement | undefined>(),
+  /** A real trial still collecting learners: the run ends here; the trial is evaluated later. */
+  trial_pending: Annotation<PendingMeasurement | undefined>(),
   trial_decision: Annotation<TrialDecision | undefined>(),
   /** The live version after the run. */
   live_version: Annotation<string | undefined>(),

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import type { ApprovalRequest, ApprovalResponse, Call, Overview, ReleaseSummary, RunState, RunStep } from "../types.js";
+import type { ApprovalRequest, ApprovalResponse, Call, DataSource, Overview, ReleaseSummary, RunState, RunStep, TrialStatus } from "../types.js";
 
 const pct = (v: number) => `${Math.round(v * 100)}%`;
 const signed = (v: number) => `${v > 0 ? "+" : ""}${pct(v)}`;
@@ -39,7 +39,9 @@ function headline(run: RunState | undefined, outcome: ReleaseSummary | undefined
   if (run.status === "running") return { title: "Working…", sub: run.steps.at(-1)?.title ?? "Reading the learner data" };
   if (run.status === "awaiting_approval") return { title: "Waiting for your approval", sub: "Nothing changes for learners until you approve and the trial passes." };
   if (run.status === "error") return { title: "The run failed", sub: run.error ?? "" };
+  if (run.status === "trial_running") return { title: "Trial running on real learners", sub: "Half of learners get the change. It's decided once both groups are big enough." };
   const last = run.steps.at(-1);
+  if (last?.node === "decide" && last.actor === "human") return { title: last.title, sub: last.detail ?? "" };
   if (last?.node === "decide" && outcome?.decision) {
     return outcome.decision.verdict === "keep"
       ? { title: `Kept · v${outcome.promoted_to ?? outcome.version} is live`, sub: "The change did what it claimed, and nothing else got worse." }
@@ -106,6 +108,64 @@ function Approval({ request, onAnswer }: { request: ApprovalRequest; onAnswer: (
   );
 }
 
+function TrialCard({ trial, onEvaluate, onStop }: { trial: TrialStatus; onEvaluate: () => Promise<unknown>; onStop: () => Promise<unknown> }) {
+  const [busy, setBusy] = useState(false);
+  const act = (f: () => Promise<unknown>) => {
+    setBusy(true);
+    void f().finally(() => setBusy(false));
+  };
+  const p = trial.pending;
+  return (
+    <section className="approval stack" aria-label="Trial on real learners">
+      <div className="row between">
+        <span className="version">
+          v{trial.parent} vs v{trial.version}
+        </span>
+        <span className="chip blue">real learners</span>
+      </div>
+      <ul>
+        {trial.changes.map((c) => (
+          <li key={c}>{c}</li>
+        ))}
+      </ul>
+      {p ? (
+        <div className="bars">
+          {[
+            { label: `Without it (v${trial.parent})`, n: p.control },
+            { label: `With it (v${trial.version})`, n: p.treatment },
+          ].map((b) => (
+            <div key={b.label} className="bar">
+              <div className="label">
+                <span>{b.label}</span>
+                <strong>
+                  {b.n} <span className="muted">of {p.needed} learners</span>
+                </strong>
+              </div>
+              <div className="track">
+                <div className="fill" style={{ width: `${Math.min(100, (b.n / p.needed) * 100)}%`, background: "var(--blue)" }} />
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div className="small muted">Not measured yet. Evaluate to count learners so far.</div>
+      )}
+      <div className="row">
+        <button className="btn primary" disabled={busy} onClick={() => act(onEvaluate)}>
+          Evaluate now
+        </button>
+        <button className="btn danger" disabled={busy} onClick={() => act(onStop)}>
+          Stop trial
+        </button>
+      </div>
+      <div className="footnote">
+        Measured on {p?.lesson ?? "the changed lesson"}: learners who take its quiz since the trial started. Checked every hour; kept only if it clearly helps and nothing
+        else gets worse.
+      </div>
+    </section>
+  );
+}
+
 function Verdict({ release }: { release: ReleaseSummary }) {
   const m = release.measurement!;
   const p = m.primary;
@@ -168,26 +228,22 @@ function Activity({ steps, running }: { steps: RunStep[]; running: boolean }) {
   );
 }
 
-/** The admin key, kept for this browser session only (when storage allows). */
-function savedKey(): string {
-  try {
-    return sessionStorage.getItem("hyperlearn-admin") ?? "";
-  } catch {
-    return "";
-  }
-}
-function saveKey(key: string) {
-  try {
-    sessionStorage.setItem("hyperlearn-admin", key);
-  } catch {
-    // Storage unavailable: the key lives in memory for this page only.
-  }
-}
-
-export function RepairDrawer({ overview, call, onReset, onView }: { overview: Overview | null; call: Call; onReset: () => void; onView: (v: string | null) => void }) {
-  const [adminKey, setAdminKey] = useState(savedKey);
+export function RepairDrawer({
+  overview,
+  mayReset,
+  call,
+  onReset,
+  onView,
+}: {
+  overview: Overview | null;
+  mayReset: boolean;
+  call: Call;
+  onReset: () => void;
+  onView: (v: string | null) => void;
+}) {
   const [mode, setMode] = useState<"hitl" | "autopilot">("hitl");
   const [agents, setAgents] = useState(false);
+  const [source, setSource] = useState<DataSource>("simulated");
   const [scenario, setScenario] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   if (!overview) return <div className="empty">Connecting to the course…</div>;
@@ -198,14 +254,16 @@ export function RepairDrawer({ overview, call, onReset, onView }: { overview: Ov
   const selected = scenario ?? overview.scenario;
   const chosen = overview.scenarios.find((s) => s.id === selected);
   const outcome = overview.releases.filter((r) => r.measurement && !r.released_from).at(-1);
-  const showOutcome = run?.status === "done" && run.steps.at(-1)?.node === "decide" && outcome;
+  const lastStep = run?.steps.at(-1);
+  const showOutcome = run?.status === "done" && lastStep?.node === "decide" && lastStep.actor !== "human" && outcome;
+  const trial = overview.trial;
   const { title, sub } = headline(run, outcome);
   const act = (p: Promise<unknown>) => p.catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)));
 
   const start = () => {
     setError(null);
-    const reset = selected !== overview.scenario ? call("reset", [selected, adminKey]).then(onReset) : Promise.resolve();
-    void act(reset.then(() => call("startRun", [mode, agents, adminKey])));
+    const reset = source === "simulated" && selected !== overview.scenario ? call("reset", [selected]).then(onReset) : Promise.resolve();
+    void act(reset.then(() => call("startRun", [mode, agents, source])));
   };
 
   return (
@@ -216,7 +274,9 @@ export function RepairDrawer({ overview, call, onReset, onView }: { overview: Ov
         <div className="headline-sub">{sub}</div>
       </section>
 
-      {waiting && run.approval && <Approval request={run.approval} onAnswer={(r) => void act(call("approve", [r, adminKey]))} />}
+      {waiting && run.approval && <Approval request={run.approval} onAnswer={(r) => void act(call("approve", [r]))} />}
+
+      {trial && <TrialCard trial={trial} onEvaluate={() => act(call("evaluateTrial"))} onStop={() => act(call("stopTrial"))} />}
 
       {showOutcome && (
         <>
@@ -238,33 +298,34 @@ export function RepairDrawer({ overview, call, onReset, onView }: { overview: Ov
         </details>
       )}
 
-      <details className="disclosure card soft" open={!run || (overview.adminRequired && !adminKey)}>
+      <details className="disclosure card soft" open={!run}>
         <summary>
           <span className="caret">›</span> Run settings
           <span className="muted" style={{ fontWeight: 400, marginLeft: "auto" }}>
-            {mode === "hitl" ? "You approve" : "Autopilot"} · {agents ? "Muse Spark" : "Reference"}
+            {source === "real" ? "Real learners" : "Simulated"} · {mode === "hitl" ? "You approve" : "Autopilot"} · {agents ? "Muse Spark" : "Reference"}
           </span>
         </summary>
         <div className="stack" style={{ marginTop: "var(--s4)" }}>
-          {overview.adminRequired && (
-            <label className="field">
-              <span>Admin key</span>
-              <input
-                className="input"
-                type="password"
-                autoComplete="current-password"
-                value={adminKey}
-                onChange={(e) => {
-                  setAdminKey(e.target.value);
-                  saveKey(e.target.value);
-                }}
-              />
-              <span className="footnote">Needed to change the course. Learners don't need it.</span>
-            </label>
-          )}
+          <div className="field">
+            <span>Learner data</span>
+            <div className="segmented">
+              <button className={source === "simulated" ? "on" : ""} onClick={() => setSource("simulated")}>
+                Simulated
+              </button>
+              <button className={source === "real" ? "on" : ""} onClick={() => setSource("real")}>
+                Real learners
+              </button>
+            </div>
+            {source === "real" && (
+              <span className="footnote">
+                Diagnoses from people's first quiz attempts on v{overview.live}. An approved change is trialled on half of learners and decided once each half has 30.
+              </span>
+            )}
+          </div>
+          {source === "simulated" && (
           <label className="field">
-            <span>Learner data (simulated)</span>
-            <select className="input" value={selected} onChange={(e) => setScenario(e.target.value)}>
+            <span>Scenario</span>
+            <select className="input" value={selected} disabled={!mayReset && selected === overview.scenario} onChange={(e) => setScenario(e.target.value)}>
               {overview.scenarios.map((s) => (
                 <option key={s.id} value={s.id}>
                   {s.title}
@@ -272,7 +333,8 @@ export function RepairDrawer({ overview, call, onReset, onView }: { overview: Ov
               ))}
             </select>
           </label>
-          {chosen && <div className="small muted">{chosen.description}</div>}
+          )}
+          {source === "simulated" && chosen && <div className="small muted">{chosen.description}</div>}
           <div className="field">
             <span>Who approves</span>
             <div className="segmented">
@@ -301,25 +363,31 @@ export function RepairDrawer({ overview, call, onReset, onView }: { overview: Ov
       </details>
 
       <div className="row">
-        <button className="btn primary" disabled={running || waiting} onClick={start}>
+        <button className="btn primary" disabled={running || waiting || Boolean(trial)} onClick={start}>
           {running ? "Running…" : "Run repair"}
         </button>
+        {mayReset && (
         <button
           className="btn quiet"
           disabled={running}
           onClick={() => {
             setError(null);
-            void act(call("reset", [selected, adminKey]).then(onReset));
+            void act(call("reset", [selected]).then(onReset));
           }}
         >
           Reset to v1.0.0
         </button>
+        )}
       </div>
 
-      <p className="footnote">
-        Trial learners are simulated. A kept change shows the harness targets, applies and measures correctly, not that the content teaches real
-        people.
-      </p>
+      {source === "simulated" ? (
+        <p className="footnote">
+          Trial learners are simulated. A kept change shows the harness targets, applies and measures correctly, not that the content teaches real
+          people.
+        </p>
+      ) : (
+        <p className="footnote">Real trials are decided by the same rule as simulated ones, on the answers of the people in each half.</p>
+      )}
     </>
   );
 }

@@ -43,7 +43,9 @@ LangGraph.js, LangChain.js and Zod, running in a Cloudflare Worker (Agents SDK +
 | `src/guards/` | Optional Guard (safety) and Embedder (paraphrase) interfaces |
 | `src/nodes/author.ts`, `src/nodes/approver.ts` | Author and content review; the autopilot Approver agent |
 | `src/releases/` | Typed changes (apply, invert, risk tier, semver), releases, trials, promote and revert |
-| `src/measure/` | Measuring a trial on simulated learners, and the keep-or-revert rule |
+| `src/measure/` | Measuring a trial on simulated or real learners (`real.ts`: arms, pending until enough), and the keep-or-revert rule |
+| `src/auth/` | Clerk token verification, identity headers, role changes |
+| `src/app/` | `CourseService` (everything the app does), the access matrix, the run timeline |
 | `src/nodes/release.ts` | Harness nodes: plan_release, approve (interrupt or autopilot), measure, decide |
 | `src/cli/loop.ts` | `npm run loop`: one scenario through the whole loop |
 | `src/index.ts` | Demo runner |
@@ -58,7 +60,7 @@ LangGraph.js, LangChain.js and Zod, running in a Cloudflare Worker (Agents SDK +
 ## The app
 
 Three panes: the learning path and release history on the left, the lesson and its quiz in the middle, and
-course repair on the right (pick a simulated scenario, run the loop, approve, watch the trial decide).
+course repair on the right (pick simulated or real learner data, run the loop, approve, watch the trial decide).
 
 ```bash
 npm run build:web && npm run dev:worker   # http://localhost:8787 — the Worker serves the built UI
@@ -79,13 +81,52 @@ npm run dev                               # terminal 2: Vite on :5173, proxying 
   model calls; the UI says so. With `MODEL_BASE_URL` and `MODEL_API_KEY` set (`.dev.vars` locally,
   `npx wrangler secret put MODEL_API_KEY` deployed), the "Muse Spark" toggle runs the real agents. Point
   `MODEL_BASE_URL` at a Cloudflare AI Gateway to log every model call.
-- Changing the course (reset, runs, approvals) needs the `ADMIN_TOKEN` secret when one is set
-  (`npx wrangler secret put ADMIN_TOKEN`); learners don't need it, and the UI asks for it once per session.
-  Without it, as in local dev, anyone connected can administer: **set it before deploying**.
+- **Accounts (Clerk).** Everything needs sign-in, through a split-screen page (`/sign-in`, `/sign-up`). The
+  browser sends its Clerk session token with the agent connection; the Worker verifies it (networkless, with
+  `CLERK_JWT_KEY`) before anything reaches the Durable Object, which then knows who is on each connection.
+  Roles come from the token's `role` claim (Clerk user public metadata), defaulting to learner:
+
+  | | learner | instructor | admin |
+  | --- | --- | --- | --- |
+  | lessons, quizzes, own progress | ✓ | ✓ | ✓ |
+  | course repair (run, approve), see learners | | ✓ | ✓ |
+  | reset the course, manage roles | | | ✓ |
+
+  Admins change roles on a learner's page (`/learners/:id`). The role is written to the person's Clerk public
+  metadata (needs the Worker secret `CLERK_SECRET_KEY`) and applies when their browser next connects. Admins
+  can't change their own role, so the last admin can't lock everyone out.
+
+- **What's recorded per account** (the append-only event log, each event pinned to the release the person saw):
+  connections opening and closing (merged into sessions when less than 30 minutes apart), visible time on each
+  lesson, interventions shown and completed, and every quiz answer with its certainty. The browser can only report
+  its own learner's lesson time and interventions, validated against the live release and rate-limited; everything
+  else is recorded by the server. `/me` ("My progress") shows mastery, time, sessions, quizzes and the beliefs a
+  learner has shown and cleared, and "Delete my data" removes their history.
+
+- **Instructors** (`/learners`): every learner with when they were last active, sessions, time, lessons
+  mastered and the beliefs they still show, a "needs help" filter, the misconceptions most learners hold, and
+  for each learner their progress and a readable timeline. Names come from the session token when it carries
+  `name` and `email` claims; otherwise learners are listed by their user id.
+
+  Setup: in Clerk, add the session-token claims
+  `{ "role": "{{user.public_metadata.role}}", "name": "{{user.full_name}}", "email": "{{user.primary_email_address}}" }`
+  (only `role` is required) and set your own
+  public metadata to `{ "role": "admin" }`; set `VITE_CLERK_PUBLISHABLE_KEY` (`.env` locally, a GitHub Actions
+  variable for CI) and the Worker secret `CLERK_JWT_KEY` (`.dev.vars` locally). For in-app role changes, also
+  `npx wrangler secret put CLERK_SECRET_KEY` (Clerk dashboard → API keys → secret key).
+
+- **Real learners as the data source.** Course repair can diagnose and trial on the people using the app instead
+  of a simulated scenario. Diagnosis uses everyone's first quiz attempt on the live release; with few learners,
+  every lesson is `low_sample` and the agents don't act on noise. An approved change becomes a trial: each
+  learner is put in one half by a stable hash of their id and the trial version, and served that half's release
+  (content, routing and grading). The run then waits as "trial running": the trial is measured every hour, or
+  when an instructor presses Evaluate now, and decided by the same keep-or-revert rule once both halves have 30
+  learners on the measured outcome. An instructor can also stop it, which reverts it. Only one real trial runs
+  at a time.
 - Live at **https://hyperlearn.radesh-govind.com**. `.github/workflows/ci-cd.yml` typechecks, tests and builds every
   push and pull request, and deploys every push to `main` that passes. It needs one repository secret,
   `CLOUDFLARE_API_TOKEN` (a token from Cloudflare's "Edit Cloudflare Workers" template). Worker secrets
-  (`ADMIN_TOKEN`, `MODEL_API_KEY`, `LANGSMITH_API_KEY`) are set once with `wrangler secret put` and survive deploys.
+  (`CLERK_JWT_KEY`, `CLERK_SECRET_KEY`, `MODEL_API_KEY`, `LANGSMITH_API_KEY`) are set once with `wrangler secret put` and survive deploys.
 - Manual deploy: `npx wrangler login`, then `npm run deploy`.
 
 ## Setup
@@ -229,7 +270,7 @@ npm run loop -- missing-prereq --agents     # the real agents (Curator, Reflecti
 
 **What this proves, and what it doesn't.** Simulated learners follow rules we wrote, so a trial shows that the
 harness targets the right lesson, applies changes safely, and keeps or reverts correctly under noise. It does
-not show that a change helps real learners; the same decision rule applied to real learners would.
+not show that a change helps real learners; a trial on real learners (in the app) applies the same rule to them.
 
 Splits and merges are reviewed and recorded, but not released: no agent writes whole lessons yet.
 

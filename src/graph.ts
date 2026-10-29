@@ -100,7 +100,8 @@ export function buildGraph(models: Partial<GraphModels> = {}, { harness, checkpo
       // autopilot, runs as a trial, and is kept or reverted on its measured outcome.
       .addConditionalEdges("plan_release", (state: State) => (state.candidate ? "approve" : END), ["approve", END])
       .addConditionalEdges("approve", routeFromApproval, ["measure", END])
-      .addEdge("measure", "decide")
+      // A real trial that can't conclude yet ends the run; it is evaluated later, outside the graph.
+      .addConditionalEdges("measure", (state: State) => (state.trial_pending ? END : "decide"), ["decide", END])
       .addEdge("decide", END)
       .compile({ checkpointer })
   );

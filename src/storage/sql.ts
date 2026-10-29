@@ -21,6 +21,15 @@ export function createTables(sql: Sql) {
     data TEXT NOT NULL,
     at TEXT NOT NULL
   )`;
+  sql`CREATE INDEX IF NOT EXISTS hl_events_learner ON hl_events (learner, kind)`;
+  sql`CREATE TABLE IF NOT EXISTS hl_profiles (
+    user_id TEXT PRIMARY KEY,
+    name TEXT,
+    email TEXT,
+    role TEXT NOT NULL,
+    first_seen TEXT NOT NULL,
+    last_seen TEXT NOT NULL
+  )`;
 }
 
 /** Releases, one JSON row each, in creation order. */
@@ -85,7 +94,11 @@ export class SqlThreadStore implements ThreadStore {
 export interface LearnerEvent {
   id?: number;
   learner: string;
-  kind: "answer" | "path" | "content";
+  /**
+   * answer: a graded quiz · path: the steps the router gave · session: a connection started or ended ·
+   * lesson: active time on a lesson · intervention: one was shown or completed.
+   */
+  kind: "answer" | "path" | "session" | "lesson" | "intervention";
   lesson: string | null;
   release: string;
   data: unknown;
@@ -105,6 +118,21 @@ export class SqlEventLog {
     return this.sql<{ id: number; learner: string; kind: LearnerEvent["kind"]; lesson: string | null; release: string; data: string; at: string }>`
       SELECT * FROM hl_events WHERE learner = ${learner} ORDER BY id`.map((row) => ({ ...row, data: JSON.parse(row.data) as unknown }));
   }
+  /** Every graded quiz since `since` (default: all), across learners, oldest first. */
+  answers(since = ""): LearnerEvent[] {
+    return this.sql<{ id: number; learner: string; kind: LearnerEvent["kind"]; lesson: string | null; release: string; data: string; at: string }>`
+      SELECT * FROM hl_events WHERE kind = 'answer' AND at >= ${since} ORDER BY id`.map((row) => ({ ...row, data: JSON.parse(row.data) as unknown }));
+  }
+  /** Every learner who has any event, with their latest activity. */
+  learners(): { learner: string; last_at: string }[] {
+    return this.sql<{ learner: string; last_at: string }>`SELECT learner, MAX(at) AS last_at FROM hl_events GROUP BY learner ORDER BY last_at DESC`;
+  }
+  /** Removes one learner's history; returns how many events were deleted. */
+  deleteLearner(learner: string): number {
+    const [{ n }] = this.sql<{ n: number }>`SELECT COUNT(*) AS n FROM hl_events WHERE learner = ${learner}` as [{ n: number }];
+    this.sql`DELETE FROM hl_events WHERE learner = ${learner}`;
+    return n;
+  }
   clear() {
     this.sql`DELETE FROM hl_events`;
   }
@@ -121,5 +149,44 @@ export class SqlMeta {
   }
   set(key: string, value: unknown) {
     this.sql`INSERT INTO hl_meta (key, value) VALUES (${key}, ${JSON.stringify(value)}) ON CONFLICT (key) DO UPDATE SET value = excluded.value`;
+  }
+}
+
+/** Who a learner is, as last seen in their verified session token: for instructors' views. */
+export interface Profile {
+  user_id: string;
+  name: string | null;
+  email: string | null;
+  role: string;
+  first_seen: string;
+  last_seen: string;
+}
+
+export class SqlProfiles {
+  constructor(private readonly sql: Sql) {
+    createTables(sql);
+  }
+  /** Records a sign-in: creates the profile or refreshes its name, email, role and last-seen time. */
+  seen(profile: { user_id: string; name?: string | undefined; email?: string | undefined; role: string }, at: string) {
+    this.sql`INSERT INTO hl_profiles (user_id, name, email, role, first_seen, last_seen)
+      VALUES (${profile.user_id}, ${profile.name ?? null}, ${profile.email ?? null}, ${profile.role}, ${at}, ${at})
+      ON CONFLICT (user_id) DO UPDATE SET
+        name = COALESCE(excluded.name, hl_profiles.name),
+        email = COALESCE(excluded.email, hl_profiles.email),
+        role = excluded.role,
+        last_seen = excluded.last_seen`;
+  }
+  get(userId: string): Profile | undefined {
+    return this.sql<Profile>`SELECT * FROM hl_profiles WHERE user_id = ${userId}`[0];
+  }
+  all(): Profile[] {
+    return this.sql<Profile>`SELECT * FROM hl_profiles ORDER BY last_seen DESC`;
+  }
+  delete(userId: string) {
+    this.sql`DELETE FROM hl_profiles WHERE user_id = ${userId}`;
+  }
+  /** Records a role change made in the app, so lists show it before the person next signs in. */
+  setRole(userId: string, role: string) {
+    this.sql`UPDATE hl_profiles SET role = ${role} WHERE user_id = ${userId}`;
   }
 }

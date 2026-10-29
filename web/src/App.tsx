@@ -1,60 +1,76 @@
+import { UserButton, useAuth } from "@clerk/react";
 import { useAgent } from "agents/react";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useLocation, useNavigate } from "react-router";
 import { CoursePanel } from "./components/CoursePanel.js";
 import { Drawer } from "./components/Drawer.js";
 import { HistoryDrawer } from "./components/HistoryDrawer.js";
 import { LessonView } from "./components/LessonView.js";
 import { RepairDrawer } from "./components/RepairDrawer.js";
-import type { AgentState, Call, CourseSnapshot, LessonProgress, Overview } from "./types.js";
-
-/** One browser = one learner, remembered locally when storage allows. */
-function learnerId(): string {
-  try {
-    const saved = localStorage.getItem("hyperlearn-learner");
-    if (saved) return saved;
-    const id = `learner-${crypto.randomUUID().slice(0, 8)}`;
-    localStorage.setItem("hyperlearn-learner", id);
-    return id;
-  } catch {
-    return `learner-${crypto.randomUUID().slice(0, 8)}`;
-  }
-}
+import { LearnerDetail, Learners } from "./pages/Learners.js";
+import { MyProgress } from "./pages/MyProgress.js";
+import type { AgentState, Call, CourseSnapshot, LessonProgress, Me, Overview, ServedRelease } from "./types.js";
 
 type DrawerName = "repair" | "history" | null;
 
 export function App() {
-  const [learner] = useState(learnerId);
+  const { getToken, userId } = useAuth();
+  const location = useLocation();
+  const navigate = useNavigate();
+  const onProgressPage = location.pathname === "/me";
+  const learnerMatch = /^\/learners(?:\/([^/]+))?$/.exec(location.pathname);
+  const [me, setMe] = useState<Me | null>(null);
   const [overview, setOverview] = useState<Overview | null>(null);
   const [lessonId, setLessonId] = useState("agent-loop");
   const [viewVersion, setViewVersion] = useState<string | null>(null);
+  const [served, setServed] = useState<ServedRelease | null>(null);
   const [snapshot, setSnapshot] = useState<CourseSnapshot | null>(null);
   const [parent, setParent] = useState<CourseSnapshot | null>(null);
   const [progress, setProgress] = useState<LessonProgress[]>([]);
   const [drawer, setDrawer] = useState<DrawerName>(null);
   const [navOpen, setNavOpen] = useState(false);
 
+  // The connection carries this person's Clerk session token; the Worker verifies it before the agent
+  // sees anything. Tokens live about a minute, so a cached one is reused for at most 30 s on reconnect.
+  const query = useCallback(async () => ({ token: (await getToken()) ?? "" }), [getToken]);
   const agent = useAgent<AgentState>({
     agent: "course-agent",
     name: "agentic-coding",
+    query,
+    queryDeps: [userId],
+    cacheTtl: 30_000,
     onStateUpdate: (state) => state.overview && setOverview(state.overview),
   });
   const call: Call = useCallback((method, args = []) => agent.call(method, args), [agent]);
 
   useEffect(() => {
+    if (!agent.identified) return;
+    void call<Me>("me").then(setMe);
     void call<Overview>("overview").then(setOverview);
-    void call<LessonProgress[]>("progress", [learner]).then(setProgress);
-  }, [call, learner]);
+    void call<LessonProgress[]>("progress").then(setProgress);
+  }, [call, agent.identified]);
+  const mayRepair = me?.permissions.includes("repair") ?? false;
+  const mayViewLearners = me?.permissions.includes("view_learners") ?? false;
 
-  // When a run starts waiting for a human, bring its approval card into view.
+  // When a run starts waiting for a human, bring its approval card into view (for people who may approve).
   const status = overview?.run?.status;
   const previous = useRef(status);
   useEffect(() => {
-    if (status === "awaiting_approval" && previous.current !== "awaiting_approval") setDrawer("repair");
+    if (mayRepair && status === "awaiting_approval" && previous.current !== "awaiting_approval") setDrawer("repair");
     previous.current = status;
-  }, [status]);
+  }, [status, mayRepair]);
 
-  // The release on screen: the live one, or one picked from the history (with its parent, to show what changed).
-  const shown = viewVersion ?? overview?.live;
+  // The release this person is served: the live one, or during a trial on real learners, possibly the trial.
+  const live = overview?.live;
+  const trialVersion = overview?.trial?.version;
+  useEffect(() => {
+    if (!agent.identified || !live) return;
+    void call<ServedRelease>("myRelease").then(setServed);
+  }, [call, agent.identified, live, trialVersion]);
+  const home = served?.version ?? live;
+
+  // The release on screen: the served one, or one picked from the history (with its parent, to show what changed).
+  const shown = viewVersion ?? home;
   const shownParent = overview?.releases.find((r) => r.version === shown)?.parent ?? null;
   useEffect(() => {
     if (!shown) return;
@@ -63,12 +79,13 @@ export function App() {
     else setParent(null);
   }, [call, shown, shownParent, viewVersion]);
 
-  const refreshProgress = useCallback(() => void call<LessonProgress[]>("progress", [learner]).then(setProgress), [call, learner]);
+  const refreshProgress = useCallback(() => void call<LessonProgress[]>("progress").then(setProgress), [call]);
   const closeDrawer = useCallback(() => setDrawer(null), []);
   const toggle = (name: Exclude<DrawerName, null>) => setDrawer((d) => (d === name ? null : name));
   const openLesson = (id: string) => {
     setLessonId(id);
     setNavOpen(false);
+    if (location.pathname !== "/") navigate("/");
   };
 
   const running = status === "running";
@@ -86,18 +103,29 @@ export function App() {
           <span className="name">HyperLearn</span>
         </div>
         <span className="spacer" />
-        {overview && (
-          <button className="chip blue" onClick={() => toggle("history")} title="Release history">
-            v{overview.live}
+        {mayViewLearners && (
+          <button className={`btn sm ${learnerMatch ? "primary" : "quiet"}`} onClick={() => navigate(learnerMatch ? "/" : "/learners")} aria-current={learnerMatch ? "page" : undefined}>
+            Learners
           </button>
         )}
-        <button className={`btn sm ${drawer === "repair" ? "primary" : "secondary"} header-btn`} onClick={() => toggle("repair")} aria-expanded={drawer === "repair"}>
-          {running && <span className="spinner" />}
-          {waiting ? "Approval needed" : "Course repair"}
-          {waiting && drawer !== "repair" && <span className="badge-dot" />}
+        <button className={`btn sm ${onProgressPage ? "primary" : "quiet"}`} onClick={() => navigate(onProgressPage ? "/" : "/me")} aria-current={onProgressPage ? "page" : undefined}>
+          My progress
         </button>
-        <span className="avatar" title={`${learner} · ${agent.identified ? "connected" : "connecting…"}`}>
-          {learner.slice(-2).toUpperCase()}
+        {home && (
+          <button className="chip blue" onClick={() => toggle("history")} title={served?.arm ? "Release history · a trial is running, and you're in it" : "Release history"}>
+            v{home}
+          </button>
+        )}
+        {mayRepair && (
+          <button className={`btn sm ${drawer === "repair" ? "primary" : "secondary"} header-btn`} onClick={() => toggle("repair")} aria-expanded={drawer === "repair"}>
+            {running && <span className="spinner" />}
+            {waiting ? "Approval needed" : "Course repair"}
+            {waiting && drawer !== "repair" && <span className="badge-dot" />}
+          </button>
+        )}
+        {me && me.role !== "learner" && <span className="chip">{me.role}</span>}
+        <span className="account" title={agent.identified ? "connected" : "connecting…"}>
+          <UserButton />
           <span className={`status ${agent.identified ? "on" : ""}`} />
         </span>
       </header>
@@ -108,18 +136,30 @@ export function App() {
         </nav>
 
         <main className="main">
-          {snapshot ? (
+          {onProgressPage ? (
+            <MyProgress key={progress.length} call={call} onOpenLesson={openLesson} />
+          ) : learnerMatch && mayViewLearners ? (
+            learnerMatch[1] ? (
+              <LearnerDetail
+                call={call}
+                userId={decodeURIComponent(learnerMatch[1])}
+                onBack={() => navigate("/learners")}
+                roles={me?.permissions.includes("manage_roles") ? { self: me.userId, configured: me.rolesConfigured } : null}
+              />
+            ) : (
+              <Learners call={call} onOpen={(id) => navigate(`/learners/${encodeURIComponent(id)}`)} />
+            )
+          ) : snapshot ? (
             <LessonView
               // Keyed by lesson, not version: a release going live mid-quiz updates the page without wiping the learner's answers.
               key={`${viewVersion ?? "live"}:${lessonId}`}
               snapshot={snapshot}
               parent={parent}
               lessonId={lessonId}
-              viewingHistory={viewVersion !== null && viewVersion !== overview?.live}
+              viewingHistory={viewVersion !== null && viewVersion !== home}
               onBackToLive={() => setViewVersion(null)}
-              approvalWaiting={waiting && drawer !== "repair" ? (overview?.run?.approval?.version ?? null) : null}
+              approvalWaiting={mayRepair && waiting && drawer !== "repair" ? (overview?.run?.approval?.version ?? null) : null}
               onReviewApproval={() => setDrawer("repair")}
-              learner={learner}
               call={call}
               onAnswered={refreshProgress}
               onOpenLesson={openLesson}
@@ -129,9 +169,10 @@ export function App() {
           )}
         </main>
 
-        <Drawer open={drawer === "repair"} title="Course repair" onClose={closeDrawer}>
+        <Drawer open={mayRepair && drawer === "repair"} title="Course repair" onClose={closeDrawer}>
           <RepairDrawer
             overview={overview}
+            mayReset={me?.permissions.includes("reset") ?? false}
             call={call}
             onReset={() => {
               setViewVersion(null);
@@ -145,9 +186,9 @@ export function App() {
         <Drawer open={drawer === "history"} title="Releases" onClose={closeDrawer}>
           <HistoryDrawer
             overview={overview}
-            viewing={viewVersion ?? overview?.live ?? null}
+            viewing={viewVersion ?? home ?? null}
             onView={(v) => {
-              setViewVersion(v === overview?.live ? null : v);
+              setViewVersion(v === home ? null : v);
               setDrawer(null);
             }}
           />

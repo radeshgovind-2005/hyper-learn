@@ -75,6 +75,14 @@ export function stepFor(node: string, update: StateUpdate, at: string): RunStep 
           )
         : undefined;
     case "measure": {
+      const pending = update.trial_pending;
+      if (pending) {
+        return step(
+          `Trial running on real learners: ${pending.control}/${pending.needed} and ${pending.treatment}/${pending.needed}`,
+          "waiting",
+          `Half of learners get the new release. It's measured on ${pending.lesson} once both groups reach ${pending.needed} learners.`,
+        );
+      }
       const m = update.measurement;
       if (!m) return undefined;
       const p = m.primary;

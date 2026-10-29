@@ -3,7 +3,8 @@
 #
 # Needs one repository secret, CLOUDFLARE_API_TOKEN: a Cloudflare API token from the "Edit Cloudflare
 # Workers" template, scoped to this account and the radesh-govind.com zone. The account id is in
-# wrangler.jsonc. Worker secrets (ADMIN_TOKEN, MODEL_API_KEY, LANGSMITH_API_KEY) are set once with
+# wrangler.jsonc. The UI build needs the repository *variable* VITE_CLERK_PUBLISHABLE_KEY (public).
+# Worker secrets (CLERK_JWT_KEY, MODEL_API_KEY, LANGSMITH_API_KEY) are set once with
 # `wrangler secret put` and kept across deploys, so CI never sees them.
 name: CI/CD
 
@@ -30,6 +31,8 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: npm run build:web
+        env:
+          VITE_CLERK_PUBLISHABLE_KEY: ${{ vars.VITE_CLERK_PUBLISHABLE_KEY }}
 
   deploy:
     name: Deploy to Cloudflare
@@ -51,6 +54,8 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run build:web
+        env:
+          VITE_CLERK_PUBLISHABLE_KEY: ${{ vars.VITE_CLERK_PUBLISHABLE_KEY }}
       - run: npx wrangler deploy
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}

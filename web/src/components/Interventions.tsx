@@ -1,10 +1,10 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { Intervention } from "../types.js";
 
 type CheckQuestion = Extract<Intervention, { template: "contrast" }>["check"];
 
 /** A question with feedback on every option, shown after picking. Practice: never scored. */
-function Check({ question }: { question: CheckQuestion }) {
+function Check({ question, onAnswered }: { question: CheckQuestion; onAnswered?: () => void }) {
   const [picked, setPicked] = useState<number | null>(null);
   return (
     <div>
@@ -13,7 +13,15 @@ function Check({ question }: { question: CheckQuestion }) {
         {question.options.map((option, i) => {
           const state = picked === null ? "" : option.correct ? "right" : picked === i ? "wrong" : "";
           return (
-            <button key={i} className={`option ${state}`} onClick={() => setPicked(i)} disabled={picked !== null}>
+            <button
+              key={i}
+              className={`option ${state}`}
+              onClick={() => {
+                setPicked(i);
+                onAnswered?.();
+              }}
+              disabled={picked !== null}
+            >
               <span className="mark" aria-hidden>
                 {state === "right" ? "✓" : state === "wrong" ? "✕" : ""}
               </span>
@@ -29,7 +37,7 @@ function Check({ question }: { question: CheckQuestion }) {
   );
 }
 
-function Contrast({ intervention }: { intervention: Extract<Intervention, { template: "contrast" }> }) {
+function Contrast({ intervention, onCompleted }: { intervention: Extract<Intervention, { template: "contrast" }>; onCompleted?: () => void }) {
   return (
     <div className="contrast">
       <div className="sides">
@@ -47,19 +55,26 @@ function Contrast({ intervention }: { intervention: Extract<Intervention, { temp
         {intervention.why_it_seems_right}
       </div>
       <div className="check">
-        <Check question={intervention.check} />
+        <Check question={intervention.check} {...(onCompleted && { onAnswered: onCompleted })} />
       </div>
     </div>
   );
 }
 
-function Practice({ intervention }: { intervention: Extract<Intervention, { template: "practice" }> }) {
+function Practice({ intervention, onCompleted }: { intervention: Extract<Intervention, { template: "practice" }>; onCompleted?: () => void }) {
+  const [, setAnswered] = useState(() => new Set<number>());
+  const answer = (i: number) =>
+    setAnswered((prev) => {
+      const next = new Set(prev).add(i);
+      if (next.size === intervention.questions.length) onCompleted?.();
+      return next;
+    });
   return (
     <div className="card" style={{ borderRadius: "var(--radius-lg)", padding: "var(--s5)" }}>
       <div className="eyebrow" style={{ marginBottom: "var(--s3)" }}>Practice · not scored</div>
       {intervention.questions.map((q, i) => (
         <div key={i} style={{ marginTop: i ? "var(--s5)" : 0 }}>
-          <Check question={q} />
+          <Check question={q} onAnswered={() => answer(i)} />
         </div>
       ))}
     </div>
@@ -67,7 +82,7 @@ function Practice({ intervention }: { intervention: Extract<Intervention, { temp
 }
 
 /** A frame-by-frame player of a message list: each step highlights what just changed. */
-function StepThrough({ intervention }: { intervention: Extract<Intervention, { template: "step_through" }> }) {
+function StepThrough({ intervention, onCompleted }: { intervention: Extract<Intervention, { template: "step_through" }>; onCompleted?: () => void }) {
   const [frame, setFrame] = useState(0);
   const [playing, setPlaying] = useState(false);
   const last = intervention.frames.length - 1;
@@ -81,6 +96,9 @@ function StepThrough({ intervention }: { intervention: Extract<Intervention, { t
     return () => clearTimeout(timer);
   }, [playing, frame, last]);
   const current = intervention.frames[frame]!;
+  useEffect(() => {
+    if (frame === last) onCompleted?.();
+  }, [frame, last, onCompleted]);
 
   return (
     <div className="player">
@@ -122,13 +140,17 @@ function StepThrough({ intervention }: { intervention: Extract<Intervention, { t
   );
 }
 
-export function InterventionView({ intervention }: { intervention: Intervention }) {
+/** Renders an intervention. `track`, when given, hears "shown" on first render and "completed" when the learner finishes it. */
+export function InterventionView({ intervention, track }: { intervention: Intervention; track?: (event: "shown" | "completed") => void }) {
+  useEffect(() => track?.("shown"), [track]);
+  const onCompleted = useMemo(() => (track ? () => track("completed") : undefined), [track]);
+  const done = onCompleted ? { onCompleted } : {};
   switch (intervention.template) {
     case "contrast":
-      return <Contrast intervention={intervention} />;
+      return <Contrast intervention={intervention} {...done} />;
     case "practice":
-      return <Practice intervention={intervention} />;
+      return <Practice intervention={intervention} {...done} />;
     case "step_through":
-      return <StepThrough intervention={intervention} />;
+      return <StepThrough intervention={intervention} {...done} />;
   }
 }

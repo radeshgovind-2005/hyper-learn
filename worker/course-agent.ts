@@ -1,29 +1,30 @@
-import { Agent, callable } from "agents";
-import { CourseService, type QuizResult } from "../src/app/service.js";
+import { Agent, type Connection, type ConnectionContext, callable, getCurrentAgent } from "agents";
+import { type Permission, permissionsOf, requirePermission } from "../src/app/access.js";
+import { CourseService, type DataSource, type QuizResult } from "../src/app/service.js";
 import type { Certainty, Response } from "../src/assessment/items.js";
+import { type Identity, identityFrom } from "../src/auth/identity.js";
+import { checkRoleChange, setClerkRole } from "../src/auth/roles.js";
 import { configureModels, modelConfigFromEnv } from "../src/models.js";
 import { LANGSMITH_SETTINGS } from "../src/observability.js";
 import type { ApprovalMode, ApprovalResponse } from "../src/nodes/release.js";
 import type { Sql } from "../src/storage/sql.js";
 import { workersAiEmbedder, workersAiGuard } from "./ai.js";
 
-/** Compares two secrets in time that doesn't depend on where they first differ. */
-function sameSecret(a: string, b: string): boolean {
-  const x = new TextEncoder().encode(a);
-  const y = new TextEncoder().encode(b);
-  let diff = x.length ^ y.length;
-  for (let i = 0; i < Math.max(x.length, y.length); i++) diff |= (x[i] ?? 0) ^ (y[i] ?? 0);
-  return diff === 0;
-}
-
 /** What every connected browser sees, kept in sync by the Agents SDK. */
 export interface CourseAgentState {
   overview: ReturnType<CourseService["overview"]> | null;
 }
 
+/** Who is on a connection: verified by the Worker before the connection reached this object. */
+interface ConnectionState {
+  identity: Identity;
+  connectedAt: string;
+}
+
 /**
  * One course, as a Durable Object: its releases, learner history, and repair runs live in the
  * object's SQLite. A thin wrapper; the logic is CourseService (src/app/service.ts), which tests run on Node.
+ * Every method acts as the signed-in person on the calling connection, within their role.
  */
 export class CourseAgent extends Agent<Env, CourseAgentState> {
   initialState: CourseAgentState = { overview: null };
@@ -39,54 +40,148 @@ export class CourseAgent extends Agent<Env, CourseAgentState> {
       const agentsAvailable = Boolean(env.MODEL_API_KEY && env.MODEL_BASE_URL);
       this.service = new CourseService(this.sql.bind(this) as unknown as Sql, {
         agentsAvailable,
-        adminRequired: Boolean(env.ADMIN_TOKEN),
         ...(env.AI && { guard: workersAiGuard(env.AI), embedder: workersAiEmbedder(env.AI) }),
       });
     }
     return this.service;
   }
 
-  override onStart() {
+  /** How often an open trial on real learners is re-measured, in seconds. */
+  static readonly TRIAL_CHECK_INTERVAL = 3600;
+
+  override async onStart() {
     this.publish();
+    // Idempotent: one schedule however often the object wakes.
+    await this.scheduleEvery(CourseAgent.TRIAL_CHECK_INTERVAL, "checkTrial");
+  }
+
+  /** Scheduled, not callable by clients: decides an open real trial once both arms have enough learners. */
+  async checkTrial() {
+    const result = this.app.evaluateTrial(() => this.publish());
+    if (result.status !== "none") this.publish();
+  }
+
+  /** Binds the connection to the person the Worker verified. A connection without one is closed. */
+  override onConnect(connection: Connection<ConnectionState>, ctx: ConnectionContext) {
+    const identity = identityFrom(ctx.request);
+    if (!identity) {
+      connection.close(4001, "Unauthorized");
+      return;
+    }
+    connection.setState({ identity, connectedAt: new Date().toISOString() });
+    this.app.recordProfile(identity);
+    this.app.startSession(identity.userId, connection.id);
+  }
+
+  override onClose(connection: Connection<ConnectionState>) {
+    const identity = connection.state?.identity;
+    if (identity) this.app.endSession(identity.userId, connection.id);
   }
 
   private publish() {
     this.setState({ overview: this.app.overview() });
   }
 
+  /** The person calling, if their role allows `permission`; otherwise the call fails with a readable message. */
+  private actor(permission: Permission): Identity {
+    const connection = getCurrentAgent().connection as Connection<ConnectionState> | undefined;
+    return requirePermission(connection?.state?.identity, permission);
+  }
+
+  /** Who I am and what I may do, for the UI to show or hide controls. */
+  @callable()
+  me() {
+    const identity = this.actor("learn");
+    // Role changes need Clerk's secret key; without it, admins see roles but can't change them here.
+    const rolesConfigured = Boolean((this.env as unknown as { CLERK_SECRET_KEY?: string }).CLERK_SECRET_KEY);
+    return { ...identity, permissions: permissionsOf(identity.role), rolesConfigured };
+  }
+
+  /** Admins: changes someone else's role in Clerk. It applies when their browser next connects. */
+  @callable()
+  async setRole(userId: string, role: string) {
+    const { userId: by } = this.actor("manage_roles");
+    const next = checkRoleChange(by, userId, role);
+    const secretKey = (this.env as unknown as { CLERK_SECRET_KEY?: string }).CLERK_SECRET_KEY;
+    if (!secretKey) throw new Error("Role changes need CLERK_SECRET_KEY on the Worker; set roles in the Clerk dashboard meanwhile");
+    await setClerkRole(secretKey, userId, next);
+    this.app.profiles.setRole(userId, next);
+    console.log(`Role of ${userId} set to ${next} by ${by}`);
+    return { userId, role: next };
+  }
+
   @callable()
   overview() {
+    this.actor("learn");
     return this.app.overview();
   }
 
   @callable()
   snapshot(version?: string) {
-    return this.app.snapshot(version);
+    const { userId } = this.actor("learn");
+    return this.app.snapshot(version ?? this.app.myRelease(userId).version);
+  }
+
+  /** The release the caller is served: during a trial on real learners, half of learners get the trial. */
+  @callable()
+  myRelease() {
+    const { userId } = this.actor("learn");
+    return this.app.myRelease(userId);
   }
 
   @callable()
-  submitQuiz(learner: string, lesson: string, answers: Response[], certainty: Certainty[]): QuizResult {
-    return this.app.submitQuiz(learner, lesson, answers, certainty);
+  submitQuiz(lesson: string, answers: Response[], certainty: Certainty[]): QuizResult {
+    const { userId } = this.actor("learn");
+    return this.app.submitQuiz(userId, lesson, answers, certainty, this.connectionId());
+  }
+
+  /** Time on a lesson, or an intervention shown or completed, reported by the learner's own browser. */
+  @callable()
+  track(event: unknown) {
+    const { userId } = this.actor("learn");
+    this.app.track(userId, this.connectionId(), event);
   }
 
   @callable()
-  progress(learner: string) {
-    return this.app.progress(learner);
+  myProgress() {
+    const { userId } = this.actor("learn");
+    return this.app.myProgress(userId);
   }
 
-  /**
-   * Changing the course (reset, runs, approvals) needs the ADMIN_TOKEN secret when one is set; learner
-   * methods don't. Without a token (local dev) anyone connected can administer.
-   */
-  private requireAdmin(token: string | undefined) {
-    const expected = (this.env as unknown as { ADMIN_TOKEN?: string }).ADMIN_TOKEN;
-    if (!expected) return;
-    if (typeof token !== "string" || !sameSecret(token, expected)) throw new Error("Admin key required to change the course");
+  /** Deletes everything recorded about the caller. Their Clerk account is managed in Clerk. */
+  @callable()
+  deleteMyData() {
+    const { userId } = this.actor("learn");
+    return this.app.deleteMyData(userId);
+  }
+
+  /** Every learner, summarised for instructors. */
+  @callable()
+  learners() {
+    this.actor("view_learners");
+    return this.app.learners();
+  }
+
+  /** One learner's progress and timeline, for instructors. */
+  @callable()
+  learnerDetail(userId: string) {
+    this.actor("view_learners");
+    return this.app.learnerDetail(userId);
+  }
+
+  private connectionId(): string {
+    return getCurrentAgent().connection?.id ?? "unknown";
   }
 
   @callable()
-  reset(scenario: string, token?: string) {
-    this.requireAdmin(token);
+  progress() {
+    const { userId } = this.actor("learn");
+    return this.app.progress(userId);
+  }
+
+  @callable()
+  reset(scenario: string) {
+    this.actor("reset");
     this.app.reset(scenario);
     this.publish();
   }
@@ -96,18 +191,36 @@ export class CourseAgent extends Agent<Env, CourseAgentState> {
    * the run itself continues in the background and reaches the UI through state updates.
    */
   @callable()
-  startRun(mode: ApprovalMode, agents: boolean, token?: string) {
-    this.requireAdmin(token);
-    const run = this.app.beginRun({ mode, agents }, () => this.publish());
+  startRun(mode: ApprovalMode, agents: boolean, source: DataSource = "simulated") {
+    this.actor("repair");
+    if (source !== "simulated" && source !== "real") throw new Error(`Unknown data source "${String(source)}"`);
+    const run = this.app.beginRun({ mode, agents, source }, () => this.publish());
     this.background(() => this.app.continueRun(run, () => this.publish()));
   }
 
   /** Answers the pending approval. A second answer to the same approval is refused here, not lost. */
   @callable()
-  approve(response: ApprovalResponse, token?: string) {
-    this.requireAdmin(token);
+  approve(response: ApprovalResponse) {
+    const { userId } = this.actor("repair");
     const run = this.app.beginApproval(() => this.publish());
-    this.background(() => this.app.continueApproval(run, response, () => this.publish()));
+    this.background(() => this.app.continueApproval(run, { ...response, note: response.note ?? `approved by ${userId}` }, () => this.publish()));
+  }
+
+  /** Measures the open real trial now instead of waiting for the hourly check. */
+  @callable()
+  evaluateTrial() {
+    this.actor("repair");
+    const result = this.app.evaluateTrial(() => this.publish());
+    this.publish();
+    return result;
+  }
+
+  /** Ends the open real trial without a measurement: reverted, everyone back on the live release. */
+  @callable()
+  stopTrial() {
+    const { userId } = this.actor("repair");
+    this.app.stopTrial(userId, () => this.publish());
+    this.publish();
   }
 
   private background(work: () => Promise<unknown>) {

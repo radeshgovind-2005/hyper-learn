@@ -5,6 +5,8 @@
   "main": "worker/index.ts",
   // Served at this domain; the radesh-govind.com zone must be in the same Cloudflare account.
   "routes": [{ "pattern": "hyperlearn.radesh-govind.com", "custom_domain": true }],
+  // In `wrangler dev`, keep request URLs on localhost instead of rewriting them to the route's domain.
+  "dev": { "host": "localhost" },
   "compatibility_date": "2026-10-01",
   "compatibility_flags": ["nodejs_compat"],
   "assets": {
@@ -26,7 +28,9 @@
   "vars": {
     // Point MODEL_BASE_URL at an AI Gateway to log every model call. Set MODEL_API_KEY as a secret:
     //   npx wrangler secret put MODEL_API_KEY      (locally: .dev.vars)
-    // Set ADMIN_TOKEN the same way before deploying: without it, anyone can reset the course and approve releases.
+    // Sign-in (Clerk): set CLERK_JWT_KEY (Clerk dashboard → API keys → JWT public key) as a secret. Without it the
+    // Worker refuses every connection. Roles come from the session token's `role` claim. For admins to change
+    // roles in the app, also set CLERK_SECRET_KEY (Clerk dashboard → API keys → secret key) as a secret.
     // LangSmith tracing (optional, off by default): set LANGSMITH_API_KEY as a secret, and
     // LANGSMITH_TRACING=true and LANGSMITH_PROJECT here or as secrets.
     // Without a key, runs use the reference stand-ins and make no model calls.
@@ -35,6 +39,8 @@
     "FAST_MODEL": "muse-spark-1.3",
     "STRUCTURED_OUTPUT_METHOD": "jsonSchema",
     "MODEL_TIMEOUT_MS": "120000",
-    "MODEL_MAX_RETRIES": "1"
+    "MODEL_MAX_RETRIES": "1",
+    // Origins allowed to have issued a Clerk session token (the token's `azp` claim).
+    "CLERK_AUTHORIZED_PARTIES": "https://hyperlearn.radesh-govind.com,http://localhost:5173,http://localhost:8787"
   }
 }
