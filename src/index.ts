@@ -1,12 +1,13 @@
 import "./node/setup.js";
 import { HumanMessage } from "@langchain/core/messages";
 import { buildGraph } from "./graph.js";
+import { flushTraces, traceConfig } from "./observability.js";
 import { scenarioPerformance } from "./simulation/index.js";
 import { SCENARIOS } from "./simulation/scenarios.js";
 import type { State, StateUpdate } from "./state.js";
 
 const app = buildGraph();
-const INVOKE_CONFIG = { recursionLimit: 15 };
+const INVOKE_CONFIG = { recursionLimit: 15, ...traceConfig({ name: "demo" }) };
 
 interface Demo {
   id: string;
@@ -69,6 +70,7 @@ async function main() {
   for (const demo of selected) {
     await runDemo(demo);
   }
+  await flushTraces();
 }
 
 main().catch((error: unknown) => {

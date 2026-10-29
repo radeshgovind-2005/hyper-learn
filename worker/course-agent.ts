@@ -2,6 +2,7 @@ import { Agent, callable } from "agents";
 import { CourseService, type QuizResult } from "../src/app/service.js";
 import type { Certainty, Response } from "../src/assessment/items.js";
 import { configureModels, modelConfigFromEnv } from "../src/models.js";
+import { LANGSMITH_SETTINGS } from "../src/observability.js";
 import type { ApprovalMode, ApprovalResponse } from "../src/nodes/release.js";
 import type { Sql } from "../src/storage/sql.js";
 import { workersAiEmbedder, workersAiGuard } from "./ai.js";
@@ -31,6 +32,8 @@ export class CourseAgent extends Agent<Env, CourseAgentState> {
   private get app(): CourseService {
     if (!this.service) {
       const env = this.env as unknown as Record<string, string | undefined> & { AI?: Ai };
+      // LangChain reads LangSmith settings from process.env; Worker vars and secrets arrive on env.
+      for (const key of LANGSMITH_SETTINGS) if (env[key] && !process.env[key]) process.env[key] = env[key];
       const settings = modelConfigFromEnv(env);
       configureModels(settings);
       const agentsAvailable = Boolean(env.MODEL_API_KEY && env.MODEL_BASE_URL);

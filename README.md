@@ -310,6 +310,16 @@ The ids are `assistant` plus one Curator demo per evaluation scenario (`control`
 `low-sample-trap`). The Curator demos print the agents' result without scoring it; `npm run eval` scores them.
 An unknown id fails with the list of valid ones.
 
+### Tracing with LangSmith
+
+Every run can be traced in LangSmith: each graph node (Curator, Reflection, Author, review, release planning,
+approval, measurement, decision) and every model call, under one root run per invocation. Set
+`LANGSMITH_TRACING=true`, `LANGSMITH_API_KEY` and optionally `LANGSMITH_PROJECT` in `.env` (Node) or as Worker
+vars and secrets. Root runs are named `repair-run` (the app), `loop`, `eval` or `demo`, tagged `hyperlearn`,
+`scenario:<id>`, `mode:<hitl|autopilot>` and `agents:<model|reference>`, with the run's `thread_id` and the live
+release in their metadata. Runs flush pending traces before they finish, so nothing is lost when a Worker is
+suspended or a CLI exits. Tracing is off by default because traces carry prompts and learner data to LangSmith.
+
 ### Switching to Muse Spark (Meta Model API)
 
 Only `.env` changes, not code. Set `MODEL_BASE_URL` and `MODEL_API_KEY` to Meta's values and set

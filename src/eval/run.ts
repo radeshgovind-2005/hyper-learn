@@ -3,6 +3,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { scenarioPerformance } from "../simulation/index.js";
 import { getScenario, type Scenario, SCENARIOS } from "../simulation/scenarios.js";
 import { describeMutation as describe, printData } from "../cli/format.js";
+import { flushTraces, tracingEnabled } from "../observability.js";
 import type { Mutation, NodePerformance } from "../state.js";
 import { type AgentResult, runAgents } from "./agents.js";
 import { referenceCurator } from "./reference.js";
@@ -54,7 +55,7 @@ async function main() {
     console.log(`  reference  ${describe(mutation)} ${SCORE_ICON[result.reference.score]}`);
 
     if (!referenceOnly) {
-      result.agents = await runAgents(scenario.expected, data);
+      result.agents = await runAgents(scenario.expected, data, undefined, scenario.id);
       const { agents } = result;
       const status = agents.error ? `error: ${agents.error}` : agents.approved ? "approved" : "not approved";
       console.log(
@@ -75,6 +76,8 @@ async function main() {
     console.log(`  ${r.scenario.padEnd(16)} reference ${SCORE_ICON[r.reference.score]}  agents ${agents}`);
   }
   console.log(`\n  Report: ${reportPath}`);
+  if (tracingEnabled()) console.log("  Traces: LangSmith, tagged \"hyperlearn\" and scenario:<id>");
+  await flushTraces();
 }
 
 main().catch((error: unknown) => {
