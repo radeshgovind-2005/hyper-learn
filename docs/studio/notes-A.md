@@ -34,6 +34,24 @@ Branch `studio/assessment`. What changed, decisions, and what other workstreams 
 - `examSeed(...parts)`: FNV-1a over the parts joined with NUL, then a murmur-style finaliser (same mix
   as `armOf`).
 
+## 3. Validation
+
+- `validateCourse(lessons, misconceptions?, objectives?)`: new optional third parameter; `buildCourse`
+  passes `manifest.objectives`. The objective rules live in the exported `validateObjectives(lessons,
+  objectives)`: unique ids, known lesson, an item's objective must be one of its own lesson's, every
+  scored (non-pilot) item of a lesson with objectives names one, and each objective has at least
+  `2 × per_objective` scored items (at least 1 when the lesson has no exam config).
+- Decision: an item naming an unknown objective is refused even in a course without objectives (a
+  dangling reference is a bug either way; no existing content has `objective`, so nothing changes).
+- Snapshot-level rules run in `courseFromSnapshot` (they need sections and blocks): objectives parse
+  with `ObjectiveSchema`, their lesson exists in the snapshot, their `sections` are sections of that
+  lesson (archived sections still count, so archiving a section never invalidates a release); `exam`
+  parses with `ExamConfigSchema`; check blocks parse with `CheckQuestionSchema`, have exactly one correct
+  option, the correct one has `misconception: null`, misconceptions exist in the catalog, and the check's
+  `objective` exists. Check rules apply whether or not the course has objectives (no existing course has
+  checks).
+- Objectives of an archived lesson are dropped from the `Course` view, like the lesson's quiz.
+
 ## Regression check
 
 Besides `src/eval/reference.test.ts`, I hashed `scenarioPerformance` (5 seeds per scenario),
