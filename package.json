@@ -6,6 +6,7 @@
   "scripts": {
     "start": "tsx src/index.ts",
     "eval": "tsx src/eval/run.ts",
+    "loop": "tsx src/cli/loop.ts",
     "bundle": "tsx src/cli/build-bundle.ts",
     "test": "tsx --test \"src/**/*.test.ts\"",
     "typecheck": "tsc --noEmit"

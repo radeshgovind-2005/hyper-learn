@@ -1,5 +1,7 @@
 import { Annotation, MessagesAnnotation } from "@langchain/langgraph";
 import { z } from "zod";
+import type { Measurement, TrialDecision } from "./measure/decide.js";
+import type { Approval, Release } from "./releases/release.js";
 
 // ─── Domain schemas ────────────────────────────────────────────────
 
@@ -106,6 +108,17 @@ export const GraphState = Annotation.Root({
     reducer: (_, next) => next,
     default: () => 0,
   }),
+
+  // Release harness (only when the graph is built with one): plan → approval → trial → measure → decide.
+  /** The candidate release built from the approved proposal. */
+  candidate: Annotation<Release | undefined>(),
+  /** Why no candidate could be built (nothing to apply, or it breaks a course invariant). */
+  release_problems: Annotation<string[] | undefined>(),
+  approval: Annotation<Approval | undefined>(),
+  measurement: Annotation<Measurement | undefined>(),
+  trial_decision: Annotation<TrialDecision | undefined>(),
+  /** The live version after the run. */
+  live_version: Annotation<string | undefined>(),
 });
 
 export type State = typeof GraphState.State;

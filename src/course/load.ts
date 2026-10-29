@@ -44,8 +44,9 @@ export const toGraph = (lessons: readonly LessonMeta[]): PrereqGraph =>
 
 /**
  * Rules the schemas can't express. Returns every problem found (empty = valid):
- * unique ids; known, acyclic prerequisites; well-formed items; gap tags that point at real
- * ancestors; misconception tags that exist and point at the lesson that teaches them; every tagged
+ * unique ids; known, acyclic prerequisites; well-formed items; gap tags that point at an earlier
+ * lesson (one that doesn't depend on this one; it needn't be a prerequisite yet, since that is how a
+ * missing prerequisite shows up); misconception tags that exist and point at the lesson that teaches them; every tagged
  * wrong answer reachable; every direct prerequisite and every named misconception detectable.
  */
 export function validateCourse(lessons: readonly Lesson[], misconceptions: readonly MisconceptionDef[] = []): string[] {
@@ -81,7 +82,6 @@ export function validateCourse(lessons: readonly Lesson[], misconceptions: reado
 
   const detected = new Set<string>();
   for (const lesson of lessons) {
-    const ancestors = ancestorsOf(graph, lesson.id);
     const tagged = new Set<string>();
 
     for (const item of lesson.quiz) {
@@ -94,7 +94,10 @@ export function validateCourse(lessons: readonly Lesson[], misconceptions: reado
       for (const tag of itemTags(item)) {
         const gap = tag.reveals_gap_in;
         if (gap !== undefined) {
-          if (!ancestors.has(gap)) problems.push(`${where}: reveals_gap_in "${gap}" is not a prerequisite of "${lesson.id}"`);
+          if (!ids.has(gap)) problems.push(`${where}: reveals_gap_in "${gap}" is not a lesson`);
+          else if (gap === lesson.id || ancestorsOf(graph, gap).has(lesson.id)) {
+            problems.push(`${where}: reveals_gap_in "${gap}" depends on "${lesson.id}", so it can't be a gap behind it`);
+          }
           tagged.add(gap);
         }
         if (tag.misconception !== undefined) {

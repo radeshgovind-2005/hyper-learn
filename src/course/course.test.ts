@@ -92,9 +92,14 @@ describe("validateCourse", () => {
     assert.match(validateCourse([lesson("a", [], [twoCorrect])]).join(), /exactly one correct option/);
   });
 
-  it("only allows gap tags that point at a prerequisite", () => {
-    const problems = validateCourse([lesson("a", []), lesson("b", ["a"]), lesson("c", [], [question("c-q1", "b")])]);
-    assert.match(problems.join(), /"b" is not a prerequisite of "c"/);
+  it("allows a gap tag on a lesson that isn't a prerequisite yet (that's how a missing one shows up)", () => {
+    assert.deepEqual(validateCourse([lesson("a", []), lesson("b", ["a"]), lesson("c", [], [question("c-q1", "b")])]), []);
+  });
+
+  it("rejects a gap tag on a lesson that depends on this one, or on an unknown lesson", () => {
+    const backwards = validateCourse([lesson("a", [], [question("a-q1", "b")]), lesson("b", ["a"])]);
+    assert.match(backwards.join(), /reveals_gap_in "b" depends on "a"/);
+    assert.match(validateCourse([lesson("a", [], [question("a-q1", "zzz")])]).join(), /"zzz" is not a lesson/);
   });
 
   it("requires every direct prerequisite to be detectable from some wrong answer", () => {

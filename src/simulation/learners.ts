@@ -144,10 +144,18 @@ function answerItem(
 export function simulate(
   course: Course,
   scenario: Scenario,
-  { model = DEFAULT_LEARNER_MODEL, seed = scenario.seed }: { model?: LearnerModel; seed?: number } = {},
+  {
+    model = DEFAULT_LEARNER_MODEL,
+    seed = scenario.seed,
+    published = publishedGraph(course, scenario),
+  }: {
+    model?: LearnerModel;
+    seed?: number;
+    /** The graph learners are routed through; defaults to the course graph with the scenario's faults. */
+    published?: PrereqGraph;
+  } = {},
 ): Simulation {
   const random = seededRandom(seed);
-  const published = publishedGraph(course, scenario);
   const takers = new Map<string, number>();
   const attempts: QuizAttempt[] = [];
   const optionsByItem = new Map(

@@ -23,6 +23,12 @@ export interface Scenario {
   /** Cap on how many learners reach a lesson, to create low-sample data. */
   takers?: Readonly<Record<string, number>>;
   expected: ExpectedMutation;
+  /**
+   * A proposal to push through the release harness instead of asking the Curator: tests that the
+   * harness, not the agent, keeps a bad change out. Its reason is prefixed with the lesson's real fail
+   * rate (see injectedProposal). Scenarios with one are skipped by `npm run eval`.
+   */
+  inject?: Mutation;
 }
 
 const MISSING_TOOL_CALLING_EDGE = [["multi-agent", "tool-calling"]] as const;
@@ -67,6 +73,22 @@ export const SCENARIOS: readonly Scenario[] = [
       node_id: "agent-loop",
       target_node_id: null,
       misconception_id: "model-executes-actions",
+    },
+  },
+  {
+    id: "harmful-edge",
+    title: "Harmful change — tool-calling no longer requires agent-loop",
+    description:
+      "Nothing is wrong with the course, but a proposal to drop a real prerequisite is pushed through review. " +
+      "Learners who reach tool-calling without agent-loop fail it, so the trial must be reverted.",
+    seed: 606,
+    expected: { action: "flag_for_review", node_id: null, target_node_id: null, misconception_id: null },
+    inject: {
+      action: "remove_prerequisite",
+      node_id: "tool-calling",
+      target_node_id: "agent-loop",
+      misconception_id: null,
+      reason: "agent-loop looks redundant before it.",
     },
   },
   {

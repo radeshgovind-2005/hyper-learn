@@ -11,14 +11,16 @@ Backend for **HyperLearn**, an adaptive learning platform built on a self-correc
    assistant ⇄ tools                    curator → reflection
             │                              ▲          │
             ▼                              └─ reject ─┤
-           END                                        ▼ approve / max attempts
-                                                     END
+           END                                        ▼ approved (with a release harness)
+                  plan_release → approve (human or autopilot) → measure → decide → END
 ```
 
 - **Supervisor** routes on `input_type`: `cron` goes to the Curator, `user_question` goes to the Assistant.
 - **Curator** (high autonomy) reads performance data and proposes exactly one Zod-validated mutation.
 - **Reflection** reviews each proposal. A rejected proposal goes back to the Curator, which gets the critique. The loop allows at most 2 attempts.
 - **Reflection runs code checks first**: ids exist, the target is set correctly, no cycles or duplicate edges, and the reason cites the lesson's real fail rate. An invalid proposal is rejected instantly, without a model call.
+- **Release harness** (optional, `buildGraph(models, { harness })`): an approved proposal becomes a candidate
+  release, waits for approval, runs as a trial, and is kept or reverted on its measured outcome. See below.
 - **Learner Assistant** (low autonomy) calls `query_hypergraph`, `read_lesson`, `generate_diagram` and `navigate_ui` through a `ToolNode` loop.
 
 | Path | Purpose |
@@ -31,6 +33,10 @@ Backend for **HyperLearn**, an adaptive learning platform built on a self-correc
 | `src/analytics/` | Turns quiz attempts into per-lesson performance data: gaps, named misconceptions, BKT mastery, item quality |
 | `src/eval/` | Rule-based reference Curator, scoring and the `npm run eval` runner |
 | `src/mutations.ts` | Code checks a mutation must pass before Reflection |
+| `src/releases/` | Typed changes (apply, invert, risk tier, semver), releases, trials, promote and revert |
+| `src/measure/` | Measuring a trial on simulated learners, and the keep-or-revert rule |
+| `src/nodes/release.ts` | Harness nodes: plan_release, approve (interrupt or autopilot), measure, decide |
+| `src/cli/loop.ts` | `npm run loop`: one scenario through the whole loop |
 | `src/index.ts` | Demo runner |
 | `src/graph.ts` | Graph wiring and conditional edges |
 | `src/state.ts` | State annotation and Zod schemas |
@@ -49,6 +55,7 @@ npm run typecheck
 npm test               # all deterministic tests: no model server needed, a few seconds
 npm start              # demos against the real model
 npm run eval           # score the agents on the simulated scenarios
+npm run loop -- missing-prereq   # diagnose → propose → release → approve → trial → keep or revert
 ```
 
 ## The course
@@ -115,6 +122,7 @@ Everything except the model is deterministic: the same seed always produces the 
 | `missing-prereq` | multi-agent no longer requires tool-calling | `add_prerequisite(multi-agent ← tool-calling)` |
 | `overloaded` | agent-loop is too hard, with diffuse mistakes; its dependents fail too, so the highest fail rate isn't the cause | `split_node(agent-loop)` |
 | `dominant-misconception` | agent-loop fails because most learners confidently believe the model runs its own actions | `add_intervention(agent-loop : model-executes-actions)` |
+| `harmful-edge` | Nothing; a proposal to drop tool-calling's real prerequisite is injected (loop only, skipped by eval) | the harness must revert it |
 | `low-sample-trap` | missing-prereq, plus a 10-attempt lesson with a 90% fail rate | `add_prerequisite(multi-agent ← tool-calling)` |
 
 A **rule-based reference Curator** (`src/eval/reference.ts`) must solve every scenario; the tests check it on 21
@@ -134,6 +142,42 @@ after every scenario, so a long run that is cut off keeps its finished results.
 
 The Curator's instructions describe the same root-cause procedure the reference follows, so the evaluation
 measures whether the model applies that reasoning to the numbers correctly, not whether it invents it.
+
+## Releases and the repair loop
+
+Agents propose; the harness decides. Every guarantee below is code, not an instruction to a model.
+
+1. **Plan.** The approved proposal becomes typed changes (`add_prerequisite`, `remove_prerequisite`,
+   `archive_node`, `restore_node`) applied to a *copy* of the live release. The whole course is re-validated
+   with every loader rule; a candidate that breaks one is refused. Code assigns the **risk tier** (R0 additive
+   content, R1 changes what or in which order learners study, R2 whole lessons or the quiz) and the **semver
+   bump** (a prerequisite change is major).
+2. **Approve.** In `hitl` mode the graph pauses with LangGraph's `interrupt()` on every change and resumes with
+   `new Command({ resume: { approved } })`. In `autopilot` mode an approver decides, but only up to R1: an R2
+   change always goes to a human.
+3. **Trial.** The candidate runs as `2.0.0-trial.1` next to the live release. Nothing live is modified.
+4. **Measure.** The same simulated cohort, on a fresh seed (not the one that produced the diagnosis), is routed
+   through both releases. The primary metric is the changed lesson's fail rate; every other lesson is a
+   guardrail. Differences come with a 95% confidence interval (Newcombe's method).
+5. **Decide.** Keep only if the change did what it claimed (an `improve` change lowers the primary rate by at
+   least 10 points with confidence; a `no_harm` change, like removing a prerequisite, can't raise it by 5) and
+   no guardrail got worse. Anything else, including an inconclusive result, reverts: the trial is marked
+   `reverted` and the live release stays. A kept trial is released as `2.0.0`. Every change has an exact
+   inverse, so history is complete and any release can be undone.
+
+```bash
+npm run loop -- missing-prereq              # rule-based Curator, no model calls; asks you to approve
+npm run loop -- harmful-edge --yes          # a bad change approved by a human is still reverted
+npm run loop -- missing-prereq --autopilot  # autopilot approves within its ceiling
+npm run loop -- missing-prereq --agents     # the real Curator and Reflection agents
+```
+
+**What this proves, and what it doesn't.** Simulated learners follow rules we wrote, so a trial shows that the
+harness targets the right lesson, applies changes safely, and keeps or reverts correctly under noise. It does
+not show that a change helps real learners; the same decision rule applied to real learners would.
+
+Proposals that need new content (split, merge, `add_intervention`) are reviewed and recorded, but not released
+yet: there is no author for their content.
 
 ### Configuring agents
 
@@ -158,7 +202,10 @@ from these fields, in this order:
 ### Tests
 
 `npm test` covers the question types and graders, course loader and compiler, simulation, analytics (BKT,
-item statistics, misconceptions), code checks and reference Curator. `src/agents.test.ts` covers config validation and prompt assembly. `src/graph.test.ts` builds the graph with scripted fake models (`buildGraph({ curator, reflection, assistant })`)
+item statistics, misconceptions), code checks, reference Curator, releases (apply/invert round trips, tiers,
+versions, promote/revert), the keep-or-revert rule and the simulated measurer. `src/harness.test.ts` runs the
+release harness in the graph with fakes: a human approval pause and resume, a rejection, a revert, autopilot
+within its ceiling, and an R2 change escalated to a human. `src/agents.test.ts` covers config validation and prompt assembly. `src/graph.test.ts` builds the graph with scripted fake models (`buildGraph({ curator, reflection, assistant })`)
 and checks the routing, not the model's judgement:
 
 - an approved proposal ends after one round
