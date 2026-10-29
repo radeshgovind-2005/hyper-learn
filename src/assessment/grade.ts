@@ -1,4 +1,4 @@
-import { type ItemOf, normalize, passesCheck, type QuizItem, type Response, type WrongAnswerTag } from "./items.js";
+import { type GradedText, type ItemOf, normalize, passesCheck, type QuizItem, type Response, type WrongAnswerTag } from "./items.js";
 
 /** One wrong answer: which lesson it points to (the item's own lesson = a gap inside it) and the belief, if named. */
 export interface WrongAnswer {
@@ -13,6 +13,8 @@ export interface Grade {
   correct: boolean;
   /** Every wrong answer the response contains, tagged where the content names it. */
   errors: WrongAnswer[];
+  /** Set for model-graded answers whose grade isn't trusted: they are left out of scoring. */
+  needs_review?: boolean;
 }
 
 const wrong = (lessonId: string, tag: WrongAnswerTag = {}): WrongAnswer => ({
@@ -149,6 +151,26 @@ function gradeSchemaCompletion(item: ItemOf<"schema_completion">, response: Resp
   return done((item.checks.length - failed.length) / item.checks.length, failed.map((check) => wrong(lessonId, check)));
 }
 
+export const isGradedText = (value: unknown): value is GradedText =>
+  value !== null &&
+  typeof value === "object" &&
+  typeof (value as GradedText).text === "string" &&
+  Array.isArray((value as GradedText).criteria) &&
+  Array.isArray((value as GradedText).detectors);
+
+function gradeShortAnswer(item: ItemOf<"short_answer">, response: Response, lessonId: string): Grade {
+  if (!isGradedText(response)) fail(item, "expected a graded answer (grade it with gradeShortAnswer first)");
+  const graded = response as GradedText;
+  const total = item.rubric.reduce((sum, r) => sum + r.points, 0);
+  // Only ids the item defines count, whatever the grader returned.
+  const met = item.rubric.filter((r) => graded.criteria.includes(r.id));
+  const fired = item.detectors.filter((d) => graded.detectors.includes(d.id));
+  const score = met.reduce((sum, r) => sum + r.points, 0) / total;
+  const errors = fired.map((d) => wrong(lessonId, d));
+  if (score < 1 && errors.length === 0) errors.push(wrong(lessonId));
+  return { score, correct: score === 1 && errors.length === 0, errors, ...(graded.needs_review && { needs_review: true }) };
+}
+
 /** Grades one response to one item of lesson `lessonId`. Throws on a malformed response. */
 export function gradeItem(item: QuizItem, response: Response, lessonId: string): Grade {
   switch (item.type) {
@@ -168,5 +190,7 @@ export function gradeItem(item: QuizItem, response: Response, lessonId: string):
       return gradeParsons(item, response, lessonId);
     case "schema_completion":
       return gradeSchemaCompletion(item, response, lessonId);
+    case "short_answer":
+      return gradeShortAnswer(item, response, lessonId);
   }
 }

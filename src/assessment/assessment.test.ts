@@ -81,6 +81,22 @@ const FIXTURES: QuizItem[] = [
     ],
     invalid_json: { misconception: "json-unreadable" },
   }),
+  item({
+    type: "short_answer",
+    id: "sa",
+    prompt: "Who runs the tool?",
+    reference_answer: "The harness runs it.",
+    rubric: [
+      { id: "harness-runs", description: "Says the harness runs it", points: 2 },
+      { id: "result-appended", description: "Says the result is appended", points: 1 },
+    ],
+    detectors: [{ id: "model-runs", description: "Says the model runs it", misconception: "model-executes-actions" }],
+    calibration: [
+      { answer: "The harness runs it and appends the result.", criteria: ["harness-runs", "result-appended"], detectors: [] },
+      { answer: "The model runs it.", criteria: [], detectors: ["model-runs"] },
+      { answer: "The harness runs it.", criteria: ["harness-runs"], detectors: [] },
+    ],
+  }),
 ];
 
 describe("quiz item schemas", () => {
@@ -186,6 +202,16 @@ describe("gradeItem", () => {
     const js = FIXTURES[7]!;
     assert.deepEqual(gradeItem(js, "get_weather(Paris)", L).errors, [{ points_to: L, misconception: "json-unreadable" }]);
     assert.equal(gradeItem(js, '{"name":"get_weather"}', L).errors.length, 1);
+  });
+
+  it("scores a graded short answer from its rubric points, ignoring ids the item doesn't define", () => {
+    const sa = FIXTURES[8]!;
+    const graded = (criteria: string[], detectors: string[] = []) => ({ text: "…", criteria, detectors, needs_review: false });
+    assert.equal(gradeItem(sa, graded(["harness-runs"]), L).score, 2 / 3);
+    assert.equal(gradeItem(sa, graded(["harness-runs", "result-appended", "made-up"]), L).correct, true);
+    assert.deepEqual(gradeItem(sa, graded([], ["model-runs"]), L).errors, [{ points_to: L, misconception: "model-executes-actions" }]);
+    assert.equal(gradeItem(sa, { ...graded(["harness-runs"]), needs_review: true }, L).needs_review, true);
+    assert.throws(() => gradeItem(sa, "raw text", L), /grade it with gradeShortAnswer first/);
   });
 
   it("throws on a malformed response", () => {

@@ -6,6 +6,8 @@ import { getCourse } from "../course/load.js";
 import { referenceCurator } from "../eval/reference.js";
 import { buildGraph, type GraphModels } from "../graph.js";
 import { SimMeasurer } from "../measure/measure.js";
+import { referenceDraft } from "../interventions/reference.js";
+import { createApprover } from "../nodes/approver.js";
 import type { ApprovalRequest, ApprovalResponse, Approver, Harness } from "../nodes/release.js";
 import { describeChange } from "../releases/changes.js";
 import { MemoryReleaseStore, type ReleaseStore } from "../releases/release.js";
@@ -27,15 +29,23 @@ import { describeMutation, printData } from "./format.js";
 const args = process.argv.slice(2);
 const flag = (name: string) => args.includes(`--${name}`);
 
-/** Without --agents: the rule-based reference proposes (or the scenario's injected proposal), and review only runs the code checks. */
-function referenceModels(scenario: Scenario, data: State["performance_data"]): Partial<GraphModels> {
+const NO_MODEL_REVIEW = { approved: true, critique: "No model review in a reference run: code checks only." };
+
+/**
+ * Without --agents: the rule-based reference proposes (or the scenario's injected proposal), a
+ * hand-written exemplar stands in for the Author, and review only runs the code checks.
+ */
+function referenceModels(scenario: Scenario, data: State["performance_data"], store: ReleaseStore): Partial<GraphModels> {
+  const proposal = injectedProposal(scenario, data) ?? referenceCurator(data);
   return {
-    curator: { invoke: async () => injectedProposal(scenario, data) ?? referenceCurator(data) },
-    reflection: { invoke: async () => ({ approved: true, critique: "No model review in a reference run: code checks only." }) },
+    curator: { invoke: async () => proposal },
+    reflection: { invoke: async () => NO_MODEL_REVIEW },
+    author: { invoke: async () => referenceDraft(proposal, data, store.live().snapshot.lessons) },
+    reviewer: { invoke: async () => NO_MODEL_REVIEW },
   };
 }
 
-/** Autopilot's approver for now: approves whatever reaches it (the ceiling is enforced in code before it). */
+/** Autopilot's approver without --agents: approves whatever reaches it (the ceiling is enforced in code before it). */
 const approveWithinCeiling: Approver = async (request) => ({ approved: true, note: `within autopilot's ceiling (${request.tier})` });
 
 async function askHuman(request: ApprovalRequest): Promise<ApprovalResponse> {
@@ -79,7 +89,7 @@ async function main() {
   const data = scenarioPerformance(scenario);
   printData(data);
   console.log(
-    `\n  Curator: ${flag("agents") ? "agents (model)" : scenario.inject ? `injected proposal ${describeMutation(scenario.inject)}` : "rule-based reference (no model)"}` +
+    `\n  Curator: ${flag("agents") ? "agents (model)" : scenario.inject ? `injected proposal ${describeMutation(scenario.inject)}` : "rule-based reference + hand-written exemplars (no model)"}` +
       `   approval: ${flag("autopilot") ? "autopilot" : "human (HITL)"}   learners: simulated\n`,
   );
 
@@ -88,9 +98,9 @@ async function main() {
     store,
     measurer: new SimMeasurer(getCourse(), scenario),
     mode: flag("autopilot") ? "autopilot" : "hitl",
-    approver: approveWithinCeiling,
+    approver: flag("agents") ? createApprover() : approveWithinCeiling,
   };
-  const app = buildGraph(flag("agents") ? {} : referenceModels(scenario, data), { harness, checkpointer: new MemorySaver() });
+  const app = buildGraph(flag("agents") ? {} : referenceModels(scenario, data, store), { harness, checkpointer: new MemorySaver() });
   const config = { configurable: { thread_id: randomUUID() }, recursionLimit: 25 };
 
   let input: Parameters<typeof app.invoke>[0] = { input_type: "cron", performance_data: data };

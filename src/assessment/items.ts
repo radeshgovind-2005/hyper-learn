@@ -128,6 +128,23 @@ export const SchemaCompletionSchema = z.strictObject({
   invalid_json: z.strictObject(tags).default({}),
 });
 
+/**
+ * Explain in your own words. Graded by a model against a rubric, once, when the answer is submitted
+ * (src/assessment/short-answer.ts); the stored response records what the grader found, and code scores it.
+ * `calibration` holds labelled answers the grader must reproduce before the item is trusted.
+ */
+export const ShortAnswerSchema = z.strictObject({
+  type: z.literal("short_answer"),
+  ...base,
+  reference_answer: z.string().min(1),
+  rubric: z.array(z.strictObject({ id: Slug, description: z.string().min(1), points: z.number().int().min(1).max(3) })).min(1),
+  /** Wrong ideas the grader looks for; firing one is a tagged wrong answer. */
+  detectors: z.array(z.strictObject({ id: Slug, description: z.string().min(1), ...tags })).default([]),
+  calibration: z
+    .array(z.strictObject({ answer: z.string().min(1), criteria: z.array(Slug), detectors: z.array(Slug) }))
+    .min(2),
+});
+
 const ITEM_SCHEMAS = [
   SingleChoiceSchema,
   MultiSelectSchema,
@@ -137,6 +154,7 @@ const ITEM_SCHEMAS = [
   ClozeSchema,
   ParsonsSchema,
   SchemaCompletionSchema,
+  ShortAnswerSchema,
 ] as const;
 
 /** An item without a `type` is a single-choice question, so existing quizzes load unchanged. */
@@ -158,9 +176,19 @@ export const QuizSchema = z.array(QuizItemSchema).min(1);
  * single_choice → option index · multi_select → option indices · two_tier → [option, reason] ·
  * ordering → step indices in the order placed · matching → right index for each left index ·
  * cloze → one string per blank · parsons → line ids in order (0..lines-1 = solution lines,
- * lines.length + i = distractor i) · schema_completion → JSON text.
+ * lines.length + i = distractor i) · schema_completion → JSON text · short_answer → the text plus what the
+ * grader found in it.
  */
-export type Response = number | number[] | string | string[];
+export type Response = number | number[] | string | string[] | GradedText;
+
+/** A short answer after grading: which rubric criteria it meets and which detectors fired. */
+export interface GradedText {
+  text: string;
+  criteria: string[];
+  detectors: string[];
+  /** The grade isn't trusted (low confidence, or an answer that tries to instruct the grader): not scored until a human looks. */
+  needs_review: boolean;
+}
 
 /** How sure the learner was (Certainty of Response Index): 1 = guessing, 3 = sure. */
 export type Certainty = 1 | 2 | 3;
@@ -183,6 +211,8 @@ export function itemTags(item: QuizItem): WrongAnswerTag[] {
       return item.distractors;
     case "schema_completion":
       return [...item.checks, item.invalid_json];
+    case "short_answer":
+      return item.detectors;
   }
 }
 
@@ -255,6 +285,23 @@ export function checkItem(item: QuizItem): string[] {
     case "parsons": {
       const solution = new Set(item.lines);
       for (const d of item.distractors) if (solution.has(d.text)) problems.push(`distractor "${d.text}" is also a solution line`);
+      break;
+    }
+    case "short_answer": {
+      const criteria = new Set(item.rubric.map((r) => r.id));
+      const detectors = new Set(item.detectors.map((d) => d.id));
+      if (criteria.size !== item.rubric.length) problems.push("rubric ids must be unique");
+      if (detectors.size !== item.detectors.length) problems.push("detector ids must be unique");
+      for (const [i, example] of item.calibration.entries()) {
+        for (const id of example.criteria) if (!criteria.has(id)) problems.push(`calibration ${i + 1}: unknown criterion "${id}"`);
+        for (const id of example.detectors) if (!detectors.has(id)) problems.push(`calibration ${i + 1}: unknown detector "${id}"`);
+      }
+      if (!item.calibration.some((e) => e.criteria.length === criteria.size && e.detectors.length === 0)) {
+        problems.push("calibration needs a full-marks answer");
+      }
+      for (const d of item.detectors) {
+        if (!item.calibration.some((e) => e.detectors.includes(d.id))) problems.push(`calibration has no answer that fires detector "${d.id}"`);
+      }
       break;
     }
     case "schema_completion": {

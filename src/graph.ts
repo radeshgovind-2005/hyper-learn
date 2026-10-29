@@ -2,6 +2,13 @@ import { type BaseCheckpointSaver, END, START, StateGraph } from "@langchain/lan
 import { ToolNode, toolsCondition } from "@langchain/langgraph/prebuilt";
 import { getAgentTools } from "./agents.js";
 import { type AssistantModel, createAssistantNode } from "./nodes/assistant.js";
+import {
+  type AuthorModel,
+  type ContentReviewerModel,
+  createAuthorNode,
+  createReviewContentNode,
+  routeFromReviewContent,
+} from "./nodes/author.js";
 import { createCuratorNode, type CuratorModel } from "./nodes/curator.js";
 import { createReflectionNode, type ReflectionModel, routeFromReflection } from "./nodes/reflection.js";
 import {
@@ -20,6 +27,8 @@ export interface GraphModels {
   assistant: AssistantModel;
   curator: CuratorModel;
   reflection: ReflectionModel;
+  author: AuthorModel;
+  reviewer: ContentReviewerModel;
 }
 
 export interface GraphOptions {
@@ -38,7 +47,11 @@ export interface GraphOptions {
  *           END                                        ▼ approve / max attempts
  *                                     END ◀─ (no harness, or not approved)
  *                                                      │ approved, with a harness
- *                                                      ▼
+ *                         add_intervention?  ┌─────────┴──────────┐  other actions
+ *                                            ▼                    │
+ *                     author ⇄ review_content (code checks, then  │
+ *                                            │  the Reviewer)     │
+ *                                            ▼                    ▼
  *                plan_release → approve (human interrupt or autopilot) → measure → decide → END
  */
 export function buildGraph(models: Partial<GraphModels> = {}, { harness, checkpointer }: GraphOptions = {}) {
@@ -51,7 +64,8 @@ export function buildGraph(models: Partial<GraphModels> = {}, { harness, checkpo
 
   const afterReflection = (state: State) => {
     const next = routeFromReflection(state);
-    return next === END && harness && state.reflection_verdict?.approved ? "plan_release" : next;
+    if (next !== END || !harness || !state.reflection_verdict?.approved) return next;
+    return state.proposed_mutation?.action === "add_intervention" ? "author" : "plan_release";
   };
   // Without a harness the release nodes are unreachable; they exist so the graph has one shape.
   const unavailable = async (): Promise<StateUpdate> => {
@@ -60,6 +74,8 @@ export function buildGraph(models: Partial<GraphModels> = {}, { harness, checkpo
 
   return (
     graph
+      .addNode("author", harness ? createAuthorNode(harness.store, models.author) : unavailable)
+      .addNode("review_content", harness ? createReviewContentNode(harness, models.reviewer) : unavailable)
       .addNode("plan_release", harness ? createPlanReleaseNode(harness) : unavailable)
       .addNode("approve", harness ? createApprovalNode(harness) : unavailable)
       .addNode("measure", harness ? createMeasureNode(harness) : unavailable)
@@ -74,7 +90,11 @@ export function buildGraph(models: Partial<GraphModels> = {}, { harness, checkpo
 
       // Curator: every proposal is reviewed; rejected ones loop back (bounded).
       .addEdge("curator", "reflection")
-      .addConditionalEdges("reflection", afterReflection, ["curator", "plan_release", END])
+      .addConditionalEdges("reflection", afterReflection, ["curator", "author", "plan_release", END])
+
+      // Authoring: proposals that need new content get a draft, checked by code and then reviewed (bounded).
+      .addEdge("author", "review_content")
+      .addConditionalEdges("review_content", routeFromReviewContent, ["author", "plan_release", END])
 
       // Release harness: an approved proposal becomes a candidate release, is approved by a human or
       // autopilot, runs as a trial, and is kept or reverted on its measured outcome.

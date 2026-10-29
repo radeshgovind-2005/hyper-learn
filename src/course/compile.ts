@@ -1,4 +1,5 @@
 import type { QuizItem } from "../assessment/items.js";
+import { type Intervention, InterventionSchema } from "../interventions/templates.js";
 import { buildCourse } from "./load.js";
 import type { Course, MisconceptionDef } from "./schema.js";
 
@@ -7,16 +8,28 @@ import type { Course, MisconceptionDef } from "./schema.js";
 // source of truth, and every change is an operation on this snapshot. Ids are stable: a block keeps
 // its id across releases, so diffs, measurements and learner paths can refer to it.
 
-export type BlockKind = "paragraph" | "list" | "code";
+export type TextKind = "paragraph" | "list" | "code";
+export type BlockKind = TextKind | "intervention";
 
-export interface Block {
-  /** `<lesson>/<section>/<p|l|c><n>`, e.g. `agent-loop/stopping/p1`. */
+interface BlockBase {
+  /** `<lesson>/<section>/<p|l|c|i><n>`, e.g. `agent-loop/stopping/p1`. */
   id: string;
-  kind: BlockKind;
-  /** The block's Markdown, exactly as it appears in the lesson. */
-  markdown: string;
   archived: boolean;
 }
+
+export interface TextBlock extends BlockBase {
+  kind: TextKind;
+  /** The block's Markdown, exactly as it appears in the lesson. */
+  markdown: string;
+}
+
+/** A templated intervention aimed at one misconception. Shown to the learners who show that belief. */
+export interface InterventionBlock extends BlockBase {
+  kind: "intervention";
+  intervention: Intervention;
+}
+
+export type Block = TextBlock | InterventionBlock;
 
 export interface Section {
   /** `<lesson>/<slug>`; the text before the first heading is the `intro` section. */
@@ -53,11 +66,11 @@ export const slugify = (text: string) =>
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-|-$/g, "");
 
-const KIND_PREFIX: Record<BlockKind, string> = { paragraph: "p", list: "l", code: "c" };
+export const KIND_PREFIX: Record<BlockKind, string> = { paragraph: "p", list: "l", code: "c", intervention: "i" };
 
 /** Splits Markdown into blocks at blank lines, keeping fenced code blocks whole. */
-export function splitBlocks(markdown: string): { kind: BlockKind; markdown: string }[] {
-  const blocks: { kind: BlockKind; markdown: string }[] = [];
+export function splitBlocks(markdown: string): { kind: TextKind; markdown: string }[] {
+  const blocks: { kind: TextKind; markdown: string }[] = [];
   let current: string[] = [];
   let inFence = false;
 
@@ -65,7 +78,7 @@ export function splitBlocks(markdown: string): { kind: BlockKind; markdown: stri
     const text = current.join("\n").trim();
     current = [];
     if (!text) return;
-    const kind: BlockKind = text.startsWith("```") ? "code" : /^([-*]|\d+\.)\s/.test(text) ? "list" : "paragraph";
+    const kind: TextKind = text.startsWith("```") ? "code" : /^([-*]|\d+\.)\s/.test(text) ? "list" : "paragraph";
     blocks.push({ kind, markdown: text });
   };
 
@@ -102,12 +115,12 @@ export function compileSections(lessonId: string, body: string): Section[] {
       for (let n = 2; used.has(slug); n++) slug = `${slugify(part.title)}-${n}`;
       used.add(slug);
       const id = `${lessonId}/${slug}`;
-      const counters: Record<BlockKind, number> = { paragraph: 0, list: 0, code: 0 };
+      const counters: Record<TextKind, number> = { paragraph: 0, list: 0, code: 0 };
       return {
         id,
         title: part.title,
         archived: false,
-        blocks: splitBlocks(part.lines.join("\n")).map((block) => ({
+        blocks: splitBlocks(part.lines.join("\n")).map((block): Block => ({
           id: `${id}/${KIND_PREFIX[block.kind]}${++counters[block.kind]}`,
           kind: block.kind,
           markdown: block.markdown,
@@ -136,24 +149,66 @@ export function compileCourse(course: Course, version = "1.0.0"): CourseSnapshot
   };
 }
 
-/** A lesson's Markdown as learners see it in this release: archived sections and blocks are left out. */
+/**
+ * A lesson's Markdown as every learner sees it in this release. Archived sections and blocks are left
+ * out, and so are interventions: those are shown only to learners who show their misconception.
+ */
 export function renderLesson(lesson: LessonNode): string {
   const parts = [`# ${lesson.title}`];
   for (const section of lesson.sections) {
     if (section.archived) continue;
     if (section.title) parts.push(`## ${section.title}`);
-    for (const block of section.blocks) if (!block.archived) parts.push(block.markdown);
+    for (const block of section.blocks) if (!block.archived && block.kind !== "intervention") parts.push(block.markdown);
   }
   return parts.join("\n\n");
+}
+
+export interface LiveIntervention {
+  block_id: string;
+  lesson: string;
+  section: string;
+  intervention: Intervention;
+}
+
+/** The interventions learners can be shown in this release (not archived, in a live section and lesson). */
+export function liveInterventions(snapshot: CourseSnapshot): LiveIntervention[] {
+  return snapshot.lessons
+    .filter((lesson) => !lesson.archived)
+    .flatMap((lesson) =>
+      lesson.sections
+        .filter((section) => !section.archived)
+        .flatMap((section) =>
+          section.blocks.flatMap((block) =>
+            block.kind === "intervention" && !block.archived
+              ? [{ block_id: block.id, lesson: lesson.id, section: section.id, intervention: block.intervention }]
+              : [],
+          ),
+        ),
+    );
 }
 
 /**
  * The course view the rest of the system works with (analytics, simulation, tools), built from a
  * snapshot and validated with the same rules as the Markdown course. Archived lessons are left out.
- * Throws if the snapshot breaks a course invariant, which is how a candidate release is checked.
+ * Throws if the snapshot breaks a course invariant, which is how a candidate release is checked;
+ * that includes every intervention block being well-formed and aimed at a misconception its lesson teaches.
  */
 export function courseFromSnapshot(snapshot: CourseSnapshot): Course {
   const lessons = snapshot.lessons.filter((lesson) => !lesson.archived);
+  const problems: string[] = [];
+  for (const lesson of lessons) {
+    for (const block of lesson.sections.flatMap((section) => section.blocks)) {
+      if (block.kind !== "intervention") continue;
+      const parsed = InterventionSchema.safeParse(block.intervention);
+      if (!parsed.success) problems.push(`Block "${block.id}" is not a valid intervention: ${parsed.error.message}`);
+      const target = snapshot.misconceptions.find((m) => m.id === block.intervention.targets);
+      if (!target) problems.push(`Block "${block.id}" targets unknown misconception "${block.intervention.targets}"`);
+      else if (target.lesson !== lesson.id) {
+        problems.push(`Block "${block.id}" targets "${target.id}", which is taught in "${target.lesson}", not "${lesson.id}"`);
+      }
+    }
+  }
+  if (problems.length > 0) throw new Error(`Course "${snapshot.course_id}" is invalid:\n- ${problems.join("\n- ")}`);
   return buildCourse(
     { id: snapshot.course_id, title: snapshot.title, misconceptions: snapshot.misconceptions },
     lessons.map((lesson) => ({

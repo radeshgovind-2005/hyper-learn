@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
-import { compileCourse, compileSections, courseFromSnapshot, renderLesson, splitBlocks } from "./compile.js";
+import { EXEMPLARS } from "../interventions/exemplars.js";
+import { compileCourse, compileSections, courseFromSnapshot, liveInterventions, renderLesson, splitBlocks } from "./compile.js";
 import { getCourse } from "./load.js";
 
 const course = getCourse();
@@ -57,6 +58,29 @@ describe("courseFromSnapshot", () => {
     const rebuilt = courseFromSnapshot(snapshot);
     assert.deepEqual(rebuilt.graph, course.graph);
     assert.equal(rebuilt.misconceptions.length, course.misconceptions.length);
+  });
+
+  it("rejects an intervention block aimed at a misconception another lesson teaches", () => {
+    const misplaced = structuredClone(snapshot);
+    misplaced.lessons.find((l) => l.id === "tool-calling")!.sections[0]!.blocks.push({
+      id: "tool-calling/intro/i1",
+      kind: "intervention",
+      archived: false,
+      intervention: EXEMPLARS[0]!,
+    });
+    assert.throws(() => courseFromSnapshot(misplaced), /taught in "agent-loop", not "tool-calling"/);
+  });
+
+  it("keeps interventions out of the text every learner sees", () => {
+    const withBlock = structuredClone(snapshot);
+    withBlock.lessons.find((l) => l.id === "agent-loop")!.sections[1]!.blocks.push({
+      id: "agent-loop/the-harness-does-the-acting/i1",
+      kind: "intervention",
+      archived: false,
+      intervention: EXEMPLARS[0]!,
+    });
+    assert.equal(renderLesson(withBlock.lessons.find((l) => l.id === "agent-loop")!), renderLesson(lesson("agent-loop")));
+    assert.equal(liveInterventions(withBlock).length, 1);
   });
 
   it("rejects a snapshot that breaks a course invariant", () => {

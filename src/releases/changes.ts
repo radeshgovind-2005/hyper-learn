@@ -1,5 +1,6 @@
 import { z } from "zod";
-import type { CourseSnapshot, LessonNode } from "../course/compile.js";
+import type { Block, CourseSnapshot, LessonNode } from "../course/compile.js";
+import { type Intervention, InterventionSchema } from "../interventions/templates.js";
 
 // Changes to the course, as typed operations on a snapshot. Every change is applied to a copy,
 // has an exact inverse (so a release can be reverted), and has a risk tier and semver bump that
@@ -17,6 +18,16 @@ export const ChangeSchema = z.discriminatedUnion("op", [
   /** Hide a lesson, section or block from learners. Nothing is deleted; restore_node brings it back. */
   z.strictObject({ op: z.literal("archive_node"), node_id: z.string() }),
   z.strictObject({ op: z.literal("restore_node"), node_id: z.string() }),
+  /** Add an intervention block to a section. Code assigns the block id (`<section>/i<n>`) unless reverting. */
+  z.strictObject({
+    op: z.literal("add_block"),
+    section_id: z.string(),
+    intervention: InterventionSchema,
+    block_id: z.string().optional(),
+    at: z.number().int().min(0).optional(),
+  }),
+  /** Only ever the inverse of add_block, so a reverted release matches its parent exactly. Agents archive instead. */
+  z.strictObject({ op: z.literal("remove_block"), block_id: z.string() }),
 ]);
 export type Change = z.infer<typeof ChangeSchema>;
 
@@ -103,8 +114,38 @@ export function applyChange(snapshot: CourseSnapshot, change: Change): CourseSna
       setArchived(ref, archive);
       break;
     }
+    case "add_block": {
+      const ref = nodeOf(next, change.section_id);
+      if (ref.kind !== "section") throw new ChangeError(`"${change.section_id}" is not a section`);
+      const section = ref.lesson.sections[ref.index]!;
+      if (section.archived) throw new ChangeError(`section "${change.section_id}" is archived`);
+      const id = change.block_id ?? nextInterventionId(next, section.id);
+      if (findNode(next, id)) throw new ChangeError(`block "${id}" already exists`);
+      const block: Block = { id, kind: "intervention", intervention: change.intervention, archived: false };
+      section.blocks.splice(change.at ?? section.blocks.length, 0, block);
+      break;
+    }
+    case "remove_block": {
+      const ref = nodeOf(next, change.block_id);
+      if (ref.kind !== "block") throw new ChangeError(`"${change.block_id}" is not a block`);
+      ref.lesson.sections[ref.section]!.blocks.splice(ref.index, 1);
+      break;
+    }
   }
   return next;
+}
+
+/** The next free intervention block id in a section: `<section>/i1`, `/i2`… */
+function nextInterventionId(snapshot: CourseSnapshot, sectionId: string): string {
+  for (let n = 1; ; n++) {
+    const id = `${sectionId}/i${n}`;
+    if (!findNode(snapshot, id)) return id;
+  }
+}
+
+/** The id add_block will give its block when applied to `snapshot`. */
+export function addedBlockId(snapshot: CourseSnapshot, change: Extract<Change, { op: "add_block" }>): string {
+  return change.block_id ?? nextInterventionId(snapshot, change.section_id);
 }
 
 /** The change that undoes `change`, given the snapshot it was applied to. */
@@ -120,6 +161,21 @@ export function invertChange(before: CourseSnapshot, change: Change): Change {
       return { op: "restore_node", node_id: change.node_id };
     case "restore_node":
       return { op: "archive_node", node_id: change.node_id };
+    case "add_block":
+      return { op: "remove_block", block_id: addedBlockId(before, change) };
+    case "remove_block": {
+      const ref = nodeOf(before, change.block_id);
+      if (ref.kind !== "block") throw new ChangeError(`"${change.block_id}" is not a block`);
+      const block = ref.lesson.sections[ref.section]!.blocks[ref.index]!;
+      if (block.kind !== "intervention") throw new ChangeError(`only intervention blocks can be removed`);
+      return {
+        op: "add_block",
+        section_id: ref.lesson.sections[ref.section]!.id,
+        intervention: block.intervention,
+        block_id: block.id,
+        at: ref.index,
+      };
+    }
   }
 }
 
@@ -146,6 +202,10 @@ export function riskTier(snapshot: CourseSnapshot, change: Change): RiskTier {
     case "archive_node":
     case "restore_node":
       return findNode(snapshot, change.node_id)?.kind === "lesson" ? "R2" : "R1";
+    case "add_block":
+      return "R0"; // additive, shown only to learners who show the misconception
+    case "remove_block":
+      return "R1";
   }
 }
 
@@ -157,6 +217,9 @@ export function semverBump(snapshot: CourseSnapshot, change: Change): Bump {
     case "archive_node":
     case "restore_node":
       return findNode(snapshot, change.node_id)?.kind === "lesson" ? "major" : "minor";
+    case "add_block":
+    case "remove_block":
+      return "minor"; // new or removed material; the path and the quiz are unchanged
   }
 }
 
@@ -176,7 +239,15 @@ export function describeChange(change: Change): string {
       return `archive ${change.node_id}`;
     case "restore_node":
       return `restore ${change.node_id}`;
+    case "add_block":
+      return `add a ${describeIntervention(change.intervention)} to ${change.section_id}`;
+    case "remove_block":
+      return `remove ${change.block_id}`;
   }
 }
+
+const TEMPLATE_NAMES = { contrast: "contrast card", practice: "practice set", step_through: "step-through player" } as const;
+export const describeIntervention = (intervention: Intervention) =>
+  `${TEMPLATE_NAMES[intervention.template]} for "${intervention.targets}"`;
 
 export { ChangeError };

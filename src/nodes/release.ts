@@ -1,5 +1,6 @@
 import { END, interrupt } from "@langchain/langgraph";
 import { decideTrial } from "../measure/decide.js";
+import type { Embedder, Guard } from "../guards/guards.js";
 import type { Measurer } from "../measure/measure.js";
 import { describeChange, type RiskTier } from "../releases/changes.js";
 import { changesFor } from "../releases/from-mutation.js";
@@ -46,6 +47,10 @@ export interface Harness {
   mode: ApprovalMode;
   /** Used in autopilot mode. */
   approver?: Approver;
+  /** Screens authored content for safety before review; skipped when absent. */
+  guard?: Guard;
+  /** Catches paraphrased quiz questions in authored content; skipped when absent (word overlap still runs). */
+  embedder?: Embedder;
 }
 
 export function createPlanReleaseNode({ store }: Harness) {
@@ -53,7 +58,7 @@ export function createPlanReleaseNode({ store }: Harness) {
     const proposal = state.proposed_mutation;
     if (!proposal) throw new Error("plan_release reached without a proposal");
 
-    const mapped = changesFor(proposal);
+    const mapped = changesFor(proposal, state.content_verdict?.approved ? state.draft : undefined);
     if ("reason" in mapped) {
       logNode("release", `Nothing to release: ${mapped.reason}`);
       return { release_problems: [mapped.reason], live_version: store.live().version };

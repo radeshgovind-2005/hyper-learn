@@ -596,6 +596,61 @@
               "correct": false
             }
           ]
+        },
+        {
+          "type": "short_answer",
+          "id": "agent-loop-q10",
+          "prompt": "In one or two sentences: when the model asks for a tool, who runs it, and how does the model find out the result?",
+          "pilot": true,
+          "reference_answer": "The harness, the program around the model, runs the tool; it appends the result to the messages and calls the model again.",
+          "rubric": [
+            {
+              "id": "harness-runs",
+              "description": "Says the harness or the program around the model runs the tool",
+              "points": 2
+            },
+            {
+              "id": "result-appended",
+              "description": "Says the result is added to the messages and the model is called again",
+              "points": 1
+            }
+          ],
+          "detectors": [
+            {
+              "id": "model-runs",
+              "description": "Says the model runs or executes the tool itself",
+              "misconception": "model-executes-actions"
+            }
+          ],
+          "calibration": [
+            {
+              "answer": "The harness runs the tool, adds the result to the message list and calls the model again.",
+              "criteria": [
+                "harness-runs",
+                "result-appended"
+              ],
+              "detectors": []
+            },
+            {
+              "answer": "The model executes the tool itself and reads the output.",
+              "criteria": [],
+              "detectors": [
+                "model-runs"
+              ]
+            },
+            {
+              "answer": "The program around the model runs it.",
+              "criteria": [
+                "harness-runs"
+              ],
+              "detectors": []
+            },
+            {
+              "answer": "It happens automatically.",
+              "criteria": [],
+              "detectors": []
+            }
+          ]
         }
       ],
       "archived": false

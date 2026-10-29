@@ -1,5 +1,6 @@
 import { Annotation, MessagesAnnotation } from "@langchain/langgraph";
 import { z } from "zod";
+import { InterventionSchema } from "./interventions/templates.js";
 import type { Measurement, TrialDecision } from "./measure/decide.js";
 import type { Approval, Release } from "./releases/release.js";
 
@@ -84,6 +85,16 @@ export const ReflectionVerdictSchema = z.object({
 });
 export type ReflectionVerdict = z.infer<typeof ReflectionVerdictSchema>;
 
+/** Structured output of the Author: one intervention and the section to attach it to. */
+export const DraftSchema = z.object({
+  section_id: z.string().describe("Id of the section to attach the intervention to, e.g. 'agent-loop/the-harness-does-the-acting'"),
+  intervention: InterventionSchema,
+});
+export type Draft = z.infer<typeof DraftSchema>;
+
+/** Total Author drafts allowed before the content loop gives up. */
+export const MAX_AUTHOR_ATTEMPTS = 2;
+
 // ─── Routing types ─────────────────────────────────────────────────
 
 export type InputType = "user_question" | "cron";
@@ -105,6 +116,14 @@ export const GraphState = Annotation.Root({
   proposed_mutation: Annotation<Mutation | undefined>(),
   reflection_verdict: Annotation<ReflectionVerdict | undefined>(),
   reflection_attempts: Annotation<number>({
+    reducer: (_, next) => next,
+    default: () => 0,
+  }),
+
+  // Authoring (only for proposals that need new content): author → review_content, bounded.
+  draft: Annotation<Draft | undefined>(),
+  content_verdict: Annotation<ReflectionVerdict | undefined>(),
+  author_attempts: Annotation<number>({
     reducer: (_, next) => next,
     default: () => 0,
   }),

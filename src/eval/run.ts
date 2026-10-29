@@ -31,8 +31,8 @@ async function main() {
   const args = process.argv.slice(2);
   const referenceOnly = args.includes("--reference-only");
   const ids = args.filter((arg) => !arg.startsWith("--"));
-  // Scenarios with an injected proposal test the release harness (`npm run loop`), not the Curator.
-  const scenarios = ids.length > 0 ? ids.map(getScenario) : SCENARIOS.filter((s) => !s.inject);
+  // Some scenarios test the release harness (`npm run loop`), not the Curator.
+  const scenarios = ids.length > 0 ? ids.map(getScenario) : SCENARIOS.filter((s) => !s.harnessOnly);
 
   mkdirSync("reports", { recursive: true });
   const reportPath = `reports/eval-${new Date().toISOString().replace(/[:.]/g, "-")}.json`;

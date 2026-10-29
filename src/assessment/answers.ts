@@ -40,6 +40,10 @@ export function correctResponse(item: QuizItem): Response {
       return range(item.lines.length);
     case "schema_completion":
       return item.example;
+    case "short_answer": {
+      const full = item.calibration.find((e) => e.criteria.length === item.rubric.length && e.detectors.length === 0)!;
+      return { text: full.answer, criteria: full.criteria, detectors: full.detectors, needs_review: false };
+    }
   }
 }
 
@@ -122,6 +126,14 @@ export function wrongOptions(item: QuizItem, lessonId: string): WrongOption[] {
       add(undefined, swap(solution, 0, 1));
       break;
     }
+    case "short_answer":
+      // Simulated learners answer with the item's labelled calibration answers, graded as labelled.
+      for (const e of item.calibration) {
+        if (e.criteria.length === item.rubric.length && e.detectors.length === 0) continue;
+        const fired = item.detectors.find((d) => e.detectors.includes(d.id));
+        add(fired, { text: e.answer, criteria: e.criteria, detectors: e.detectors, needs_review: false });
+      }
+      break;
     case "schema_completion": {
       const example: unknown = JSON.parse(item.example);
       for (const check of item.checks) add(check, JSON.stringify(breakCheck(example, check)));

@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { compileCourse } from "../course/compile.js";
 import { getCourse } from "../course/load.js";
+import { liveInterventions } from "../course/compile.js";
+import { EXEMPLARS } from "../interventions/exemplars.js";
 import { applyChange, applyChanges, type Change, invertChanges, riskTier, semverBump } from "./changes.js";
 import { bumpVersion, MemoryReleaseStore, parseVersion, planRelease, promote, revert, trialVersion } from "./release.js";
 
@@ -38,6 +40,23 @@ describe("changes", () => {
     ];
     const after = applyChanges(base, changes);
     assert.deepEqual(applyChanges(after, invertChanges(base, changes)), base);
+  });
+
+  it("adds an intervention block with an id code assigns, and removes it exactly on revert", () => {
+    const add: Change = { op: "add_block", section_id: "agent-loop/the-harness-does-the-acting", intervention: EXEMPLARS[0]! };
+    const next = applyChanges(base, [add, add]);
+    assert.deepEqual(
+      liveInterventions(next).map((i) => i.block_id),
+      ["agent-loop/the-harness-does-the-acting/i1", "agent-loop/the-harness-does-the-acting/i2"],
+    );
+    assert.deepEqual(applyChanges(next, invertChanges(base, [add, add])), base);
+    assert.throws(() => applyChange(base, { ...add, section_id: "agent-loop" }), /not a section/);
+  });
+
+  it("rates an intervention R0 and a minor bump", () => {
+    const add: Change = { op: "add_block", section_id: "agent-loop/intro", intervention: EXEMPLARS[0]! };
+    assert.equal(riskTier(base, add), "R0");
+    assert.equal(semverBump(base, add), "minor");
   });
 
   it("assigns risk and semver in code", () => {

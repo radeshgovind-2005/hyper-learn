@@ -1,0 +1,80 @@
+[
+  {
+    "template": "contrast",
+    "targets": "model-executes-actions",
+    "belief": "The model carries out the actions it chooses, so an action's result comes straight from the model.",
+    "why_it_seems_right": "In a chat app you ask for the weather and an answer appears. The request and the result arrive together, so it looks as if the model fetched the data itself.",
+    "what_actually_happens": "The model only writes text: a request naming an action and its arguments. The harness, ordinary code around the model, reads that request, runs the action and appends the result to the messages. Only then is the model called again, and it reads the result like any other message.",
+    "check": {
+      "prompt": "An agent's model replies with a request to read notes.txt. What happens next?",
+      "options": [
+        { "text": "The harness reads notes.txt and adds its contents to the messages before calling the model again.", "correct": true, "misconception": null, "feedback": "Right: the model asked, the harness acted and reported back." },
+        { "text": "The model opens notes.txt itself and keeps writing its answer.", "correct": false, "misconception": "model-executes-actions", "feedback": "The model can't open files. It only produced a request; something else has to carry it out." },
+        { "text": "The API provider reads the file and returns it inside the reply.", "correct": false, "misconception": null, "feedback": "The provider only runs the model. Actions are run by your harness." }
+      ]
+    }
+  },
+  {
+    "template": "step_through",
+    "targets": "model-executes-actions",
+    "title": "Who does what in one turn of the agent loop",
+    "frames": [
+      {
+        "caption": "The user asks a question. The harness sends the messages to the model.",
+        "messages": [
+          { "role": "user", "text": "What's the weather in Paris?" }
+        ],
+        "highlight": 0
+      },
+      {
+        "caption": "The model can't look anything up. It replies with a tool call: a request, not a result.",
+        "messages": [
+          { "role": "user", "text": "What's the weather in Paris?" },
+          { "role": "model", "text": "tool call: get_weather(city: \"Paris\")" }
+        ],
+        "highlight": 1
+      },
+      {
+        "caption": "The harness, ordinary code, runs get_weather and appends the result as a tool message.",
+        "messages": [
+          { "role": "user", "text": "What's the weather in Paris?" },
+          { "role": "model", "text": "tool call: get_weather(city: \"Paris\")" },
+          { "role": "tool", "text": "18°C, light rain" }
+        ],
+        "highlight": 2
+      },
+      {
+        "caption": "The harness calls the model again. The result is now in its messages, so it can answer.",
+        "messages": [
+          { "role": "user", "text": "What's the weather in Paris?" },
+          { "role": "model", "text": "tool call: get_weather(city: \"Paris\")" },
+          { "role": "tool", "text": "18°C, light rain" },
+          { "role": "model", "text": "It's 18°C with light rain in Paris." }
+        ],
+        "highlight": 3
+      }
+    ]
+  },
+  {
+    "template": "practice",
+    "targets": "loop-always-terminates",
+    "questions": [
+      {
+        "prompt": "A coding agent keeps retrying the same failing test command. What stops it?",
+        "options": [
+          { "text": "A limit the harness enforces, such as at most 20 steps.", "correct": true, "misconception": null, "feedback": "Yes: the harness stops the loop whatever the model decides." },
+          { "text": "The model eventually notices it is stuck and stops on its own.", "correct": false, "misconception": "loop-always-terminates", "feedback": "It might, but nothing guarantees it. Only a limit in code does." },
+          { "text": "The tests start passing by themselves after enough retries.", "correct": false, "misconception": null, "feedback": "Retrying the same failing command gives the same failure." }
+        ]
+      },
+      {
+        "prompt": "Which loop guard still works if the model never says it is done?",
+        "options": [
+          { "text": "Stop after 20 iterations, whatever the model says.", "correct": true, "misconception": null, "feedback": "Right: this ends the run even if the model never decides to stop." },
+          { "text": "Keep looping until the model's reply says it is finished.", "correct": false, "misconception": "loop-always-terminates", "feedback": "This only ends when the model decides to end it, which may never happen." },
+          { "text": "Loop forever, but write a longer system prompt asking it to stop.", "correct": false, "misconception": "loop-always-terminates", "feedback": "Instructions make stopping more likely, not certain." }
+        ]
+      }
+    ]
+  }
+]

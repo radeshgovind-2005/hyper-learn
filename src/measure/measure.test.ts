@@ -3,6 +3,7 @@ import { describe, it } from "node:test";
 import { getCourse } from "../course/load.js";
 import { MemoryReleaseStore, planRelease, type Release } from "../releases/release.js";
 import type { Change } from "../releases/changes.js";
+import { EXEMPLARS } from "../interventions/exemplars.js";
 import { scenarioSnapshot } from "../simulation/index.js";
 import { getScenario } from "../simulation/scenarios.js";
 import { compare, type Comparison, decideTrial, differenceInterval, type Measurement, outcome } from "./decide.js";
@@ -82,6 +83,22 @@ describe("SimMeasurer", () => {
     const decision = decideTrial(await measurer.measure(live, candidate));
     assert.equal(decision.verdict, "revert");
     assert.match(decision.reasons[0]!, /no confident improvement/);
+  });
+
+  it("keeps an intervention that clears the belief, measured on retakes", async () => {
+    const add: Change = { op: "add_block", section_id: "agent-loop/the-harness-does-the-acting", intervention: EXEMPLARS[0]! };
+    const { live, candidate, measurer } = trial("dominant-misconception", add);
+    const m = await measurer.measure(live, candidate);
+    assert.equal(m.primary.metric, "misconception_rate");
+    assert.equal(m.primary.misconception, "model-executes-actions");
+    assert.ok(m.primary.control.attempts >= 30);
+    assert.equal(decideTrial(m).verdict, "keep", decideTrial(m).reasons.join());
+  });
+
+  it("reverts an intervention that changes no one's mind", async () => {
+    const add: Change = { op: "add_block", section_id: "agent-loop/the-harness-does-the-acting", intervention: EXEMPLARS[0]! };
+    const { live, candidate, measurer } = trial("ineffective-fix", add);
+    assert.equal(decideTrial(await measurer.measure(live, candidate)).verdict, "revert");
   });
 
   it("uses a different seed from the diagnosis", async () => {

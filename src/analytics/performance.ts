@@ -34,7 +34,10 @@ export function gradeAttempt(
   const grades = lesson.quiz.flatMap((item, i) => {
     const response = attempt.answers[i];
     if (response === undefined) throw new Error(`Attempt for "${lesson.id}" has no answer to question ${i}`);
-    return item.pilot || excluded.has(item.id) ? [] : [gradeItem(item, response, lesson.id)];
+    if (item.pilot || excluded.has(item.id)) return [];
+    const grade = gradeItem(item, response, lesson.id);
+    // A model grade that needs a human's review doesn't count until it gets one.
+    return grade.needs_review ? [] : [grade];
   });
   const score = grades.reduce((sum, grade) => sum + grade.score, 0) / Math.max(1, grades.length);
   return { grades, passed: score >= PASS_THRESHOLD };
@@ -68,7 +71,9 @@ function namedMisconceptions(
     const shown = new Set<string>();
     lesson.quiz.forEach((item, i) => {
       if (item.pilot || excluded.has(item.id)) return;
-      for (const { misconception } of gradeItem(item, attempt.answers[i]!, lesson.id).errors) {
+      const grade = gradeItem(item, attempt.answers[i]!, lesson.id);
+      if (grade.needs_review) return;
+      for (const { misconception } of grade.errors) {
         if (!misconception) continue;
         shown.add(misconception);
         const counts = confident.get(misconception) ?? { sure: 0, total: 0 };
