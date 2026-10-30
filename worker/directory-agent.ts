@@ -70,6 +70,26 @@ export class DirectoryAgent extends Agent<Env, Record<string, never>> {
     return { id: record.id };
   }
 
+  /**
+   * Deletes a course for good: its owner or a global admin. The course object wipes itself first; only
+   * then is it forgotten here, so a failed wipe can be retried (the Worker keeps routing to it until then).
+   */
+  @callable()
+  async deleteCourse(courseId: unknown) {
+    const person = this.actor();
+    const record = this.app.deletable(person, courseId);
+    try {
+      const course = await getAgentByName(this.env.CourseAgent, record.id);
+      await course.wipe();
+    } catch (error) {
+      console.error(`Couldn't wipe course ${record.id}:`, error);
+      throw new Error("Couldn't delete the course; try again");
+    }
+    this.app.remove(record.id);
+    console.log(`Course ${record.id} deleted by ${person.userId}`);
+    return { deleted: record.id };
+  }
+
   /** Joins a course with its invite token. Returns the course id and the caller's role in it. */
   @callable()
   async join(courseId: unknown, token: unknown) {

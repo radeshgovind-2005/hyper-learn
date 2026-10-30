@@ -96,6 +96,24 @@ export class CourseAgent extends Agent<Env, CourseAgentState> {
     return { id: record.id };
   }
 
+  /** Set once wipe() starts: nothing more is recorded in storage that is about to go. */
+  private deleted = false;
+
+  /**
+   * Deletes this course for good, for the directory's deleteCourse() (which checked the caller may).
+   * Everyone connected is told and disconnected first. Then destroy(), the Agents SDK's documented
+   * teardown: it cancels schedules (the hourly trial check) and the alarm, deletes all storage
+   * (ctx.storage.deleteAll) and resets the object. Calling ctx.storage.deleteAll ourselves would leave the
+   * SDK's alarm and schedules behind. destroy() aborts the isolate just after it returns, so the directory
+   * may see this call fail although it worked; wiping again is harmless, and the course stays listed until it succeeds.
+   */
+  async wipe() {
+    if (!isStudioId(this.name)) throw new Error("Built-in courses can't be deleted");
+    this.deleted = true;
+    for (const connection of this.getConnections()) connection.close(4004, "This course was deleted");
+    await this.destroy();
+  }
+
   /** Joins with an invite token, for the directory's join(). Returns the caller's role in the course. */
   redeemInvite(person: Identity, token: unknown) {
     if (!this.known() || isBuiltIn(this.name)) throw new Error("This invite link is no longer valid");
@@ -132,7 +150,7 @@ export class CourseAgent extends Agent<Env, CourseAgentState> {
 
   override onClose(connection: Connection<ConnectionState>) {
     const identity = connection.state?.identity;
-    if (identity) this.app.endSession(identity.userId, connection.id);
+    if (identity && !this.deleted) this.app.endSession(identity.userId, connection.id);
   }
 
   /** State is the server's view; a browser can't overwrite what other people see. */

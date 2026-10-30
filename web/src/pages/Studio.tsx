@@ -30,11 +30,26 @@ function useAction() {
   return { busy, error, run, setError };
 }
 
-function Card({ step, title, done, children, aside }: { step: number; title: string; done?: boolean; children: ReactNode; aside?: ReactNode }) {
+function Card({
+  step,
+  title,
+  done,
+  danger,
+  children,
+  aside,
+}: {
+  /** Absent: a card that isn't a step (deleting). */
+  step?: number;
+  title: string;
+  done?: boolean;
+  danger?: boolean;
+  children: ReactNode;
+  aside?: ReactNode;
+}) {
   return (
-    <section className="card studio-card">
+    <section className={`card studio-card ${danger ? "danger" : ""}`}>
       <div className="studio-card-head">
-        <span className={`num ${done ? "mastered" : ""}`}>{done ? "✓" : step}</span>
+        {step !== undefined && <span className={`num ${done ? "mastered" : ""}`}>{done ? "✓" : step}</span>}
         <h2 className="grow">{title}</h2>
         {aside}
       </div>
@@ -574,12 +589,41 @@ function Share({ call, courseId }: { call: Call; courseId: string }) {
   );
 }
 
+/** The owner types the title to confirm, so a slip of the mouse can't delete a course. */
+function DeleteCourse({ title, onDelete }: { title: string; onDelete: () => Promise<void> }) {
+  const [typed, setTyped] = useState("");
+  const { busy, error, run } = useAction();
+  const confirmed = typed.trim() === title.trim();
+  return (
+    <form
+      className="stack"
+      onSubmit={(e) => {
+        e.preventDefault();
+        if (confirmed) void run(onDelete);
+      }}
+    >
+      <p className="small muted">Deletes the course for everyone: its files, lessons, releases, members and every learner's progress. This can't be undone.</p>
+      <label className="field">
+        <span>Type the title to confirm: {title}</span>
+        <input className="input" value={typed} onChange={(e) => setTyped(e.target.value)} autoComplete="off" spellCheck={false} />
+      </label>
+      {error && <div className="notice">{error}</div>}
+      <div className="row">
+        <button className="btn danger sm" type="submit" disabled={!confirmed || busy}>
+          {busy ? "Deleting…" : "Delete course"}
+        </button>
+      </div>
+    </form>
+  );
+}
+
 export function Studio({
   call,
   overview,
   courseId,
   onPublished,
   onOpenSource,
+  onDelete,
 }: {
   call: Call;
   overview: Overview | null;
@@ -587,6 +631,8 @@ export function Studio({
   onPublished: () => void;
   /** Opens a file's page in the course's source drawer. */
   onOpenSource: (target: SourceTarget) => void;
+  /** Deletes the course through the directory, then leaves its pages. */
+  onDelete: () => Promise<void>;
 }) {
   const [details, setDetails] = useState<CourseDetails | null>(null);
   const [sources, setSources] = useState<OwnerSourceSummary[]>([]);
@@ -696,6 +742,10 @@ export function Studio({
 
       <Card step={draft ? 6 : 5} title="Share">
         <Share call={call} courseId={courseId} />
+      </Card>
+
+      <Card title="Delete course" danger>
+        <DeleteCourse title={details.title} onDelete={onDelete} />
       </Card>
     </article>
   );

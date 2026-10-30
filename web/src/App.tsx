@@ -134,6 +134,12 @@ function CourseApp({ courseId, base, rest, directory }: { courseId: string; base
     setSource((s) => ({ target, opened: (s?.opened ?? 0) + 1 }));
     setDrawer("source");
   }, []);
+  // The course object closes every connection (4004) as it wipes itself; then the lists refresh and we leave.
+  const deleteCourse = async () => {
+    await directory.call("deleteCourse", [courseId]);
+    directory.refresh();
+    navigate("/");
+  };
   const citations = useMemo(
     () => ({ sources: cited, open: (s: CitedSource, page: number, passage: string) => openSource({ source: s, page, passage, owner: false }) }),
     [cited, openSource],
@@ -222,6 +228,7 @@ function CourseApp({ courseId, base, rest, directory }: { courseId: string; base
         overview={overview}
         courseId={courseId}
         onOpenSource={openSource}
+        onDelete={deleteCourse}
         onPublished={() => {
           directory.refresh();
           go("");
@@ -231,7 +238,7 @@ function CourseApp({ courseId, base, rest, directory }: { courseId: string; base
   } else if (published === false) {
     // A course that isn't published yet: its owner works on it in the studio; anyone else waits.
     page = mayManage ? (
-      <Studio call={call} overview={overview} courseId={courseId} onOpenSource={openSource} onPublished={() => directory.refresh()} />
+      <Studio call={call} overview={overview} courseId={courseId} onOpenSource={openSource} onDelete={deleteCourse} onPublished={() => directory.refresh()} />
     ) : me ? (
       <div className="page narrow">
         <h1>{title}</h1>
