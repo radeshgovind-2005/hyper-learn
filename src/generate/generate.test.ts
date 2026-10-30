@@ -51,6 +51,17 @@ describe("buildCourse (end to end, canned models)", async () => {
     }
   });
 
+  it("shuffles options so the right answer isn't always first, the same way every build", async () => {
+    const first = (options: readonly { correct: boolean }[]) => options.findIndex((o) => o.correct);
+    const positions = snapshot.lessons.flatMap((l) => [
+      ...l.quiz.flatMap((item) => (item.type === "single_choice" || item.type === "two_tier" ? [first(item.options)] : [])),
+      ...l.sections.flatMap((s) => s.blocks.flatMap((b) => (b.kind === "check" ? [first(b.check.options)] : []))),
+    ]);
+    assert.ok(new Set(positions).size > 1, `the right answer is always option ${positions[0]}`);
+    const again = built(await buildCourse(INPUT, spiedModels()));
+    assert.deepEqual(again, snapshot);
+  });
+
   it("assigns every id in code", () => {
     const ids = [
       ...snapshot.lessons.map((l) => l.id),

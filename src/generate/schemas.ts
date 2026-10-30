@@ -60,12 +60,12 @@ export const SectionDraftSchema = z.object({
     }),
   ),
   check: z.object({
-    prompt: z.string(),
+    prompt: z.string().describe("At most 300 characters"),
     options: z.array(
       z.object({
-        text: z.string(),
+        text: z.string().describe("At most 200 characters"),
         correct: z.boolean(),
-        feedback: z.string().describe("Shown after the learner picks this option: why it is right or wrong"),
+        feedback: z.string().describe("Shown after the learner picks this option: why it is right or wrong. At most 300 characters"),
       }),
     ),
   }),

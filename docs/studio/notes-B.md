@@ -34,6 +34,7 @@ unchanged. `ok: true` carries a v1.0.0 snapshot that `courseFromSnapshot` accept
 | 6 Validate | `build.ts` + `assemble.ts` + `checks.ts`: per-unit problems, then `studioChecks` and `courseFromSnapshot` on the assembled snapshot; problems go back to the writer (per section) or examiner (per lesson), ≤3 rounds, else `ok: false` | fixes only |
 | 7 Review | `review.ts`: `fact_checker` per section against its cited pages; a doubted section is rewritten once and checked again; still doubted = warning; a rewrite that breaks a rule is reverted | 1 per section (+2 per doubted one) |
 | 8 Stress | `stress.ts`: removes one real edge, `simulate` → `computePerformance` → `referenceCurator`; miss = warning | 0 |
+| 9 Shuffle | `assemble.ts` `shuffleOptions`: every option list (and check block) shuffled, seeded by course and item id; after validation, since fix rounds name options by their drafted number | 0 |
 
 Every call goes through `ModelCalls` (`models.ts`): it refuses a prompt over `maxChars` (system prompt
 included), stops the build at `maxCalls` (`CallBudgetExceeded` → `ok: false`), retries a failed call up to

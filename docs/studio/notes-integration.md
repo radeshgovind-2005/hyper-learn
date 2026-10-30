@@ -51,8 +51,13 @@ Branch `studio/integration`, off `studio/base`. Merged in order: `studio/assessm
 
 ## Still open
 
-- Never run against a real model. A 4k-context local model can't take the generator's 24 000-character
-  prompts; use the Muse Spark endpoint.
+- Real dry run (2026-10-30, `muse-spark-1.3`, two lectures + one test): built 6 lessons, 18 sections,
+  115 questions in 76 calls, about 20 minutes. Fixed from it: the right answer was option 1 in 44 of 46
+  single-choice questions (options are now shuffled in code); practice options over 200 characters (the
+  limits are now in the writer prompt and schema); 3 of 23 objectives taught only by the test, not the
+  lectures (the planner is now told assessments set emphasis, not content); one failed call ended the
+  build (now retried with growing waits). Not yet re-run after these fixes. Still to look at: the right
+  answer was the longest option in 31 of 46; the stress test said 15 of 15 questions reveal the gap.
 - One lesson that doesn't converge in 3 rounds fails the whole build.
 - `exam()` and `snapshot()` send answer keys to the browser (as on `main`).
 - Short answers are still stored `needs_review` (known issue 3); generated pools have none.

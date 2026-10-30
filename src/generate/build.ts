@@ -2,7 +2,7 @@ import { type AgentName, renderTemplate } from "../agents.js";
 import { type CourseSnapshot, courseFromSnapshot } from "../course/compile.js";
 import { type Source, SourceSchema } from "../course/sources.js";
 import type { StructuredFactory } from "../models.js";
-import { assembleSnapshot } from "./assemble.js";
+import { assembleSnapshot, shuffleOptions } from "./assemble.js";
 import { assessmentFromDraft, examinerPrompt, type LessonAssessment, mergeDrafts, problemsByPart } from "./assess.js";
 import { assessmentSentences, routeValidationError, studioChecks } from "./checks.js";
 import { type BuilderModels, CallBudgetExceeded, createBuilderModels, ModelCalls } from "./models.js";
@@ -365,7 +365,7 @@ export async function buildCourse(input: BuildInput, models: BuilderModels, opti
     const items = snapshot.lessons.reduce((n, l) => n + l.quiz.length, 0);
     step("done", `Built ${snapshot.lessons.length} lessons, ${sectionCount} sections, ${items} questions`, "ok", `${calls.count} model call(s).`);
     report.model_calls = calls.count;
-    return { ok: true, snapshot, report };
+    return { ok: true, snapshot: shuffleOptions(snapshot), report };
   } catch (error) {
     return fail([error instanceof CallBudgetExceeded ? error.message : `Generation stopped: ${message(error)}`]);
   }

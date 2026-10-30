@@ -221,7 +221,7 @@
         "Give each section the pages it is written from, as source id and page number taken from the key ideas.",
         "Write 2 to 5 objectives per lesson. Each is one testable statement that starts with a verb (explain, compute, choose, compare, order, apply…).",
         "List, for each objective, the numbers (1-based, within its lesson) of the sections that teach it. Every section should teach at least one objective.",
-        "Weight the objectives toward what the assessments and briefs evaluate; with none, toward the owner's goal."
+        "Weight the objectives toward what the assessments and briefs evaluate; with none, toward the owner's goal. Assessments only say what to emphasise: every objective must be taught by the key ideas. Leave out anything the assessments evaluate that the key ideas don't teach."
       ],
       "constraints": [
         "Cite only teaching-material pages that appear in the key ideas; never pages of assessments or briefs.",
@@ -241,7 +241,8 @@
         "Each block cites the pages it is based on, as source id and page number.",
         "Explain in your own words; quote at most a short phrase. Keep formulas, code and numbers exactly as the pages give them.",
         "No headings: the section title is already shown.",
-        "The practice question checks the section's main idea: 3 or 4 options, exactly one correct, and feedback on every option saying why it is right or wrong."
+        "The practice question checks the section's main idea: 3 or 4 options, exactly one correct, and feedback on every option saying why it is right or wrong. Keep the question under 300 characters, each option under 200 and each feedback under 300.",
+      "Make the wrong options as specific and about as long as the right one, so length and wording don't give it away."
       ],
       "constraints": [
         "Use only facts the pages state. Leave out what they don't cover.",
@@ -270,7 +271,8 @@
         "Leave unused fields empty: options [] for ordering; steps [] and wrong_orders [] for the other types; reason_prompt null and reasons [] unless two_tier.",
         "For every prerequisite, most questions should have one wrong option tagged with its gap.",
         "Express misconceptions in tagged wrong options wherever they fit this objective; together with the other objectives' questions, every misconception must appear at least once.",
-        "Test understanding, not recall of wording. Base every question on the lesson text."
+        "Test understanding, not recall of wording. Base every question on the lesson text.",
+      "Make wrong options as specific, plausible and about as long as the right one, so length and wording don't give it away."
       ],
       "constraints": [
         "Never copy or closely reword questions from the assessments: they show the style and level only.",
