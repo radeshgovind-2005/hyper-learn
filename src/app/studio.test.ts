@@ -78,6 +78,7 @@ describe("studio course objects", () => {
     const { s, directory } = initialisedStudio();
     await s.updateDetails({ title: "Parallel programming", goal: "Write correct MPI programs" });
     assert.equal(s.record()?.goal, "Write correct MPI programs");
+    assert.deepEqual(s.details(), { title: "Parallel programming", description: "", goal: "Write correct MPI programs", language: "", status: "draft" });
     assert.deepEqual(directory.calls, [["course", ID, { title: "Parallel programming", description: "" }]]);
     await assert.rejects(s.updateDetails({ owner: "user_eve" }));
     await assert.rejects(s.updateDetails({ title: "" }), /title/);

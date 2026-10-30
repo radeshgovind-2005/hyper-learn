@@ -1154,6 +1154,12 @@ export class CourseService {
     return { role };
   }
 
+  /** What the owner's details form shows: title, description, goal and language. */
+  details(): Pick<StudioRecord, "title" | "description" | "goal" | "language" | "status"> {
+    const { title, description, goal, language, status } = this.studio();
+    return { title, description, goal, language, status };
+  }
+
   /** The owner changes the title, description, goal or language. */
   async updateDetails(input: unknown) {
     const record = this.studio();

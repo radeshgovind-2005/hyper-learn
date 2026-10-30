@@ -224,6 +224,13 @@ export class CourseAgent extends Agent<Env, CourseAgentState> {
 
   // ─── Course details, sources and model key (owner, or an admin) ───────
 
+  /** Title, description, goal (guides the build), language and status, for the owner's form. */
+  @callable()
+  details() {
+    this.actor("manage_course");
+    return this.app.details();
+  }
+
   /** Title, description, goal (guides the build) and language. */
   @callable()
   async updateDetails(input: unknown) {
