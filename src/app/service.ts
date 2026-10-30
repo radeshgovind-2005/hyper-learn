@@ -16,7 +16,7 @@ import { type Arm, armOf, isPending, measureReal, type PendingMeasurement, RealM
 import { createApprover, createApproverModel } from "../nodes/approver.js";
 import { type ApprovalMode, type ApprovalRequest, type ApprovalResponse, type Harness, settleTrial } from "../nodes/release.js";
 import { nextSteps, type PathStep } from "../path/route.js";
-import { describeChange } from "../releases/changes.js";
+import { applyChanges, type Change, describeChange, invertChanges, maxBump, maxTier, riskTier, semverBump } from "../releases/changes.js";
 import { type Release, revert } from "../releases/release.js";
 import { releasePerformance, scenarioSnapshot } from "../simulation/index.js";
 import type { Scenario } from "../simulation/scenarios.js";
@@ -30,9 +30,10 @@ import { type LearnerEvent, type Sql, SqlEventLog, SqlMeta, SqlProfiles, SqlRele
 import { type Member, SqlMembers, SqlSources, type SourceSummary } from "../storage/studio.js";
 import type { Identity as Person } from "../auth/identity.js";
 import { COURSE_ROLES, type CourseRole } from "./access.js";
-import { builtInCourse, type CourseBuilder, type CourseDefinition, FEATURED_COURSE, isStudioId } from "./courses.js";
+import { builtInCourse, type CourseBuilder, type CourseDefinition, type CourseEditor, FEATURED_COURSE, isStudioId } from "./courses.js";
 import type { BuildStep } from "../generate/types.js";
-import { initialRelease } from "../releases/release.js";
+import { bumpVersion, initialRelease } from "../releases/release.js";
+import { EDIT_PRESETS, type EditProposal, type EditRequest } from "../edit/types.js";
 import { type CourseDetails, CourseDetailsSchema, type CourseRecord, type CourseStatus, firstIssue } from "./directory.js";
 import { approveWithinCeiling, referenceModels } from "./reference.js";
 import { flushTraces, traceConfig } from "../observability.js";
@@ -265,9 +266,51 @@ export interface BuildState {
   model_calls?: number;
 }
 
+/** An owner's edit request, from asking to applying (studio courses). */
+export interface EditState {
+  id: string;
+  request: EditRequest;
+  /** Who asked. */
+  by: string;
+  status: "running" | "ready" | "applied" | "discarded" | "failed";
+  steps: BuildStep[];
+  started_at: string;
+  finished_at?: string;
+  /** What it was computed on: the draft (by revision) or a release. Applying needs it unchanged. */
+  base: { kind: "draft"; rev: number } | { kind: "release"; version: string };
+  proposal?: EditProposal;
+  problems?: string[];
+  warnings?: string[];
+  model_calls?: number;
+  /** "draft", or the version it was released as. */
+  applied_as?: string;
+}
+
+// Requests arrive from browsers untyped; the presets are the keys of EDIT_PRESETS.
+const EditRequestSchema = z.discriminatedUnion("kind", [
+  z.strictObject({
+    kind: z.literal("tune"),
+    section_id: z.string().min(1).max(200),
+    preset: z.enum(Object.keys(EDIT_PRESETS) as [keyof typeof EDIT_PRESETS, ...(keyof typeof EDIT_PRESETS)[]]).optional(),
+    instruction: z.string().trim().max(2_000).optional(),
+  }),
+  z.strictObject({ kind: z.literal("ask"), instruction: z.string().trim().min(3, "Say what you'd like to change").max(2_000) }),
+  z.strictObject({ kind: z.literal("add_source"), source_id: z.string().min(1).max(20), instruction: z.string().trim().max(2_000).optional() }),
+]);
+
+/** One line for the release history: what the owner asked for. */
+function describeRequest(request: EditRequest, sourceName?: string): string {
+  if (request.kind === "ask") return `Owner request: ${request.instruction}`;
+  if (request.kind === "add_source") return `Owner added ${sourceName ?? request.source_id}${request.instruction ? `: ${request.instruction}` : ""}`;
+  const what = [request.preset && request.preset.replace(/_/g, " "), request.instruction].filter(Boolean).join("; ");
+  return `Owner tuned ${request.section_id}: ${what}`;
+}
+
 export interface ServiceOptions {
   /** Generates a studio course from its sources (the Worker passes src/generate's; tests a fake). */
   builder?: CourseBuilder;
+  /** Turns an owner's request into proposed changes (the Worker passes src/edit's; tests canned models). */
+  editor?: CourseEditor;
   /** A studio course's owner-key settings (ignored for built-in courses, which use `models`). */
   ownerModels?: OwnerModelSettings;
   /**
@@ -345,6 +388,8 @@ export class CourseService {
     // Builds and runs live in this instance's memory, so one still marked running at start was cut off by a restart.
     if (this.record()?.status === "building") this.endBuild("failed", { problems: ["The build was interrupted (the server restarted); build again"] });
     if (this.run()?.status === "running") this.recoverInterruptedRun();
+    const edit = this.editState();
+    if (edit?.status === "running") this.meta.set("edit", { ...edit, status: "failed", problems: ["The server restarted while this was being prepared; ask again"] });
   }
 
   /**
@@ -446,6 +491,7 @@ export class CourseService {
       trial: this.trial(),
       agentsAvailable: this.agentsAvailable(),
       build: this.buildState() ?? null,
+      edit: this.editState() ?? null,
     };
   }
 
@@ -1176,10 +1222,11 @@ export class CourseService {
   // ─── Sources (studio courses) ─────────────────────────────────────
 
   /** Sources can change while a course is a draft or in review; a build reads them, and a published course cites them. */
-  private editableSources() {
+  private editableSources(adding = false) {
     const record = this.studio();
     if (record.status === "building") throw new Error("Wait for the build to finish before changing sources");
-    if (record.status === "published") throw new Error("A published course keeps its sources: lessons cite them");
+    // New files can join a published course (an edit then adds what they cover); cited ones stay as they are.
+    if (record.status === "published" && !adding) throw new Error("A published course keeps its sources: lessons cite them");
   }
 
   sourceList(): SourceSummary[] {
@@ -1205,7 +1252,7 @@ export class CourseService {
 
   /** Adds a file as page texts. Its id ("s1", "s2", …) is never reused, so a citation can't point at a different file. */
   addSource(input: unknown): SourceSummary {
-    this.editableSources();
+    this.editableSources(true);
     const parsed = SourceUploadSchema.safeParse(input);
     if (!parsed.success) throw new Error(firstIssue(parsed.error));
     if (this.sources.count() >= SOURCE_LIMITS.sources) throw new Error(`A course can have at most ${SOURCE_LIMITS.sources} sources`);
@@ -1219,7 +1266,7 @@ export class CourseService {
 
   /** Adds more pages to a source: how a file too big for one message arrives. */
   appendPages(id: unknown, pages: unknown): SourceSummary {
-    this.editableSources();
+    this.editableSources(true);
     const source = typeof id === "string" ? this.sources.get(id) : undefined;
     if (!source) throw new Error(`No source "${String(id)}"`);
     const parsed = SourceUploadSchema.shape.pages.safeParse(pages);
@@ -1383,7 +1430,7 @@ export class CourseService {
         // Code sets what identifies the release; the generator only supplies content.
         const snapshot = { ...result.snapshot, course_id: record.id, version: "1.0.0" };
         courseFromSnapshot(snapshot); // throws if the course isn't valid
-        this.meta.set("draft", snapshot);
+        this.setDraft(snapshot);
         this.endBuild("done", report, onUpdate);
       }
     } catch (error) {
@@ -1411,6 +1458,133 @@ export class CourseService {
     this.compiled = undefined;
     this.setStatus("published");
     return { live: this.releases.live().version };
+  }
+
+  /** Each new draft gets a revision, so an edit computed on an older one isn't applied to it. */
+  private setDraft(snapshot: CourseSnapshot) {
+    this.meta.set("draft", snapshot);
+    this.meta.set("draft_rev", (this.meta.get<number>("draft_rev") ?? 0) + 1);
+  }
+
+  // ─── Owner edits (studio courses): request → proposal → apply ─────
+
+  editState(): EditState | undefined {
+    return this.fixed ? undefined : (this.meta.get<EditState>("edit") ?? undefined);
+  }
+
+  /**
+   * Checks an edit can start and records it; the work itself (continueEdit) runs in the background.
+   * A built course in review is edited in place; a published one gets a new release when the owner applies.
+   */
+  beginEdit(input: unknown, by: string, onUpdate?: () => void): EditState {
+    const record = this.studio();
+    const parsed = EditRequestSchema.safeParse(input);
+    if (!parsed.success) throw new Error(firstIssue(parsed.error));
+    const request = parsed.data as EditRequest;
+    if (record.status === "building") throw new Error("Wait for the build to finish");
+    if (record.status === "draft") throw new Error("Build the course first; then you can tune it");
+    if (this.editState()?.status === "running") throw new Error("An edit is already being prepared");
+    if (!this.options.editor) throw new Error("Editing isn't available on this server yet");
+    if (!this.agentsAvailable()) throw new Error(this.whyNoModels());
+    if (request.kind === "add_source" && !this.sources.get(request.source_id)) throw new Error(`No file "${request.source_id}"`);
+    const base: EditState["base"] =
+      record.status === "published" ? { kind: "release", version: this.releases.live().version } : { kind: "draft", rev: this.meta.get<number>("draft_rev") ?? 0 };
+    const edit: EditState = { id: this.newId(), request, by, status: "running", steps: [], started_at: this.now(), base };
+    this.meta.set("edit", edit);
+    onUpdate?.();
+    return edit;
+  }
+
+  /** The long part of an edit: runs the editor with the owner's key; never throws. */
+  async continueEdit(edit: EditState, onUpdate?: () => void): Promise<EditState> {
+    const record = this.studio();
+    const save = (patch: Partial<EditState>) => {
+      Object.assign(edit, patch);
+      this.meta.set("edit", edit);
+      onUpdate?.();
+    };
+    try {
+      const provider = await this.ownerProvider();
+      const snapshot = edit.base.kind === "release" ? this.releases.live().snapshot : this.draft();
+      const context = {
+        course: {
+          course_id: record.id,
+          title: record.title,
+          ...(record.goal && { goal: record.goal }),
+          ...(record.description && { description: record.description }),
+          ...(record.language && { language: record.language }),
+        },
+        snapshot,
+        sources: this.sources.all(),
+      };
+      const result = await this.options.editor!(edit.request, context, provider.structured, (step) => {
+        edit.steps.push({ ...step, ...(step.detail && { detail: this.redact(step.detail) }) });
+        this.meta.set("edit", edit);
+        onUpdate?.();
+      });
+      const report = { warnings: result.warnings.map((w) => this.redact(w)), model_calls: result.model_calls, finished_at: this.now() };
+      if (result.ok) save({ ...report, status: "ready", proposal: result.proposal });
+      else save({ ...report, status: "failed", problems: result.problems.map((p) => this.redact(p)) });
+    } catch (error) {
+      save({ status: "failed", finished_at: this.now(), problems: [this.redact(error instanceof Error ? error.message : String(error))] });
+    }
+    return edit;
+  }
+
+  /**
+   * Applies a ready proposal: to the draft in place, or as a new live release with the changes and their
+   * exact inverse recorded (so it can be reverted like any release). Refused if the course moved on.
+   */
+  applyEdit(id: unknown, by: string): { applied_as: string } {
+    const record = this.studio();
+    const edit = this.editState();
+    if (!edit || edit.id !== id || edit.status !== "ready" || !edit.proposal) throw new Error("There is no proposal to apply");
+    const changes = edit.proposal.changes as Change[];
+    let appliedAs: string;
+    if (edit.base.kind === "draft") {
+      if (record.status !== "review" || (this.meta.get<number>("draft_rev") ?? 0) !== edit.base.rev) {
+        throw new Error("The course changed since this was proposed; ask again");
+      }
+      const next = applyChanges(this.draft(), changes);
+      courseFromSnapshot(next);
+      this.setDraft(next);
+      appliedAs = "draft";
+    } else {
+      const live = this.releases.live();
+      if (live.version !== edit.base.version) throw new Error(`v${live.version} went live since this was proposed; ask again`);
+      if (this.openTrial()) throw new Error("A trial is running; finish it before applying an edit");
+      if (this.run()?.status === "running") throw new Error("A repair run is in progress; apply this once it finishes");
+      const bump = maxBump(changes.map((c) => semverBump(live.snapshot, c)));
+      const version = bumpVersion(live.version, bump);
+      const snapshot = { ...applyChanges(live.snapshot, changes), version };
+      courseFromSnapshot(snapshot);
+      const source = edit.request.kind === "add_source" ? this.sources.get(edit.request.source_id)?.name : undefined;
+      this.releases.update(live.version, { status: "superseded" });
+      this.releases.add({
+        version,
+        parent: live.version,
+        status: "live",
+        changes,
+        inverse: invertChanges(live.snapshot, changes),
+        tier: maxTier(changes.map((c) => riskTier(live.snapshot, c))),
+        bump,
+        snapshot,
+        rationale: describeRequest(edit.request, source),
+        // The owner reviewed the exact changes; an edit isn't a measurable fix, so it isn't trialled.
+        approval: { approved: true, by: "human", note: `Applied by ${by}` },
+        created_at: this.now(),
+      });
+      appliedAs = version;
+    }
+    this.meta.set("edit", { ...edit, status: "applied", applied_as: appliedAs, finished_at: this.now() } satisfies EditState);
+    return { applied_as: appliedAs };
+  }
+
+  discardEdit() {
+    this.studio();
+    const edit = this.editState();
+    if (!edit || edit.status === "running") throw new Error(edit ? "Wait for the proposal first" : "There is no proposal");
+    this.meta.set("edit", { ...edit, status: "discarded" } satisfies EditState);
   }
 
   /** Tells the directory; a failure there is logged, not thrown: this object stays the authority. */

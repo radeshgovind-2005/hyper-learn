@@ -40,6 +40,22 @@ export function trialTarget(snapshot: CourseSnapshot, change: Change): TrialTarg
       if (!ref) throw new Error(`No node "${id}"`);
       return { lesson: ref.lesson.id, metric: "fail_rate", expectation: "no_harm" };
     }
+    // Owner edits: a rewrite or new material in a lesson must at least not make its exam harder to pass.
+    case "insert_block":
+    case "add_section":
+    case "remove_section": {
+      const id = change.op === "add_section" ? change.lesson_id : change.section_id;
+      const ref = findNode(snapshot, id);
+      if (!ref) throw new Error(`No node "${id}"`);
+      return { lesson: ref.lesson.id, metric: "fail_rate", expectation: "no_harm" };
+    }
+    case "add_items":
+    case "remove_items":
+      return { lesson: change.lesson_id, metric: "fail_rate", expectation: "no_harm" };
+    case "add_lesson":
+      return { lesson: change.lesson.id, metric: "fail_rate", expectation: "no_harm" };
+    case "remove_lesson":
+      return { lesson: change.lesson_id, metric: "fail_rate", expectation: "no_harm" };
   }
 }
 

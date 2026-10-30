@@ -73,27 +73,33 @@ function shuffled<T>(list: readonly T[], seed: number): T[] {
  * rounds refer to options by their drafted number.
  */
 export function shuffleOptions(snapshot: CourseSnapshot): CourseSnapshot {
-  const seed = (id: string, part = "options") => examSeed(snapshot.course_id, id, part);
-  const item = (q: QuizItem): QuizItem => {
-    switch (q.type) {
-      case "single_choice":
-      case "multi_select":
-        return { ...q, options: shuffled(q.options, seed(q.id)) };
-      case "two_tier":
-        return { ...q, options: shuffled(q.options, seed(q.id)), reasons: shuffled(q.reasons, seed(q.id, "reasons")) };
-      default:
-        return q;
-    }
-  };
   return {
     ...snapshot,
     lessons: snapshot.lessons.map((lesson) => ({
       ...lesson,
-      quiz: lesson.quiz.map(item),
+      quiz: lesson.quiz.map((q) => shuffleItem(snapshot.course_id, q)),
       sections: lesson.sections.map((section) => ({
         ...section,
-        blocks: section.blocks.map((b) => (b.kind === "check" ? { ...b, check: { ...b.check, options: shuffled(b.check.options, seed(b.id)) } } : b)),
+        blocks: section.blocks.map((b) => (b.kind === "check" ? shuffleCheck(snapshot.course_id, b) : b)),
       })),
     })),
   };
+}
+
+/** One question's options shuffled, seeded by course and item id (owner edits add questions one by one). */
+export function shuffleItem(courseId: string, q: QuizItem): QuizItem {
+  const seed = (part: string) => examSeed(courseId, q.id, part);
+  switch (q.type) {
+    case "single_choice":
+    case "multi_select":
+      return { ...q, options: shuffled(q.options, seed("options")) };
+    case "two_tier":
+      return { ...q, options: shuffled(q.options, seed("options")), reasons: shuffled(q.reasons, seed("reasons")) };
+    default:
+      return q;
+  }
+}
+
+export function shuffleCheck<B extends { id: string; check: { options: readonly unknown[] } }>(courseId: string, block: B): B {
+  return { ...block, check: { ...block.check, options: shuffled(block.check.options, examSeed(courseId, block.id, "options")) } };
 }

@@ -321,7 +321,9 @@ describe("studio lifecycle", () => {
     assert.equal(s.overview().live, "1.0.0");
     assert.throws(() => s.publish(), /Already published/);
     assert.throws(() => s.beginBuild(), /published/);
-    assert.throws(() => s.addSource({ name: "b", pages: ["y"] }), /keeps its sources/);
+    // New files may join (an edit then adds what they cover); the cited ones can't change.
+    const added = s.addSource({ name: "b", pages: ["y"] });
+    assert.throws(() => s.removeSource(added.id), /keeps its sources/);
     await new Promise((resolve) => setImmediate(resolve));
     assert.deepEqual(
       directory.calls.filter((c) => c[0] === "course" && "status" in (c[2] as object)).map((c) => (c[2] as { status: string }).status),

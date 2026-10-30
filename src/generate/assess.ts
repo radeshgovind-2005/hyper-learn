@@ -141,7 +141,17 @@ export function assessmentFromDraft(
     perObjective,
     takenMisconceptions,
     sentences,
-  }: { perObjective: number; takenMisconceptions: ReadonlySet<string>; sentences: readonly AssessmentSentence[] },
+    added = false,
+  }: {
+    perObjective: number;
+    takenMisconceptions: ReadonlySet<string>;
+    sentences: readonly AssessmentSentence[];
+    /**
+     * Questions added to an existing lesson (owner edits): the lesson's other questions already express
+     * its misconceptions and fill its pools, so only the per-question checks apply.
+     */
+    added?: boolean;
+  },
 ): { assessment?: LessonAssessment; problems: string[]; warnings: string[] } {
   const problems: string[] = [];
   const warnings: string[] = [];
@@ -231,7 +241,9 @@ export function assessmentFromDraft(
   const target = poolTarget(perObjective);
   lesson.objectives.forEach((objective, k) => {
     const count = items.filter((item) => item.objective === objective.id).length;
-    if (count < 2 * perObjective) problems.push(`objective ${k + 1} has ${count} questions; write at least ${target}`);
+    if (added) {
+      if (count === 0) problems.push(`objective ${k + 1} has no questions`);
+    } else if (count < 2 * perObjective) problems.push(`objective ${k + 1} has ${count} questions; write at least ${target}`);
     else if (count < target) warnings.push(`Objective "${objective.id}" has ${count} questions (${target} asked for): retakes may repeat questions`);
   });
 
@@ -245,7 +257,7 @@ export function assessmentFromDraft(
         warnings.push(`Only ${revealing} of ${sound.length} questions in "${lesson.id}" can reveal a gap in "${prereq}": a missing prerequisite would be hard to detect`);
       }
     }
-    misconceptions.forEach((mc, i) => {
+    if (!added) misconceptions.forEach((mc, i) => {
       if (!reveals.some((r) => r.some((w) => w.misconception === mc.id))) problems.push(`misconception ${i + 1} ("${mc.belief.slice(0, 60)}") is not expressed by any wrong option`);
     });
   }

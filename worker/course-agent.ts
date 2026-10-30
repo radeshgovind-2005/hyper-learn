@@ -10,7 +10,7 @@ import { LANGSMITH_SETTINGS } from "../src/observability.js";
 import type { ApprovalMode } from "../src/nodes/release.js";
 import type { Sql } from "../src/storage/sql.js";
 import { workersAiEmbedder, workersAiGuard } from "./ai.js";
-import { courseBuilder } from "./builder.js";
+import { courseBuilder, courseEditor } from "./builder.js";
 
 /** What every connected browser sees, kept in sync by the Agents SDK. */
 export interface CourseAgentState {
@@ -53,6 +53,7 @@ export class CourseAgent extends Agent<Env, CourseAgentState> {
           ? { agentsAvailable: Boolean(env.MODEL_API_KEY && env.MODEL_BASE_URL), models: new ModelProvider(modelConfigFromEnv(env)) }
           : {
               ...(courseBuilder && { builder: courseBuilder }),
+              editor: courseEditor,
               ownerModels: {
                 secret: env.KEY_ENCRYPTION_SECRET,
                 // The Worker's endpoint and limits; the key comes from the owner, opened only when used.
@@ -309,6 +310,38 @@ export class CourseAgent extends Agent<Env, CourseAgentState> {
     this.actor("manage_course");
     const build = this.app.beginBuild(() => this.pushState());
     this.background(() => this.app.continueBuild(build, () => this.pushState()));
+  }
+
+  // ─── Owner edits: tune a section, ask for a change, add a file ──────
+
+  /**
+   * Starts preparing an edit ({ kind: "tune" | "ask" | "add_source", … }). Before publishing it's the
+   * owner's; after, editors may ask too (it's how they repair the course in their own words). The
+   * proposal reaches the UI through state (overview.edit).
+   */
+  @callable()
+  requestEdit(request: unknown) {
+    const { userId } = this.actor(this.app.record()?.status === "published" ? "repair" : "manage_course");
+    const edit = this.app.beginEdit(request, userId, () => this.pushState());
+    this.background(() => this.app.continueEdit(edit, () => this.pushState()));
+    return { id: edit.id };
+  }
+
+  /** Applies the ready proposal: to the draft, or as a new live release. */
+  @callable()
+  applyEdit(id: string) {
+    const { userId } = this.actor(this.app.record()?.status === "published" ? "repair" : "manage_course");
+    const result = this.app.applyEdit(id, userId);
+    console.log(`Course ${this.name}: edit ${id} applied as ${result.applied_as} by ${userId}`);
+    this.pushState();
+    return result;
+  }
+
+  @callable()
+  discardEdit() {
+    this.actor(this.app.record()?.status === "published" ? "repair" : "manage_course");
+    this.app.discardEdit();
+    this.pushState();
   }
 
   /** The built course, to review before publishing. */

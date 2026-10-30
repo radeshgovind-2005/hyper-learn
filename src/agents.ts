@@ -21,6 +21,8 @@ export const AGENT_NAMES = [
   "writer",
   "examiner",
   "fact_checker",
+  // Owner edits (src/edit).
+  "editor",
 ] as const;
 export type AgentName = (typeof AGENT_NAMES)[number];
 
