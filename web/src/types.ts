@@ -3,7 +3,27 @@ import type { CourseRole } from "../../src/app/access.js";
 import type { CourseCard } from "../../src/app/directory.js";
 import type { CourseService, QuizResult } from "../../src/app/service.js";
 
-export type { BuildState, CheckResult, DataSource, Exam, ItemResult, LessonProgress, QuizResult, ReleaseSummary, RunState, ServedRelease, StudioRecord, TrialStatus } from "../../src/app/service.js";
+export type {
+  BuildState,
+  CheckResult,
+  CitedSource,
+  DataSource,
+  EditState,
+  Exam,
+  ItemResult,
+  LessonProgress,
+  OwnerSourceSummary,
+  QuizResult,
+  ReleaseSummary,
+  RunState,
+  ServedRelease,
+  SourcePage,
+  StudioRecord,
+  TrialStatus,
+} from "../../src/app/service.js";
+export type { Citation } from "../../src/course/schema.js";
+export type { Audience } from "../../src/generate/types.js";
+export type { EditPreset, EditRequest, EditSummaryItem } from "../../src/edit/types.js";
 export type { CourseRole } from "../../src/app/access.js";
 export type { CourseCard, CourseStatus } from "../../src/app/directory.js";
 export type { BuildStep } from "../../src/generate/types.js";

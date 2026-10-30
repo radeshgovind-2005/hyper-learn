@@ -235,6 +235,16 @@ export function timelineOf(
       }
       case "path":
         break; // the interventions it led to are recorded on their own
+      case "coach": {
+        const d = e.data as { type: string; score?: number; fixed?: boolean; approach?: string; target?: { kind: string; id?: string } };
+        const what = d.target?.kind === "misconception" && d.target.id ? `“${beliefOf(d.target.id)}”` : d.target?.kind === "gap" ? "a gap in an earlier lesson" : "an objective";
+        if (d.type === "diagnosis") {
+          entries.push({ at: e.at, kind: e.kind, lesson: e.lesson, text: `Study coach: diagnosed ${lesson} (${Math.round((d.score ?? 0) * 100)}%); first to fix: ${what}` });
+        } else if (d.type === "recheck") {
+          entries.push({ at: e.at, kind: e.kind, lesson: e.lesson, text: `Study coach: personal lesson on ${what} (${d.approach?.replace(/_/g, " ")}): ${d.fixed ? "fixed" : "not yet"}`, outcome: d.fixed ? "pass" : "fail" });
+        }
+        break;
+      }
     }
   }
   return entries.reverse().slice(0, limit);

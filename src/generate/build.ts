@@ -69,7 +69,7 @@ function checkInput(input: BuildInput): string[] {
 }
 
 /** The fix request sent back to an agent: its previous draft (shortened) and every problem found. */
-function retryText(agent: AgentName, template: string, draft: unknown, problems: readonly string[], room: number): string {
+export function retryText(agent: AgentName, template: string, draft: unknown, problems: readonly string[], room: number): string {
   const max = Math.floor(room / 3);
   let json = draft === undefined ? "(none: the previous call failed)" : JSON.stringify(draft);
   if (json.length > max) json = `${json.slice(0, max - 1)}…`;

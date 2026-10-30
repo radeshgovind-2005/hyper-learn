@@ -8,7 +8,7 @@ import { SOURCE_ROLES } from "../course/sources.js";
 // Counts (3–8 lessons, 2–5 objectives…) are asked for in the prompts and enforced in code, not in the
 // schemas, so a draft with a wrong count comes back as a fixable problem instead of a parse failure.
 
-const PageRefSchema = z.object({
+export const PageRefSchema = z.object({
   source: z.string().describe("Source id as given, e.g. 's1'"),
   page: z.number().int().describe("1-based page number"),
 });

@@ -1,7 +1,8 @@
 import { marked } from "marked";
-import { useEffect, useMemo, useState } from "react";
+import { type ReactNode, useEffect, useMemo, useState } from "react";
+import { shortName } from "../passage.js";
 import { interventionTracker, useLessonTimer } from "../tracking.js";
-import type { Block, Call, Certainty, CheckResult, CourseSnapshot, Exam, Intervention, QuizItem, QuizResult, Response } from "../types.js";
+import type { Block, Call, Certainty, CheckResult, CitedSource, CourseSnapshot, Exam, Intervention, QuizItem, QuizResult, Response } from "../types.js";
 import { InterventionView } from "./Interventions.js";
 import { QuizFlow } from "./Quiz.js";
 
@@ -12,6 +13,32 @@ const html = (markdown: string) => ({ __html: marked.parse(markdown, { async: fa
 const TEMPLATE_NAME = { contrast: "Contrast card", practice: "Practice set", step_through: "Step-through player" } as const;
 
 type CheckBlock = Extract<Block, { kind: "check" }>;
+type TextBlock = Extract<Block, { markdown: string }>;
+
+/** The files a reader can open from citation chips, and how to open one. */
+export interface Citations {
+  /** Learners: the files citedSources lists. The owner's preview: every file. */
+  sources: ReadonlyMap<string, CitedSource>;
+  open: (source: CitedSource, page: number, passage: string) => void;
+}
+
+/** "Lecture-01 · p.3" chips after a text block, for the cited files the reader may open. */
+function CiteChips({ block, citations }: { block: TextBlock; citations: Citations }) {
+  const chips = (block.cites ?? []).flatMap((c) => {
+    const source = citations.sources.get(c.source);
+    return source && c.page <= source.pages ? [{ source, page: c.page }] : [];
+  });
+  if (chips.length === 0) return null;
+  return (
+    <div className="cites">
+      {chips.map(({ source, page }) => (
+        <button key={`${source.id}:${page}`} className="chip cite" title={`Open ${source.name}, page ${page}`} onClick={() => citations.open(source, page, block.markdown)}>
+          {shortName(source.name)} · p.{page}
+        </button>
+      ))}
+    </div>
+  );
+}
 
 /**
  * A practice question inside a section. A learner's answer goes to the server, which records it and
@@ -55,12 +82,35 @@ function CheckView({ block, call, live }: { block: CheckBlock; call: Call; live:
   );
 }
 
-function BlockView({ block, isNew, belief, preview, live, call }: { block: Block; isNew: boolean; belief: string; preview: boolean; live: boolean; call: Call }) {
+function BlockView({
+  block,
+  isNew,
+  belief,
+  preview,
+  live,
+  call,
+  citations,
+}: {
+  block: Block;
+  isNew: boolean;
+  belief: string;
+  preview: boolean;
+  live: boolean;
+  call: Call;
+  citations: Citations | undefined;
+}) {
   const [open, setOpen] = useState(preview);
   const track = useMemo(() => interventionTracker(call, block.id, "preview"), [call, block.id]);
   if (block.kind === "check") return <CheckView block={block} call={call} live={live} />;
   if (block.kind !== "intervention") {
-    return <div className={`block prose ${isNew ? "new" : ""} ${block.archived ? "archived" : ""}`} dangerouslySetInnerHTML={html(block.markdown)} />;
+    const text = <div className={`block prose ${isNew ? "new" : ""} ${block.archived ? "archived" : ""}`} dangerouslySetInnerHTML={html(block.markdown)} />;
+    if (!citations || !block.cites?.length) return text;
+    return (
+      <>
+        {text}
+        <CiteChips block={block} citations={citations} />
+      </>
+    );
   }
   return (
     <div className={`block ${isNew ? "new" : ""} ${block.archived ? "archived" : ""}`}>
@@ -94,6 +144,7 @@ function Result({
   onRetake,
   onOpenLesson,
   onOpenSection,
+  onCoach,
   nextLesson,
   call,
 }: {
@@ -104,6 +155,7 @@ function Result({
   onRetake: () => void;
   onOpenLesson: (id: string) => void;
   onOpenSection: (lesson: string, section: string) => void;
+  onCoach?: (() => void) | undefined;
   nextLesson: { id: string; title: string } | null;
 }) {
   const scored = result.items.filter((i) => !i.pilot && !i.grade.needs_review);
@@ -131,6 +183,11 @@ function Result({
           <button className={`btn ${result.passed ? "quiet" : help.length > 0 ? "secondary" : "primary"}`} onClick={onRetake}>
             Retake the quiz
           </button>
+          {!result.passed && onCoach && (
+            <button className="btn primary" onClick={onCoach}>
+              Find out why with the study coach
+            </button>
+          )}
         </div>
       </div>
 
@@ -198,6 +255,12 @@ export function LessonView(props: {
   onAnswered: () => void;
   onOpenLesson: (id: string) => void;
   onOpenSection?: (lesson: string, section: string) => void;
+  /** Opens the study coach on this lesson. */
+  onCoach?: (lessonId: string) => void;
+  /** Controls shown under each section's title (e.g. "Tune" for people who may edit the course). */
+  sectionTools?: (section: { id: string; title: string }) => ReactNode;
+  /** Chips that open the source pages text blocks cite; absent: none (the featured course cites nothing). */
+  citations?: Citations;
 }) {
   const { snapshot, parent, lessonId, mode, call } = props;
   const viewingHistory = mode === "history";
@@ -280,6 +343,11 @@ export function LessonView(props: {
       </div>
       <h1>{lesson.title}</h1>
       <p className="lede">{lesson.summary}</p>
+      {learning && props.onCoach && (
+        <button className="coach-link" onClick={() => props.onCoach!(lesson.id)}>
+          Stuck on this lesson? <strong>Let the study coach find out why →</strong>
+        </button>
+      )}
       {lesson.prerequisites.length > 0 && (
         <div className="row small prereqs">
           <span className="muted">Builds on</span>
@@ -296,6 +364,7 @@ export function LessonView(props: {
         .map((section) => (
           <section key={section.id} id={section.id} className="section">
             {section.title && <h2>{section.title}</h2>}
+            {!viewingHistory && props.sectionTools?.(section)}
             {section.blocks
               .filter((b) => !b.archived || viewingHistory)
               .map((block) => (
@@ -307,6 +376,7 @@ export function LessonView(props: {
                   preview={!learning}
                   live={learning}
                   call={call}
+                  citations={props.citations}
                 />
               ))}
           </section>
@@ -341,6 +411,7 @@ export function LessonView(props: {
               nextLesson={next ? { id: next.id, title: next.title } : null}
               onOpenLesson={props.onOpenLesson}
               onOpenSection={props.onOpenSection ?? ((lessonId) => props.onOpenLesson(lessonId))}
+              onCoach={props.onCoach && (() => props.onCoach!(lesson.id))}
               onRetake={() => {
                 setResult(null);
                 setAttempt((a) => a + 1);

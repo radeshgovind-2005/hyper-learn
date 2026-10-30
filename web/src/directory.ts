@@ -1,12 +1,19 @@
 import { useAuth } from "@clerk/react";
 import { useAgent } from "agents/react";
 import { useCallback, useEffect, useState } from "react";
-import type { Call, MyCourses } from "./types.js";
+import type { Audience, Call, MyCourses } from "./types.js";
 
 /** The featured course: shown at "/", every other course at "/c/<id>". */
 export const FEATURED_COURSE = "agentic-coding";
 
 export const coursePath = (id: string) => (id === FEATURED_COURSE ? "/" : `/c/${encodeURIComponent(id)}`);
+
+/** Who a course is for, as the owner picks it (the server checks the value). */
+export const AUDIENCE_LABEL: Record<Audience, string> = {
+  beginner: "New to the topic",
+  intermediate: "Some background",
+  advanced: "Advanced",
+};
 
 /** The connection carries this person's Clerk session token; the Worker verifies it before any agent sees it. */
 export function useSessionQuery() {

@@ -1,20 +1,24 @@
 import { useAgent } from "agents/react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router";
 import { CoursePanel } from "./components/CoursePanel.js";
 import { CourseSwitcher } from "./components/CourseSwitcher.js";
+import { AskForm, EditStatus } from "./components/EditPanel.js";
 import { Drawer } from "./components/Drawer.js";
 import { HistoryDrawer } from "./components/HistoryDrawer.js";
 import { LessonView } from "./components/LessonView.js";
 import { RepairDrawer } from "./components/RepairDrawer.js";
 import { Shell } from "./components/Shell.js";
+import { TuneButton } from "./components/TuneButton.js";
+import { type SourceTarget, SourceViewer } from "./components/SourceViewer.js";
 import { coursePath, type Directory, FEATURED_COURSE, useDirectory, useSessionQuery } from "./directory.js";
+import { Coach } from "./pages/Coach.js";
 import { CreateCourse } from "./pages/CreateCourse.js";
 import { JoinCourse } from "./pages/JoinCourse.js";
 import { LearnerDetail, Learners } from "./pages/Learners.js";
 import { MyProgress } from "./pages/MyProgress.js";
 import { Studio } from "./pages/Studio.js";
-import type { AgentState, Call, CourseSnapshot, LessonProgress, Me, Overview, ServedRelease } from "./types.js";
+import type { AgentState, Call, CitedSource, CourseSnapshot, LessonProgress, Me, Overview, ServedRelease } from "./types.js";
 
 type Route =
   | { page: "new" }
@@ -51,7 +55,7 @@ export function App() {
   );
 }
 
-type DrawerName = "repair" | "history" | null;
+type DrawerName = "repair" | "history" | "source" | null;
 
 /** The lesson a course opens on: the featured course's demo starts at the agent loop, others at lesson 1. */
 const START_LESSON: Record<string, string> = { [FEATURED_COURSE]: "agent-loop" };
@@ -61,6 +65,7 @@ function CourseApp({ courseId, base, rest, directory }: { courseId: string; base
   const go = useCallback((path: string) => navigate(`${base}${path}` || "/"), [navigate, base]);
   const onProgressPage = rest === "/me";
   const onStudioPage = rest === "/studio";
+  const onCoachPage = rest === "/coach";
   const learnerMatch = /^\/learners(?:\/([^/]+))?$/.exec(rest);
   const [me, setMe] = useState<Me | null>(null);
   const [overview, setOverview] = useState<Overview | null>(null);
@@ -118,6 +123,32 @@ function CourseApp({ courseId, base, rest, directory }: { courseId: string; base
   }, [call, agent.identified, live, trialVersion]);
   const home = served?.version ?? live;
 
+  // The files this person may open from citation chips: the ones their release cites (the featured course has none).
+  const [cited, setCited] = useState<ReadonlyMap<string, CitedSource>>(new Map());
+  useEffect(() => {
+    if (!agent.identified || !home || courseId === FEATURED_COURSE) return;
+    void call<CitedSource[]>("citedSources")
+      .then((list) => setCited(new Map(list.map((s) => [s.id, s]))))
+      .catch(() => setCited(new Map()));
+  }, [call, agent.identified, home, courseId]);
+
+  // A source page in the drawer. `opened` counts openings, so opening another citation starts the viewer afresh.
+  const [source, setSource] = useState<{ target: SourceTarget; opened: number } | null>(null);
+  const openSource = useCallback((target: SourceTarget) => {
+    setSource((s) => ({ target, opened: (s?.opened ?? 0) + 1 }));
+    setDrawer("source");
+  }, []);
+  // The course object closes every connection (4004) as it wipes itself; then the lists refresh and we leave.
+  const deleteCourse = async () => {
+    await directory.call("deleteCourse", [courseId]);
+    directory.refresh();
+    navigate("/");
+  };
+  const citations = useMemo(
+    () => ({ sources: cited, open: (s: CitedSource, page: number, passage: string) => openSource({ source: s, page, passage, owner: false }) }),
+    [cited, openSource],
+  );
+
   // The release on screen: the served one, or one picked from the history (with its parent, to show what changed).
   const shown = viewVersion ?? home;
   const shownParent = overview?.releases.find((r) => r.version === shown)?.parent ?? null;
@@ -147,6 +178,10 @@ function CourseApp({ courseId, base, rest, directory }: { courseId: string; base
   const running = status === "running";
   const waiting = status === "awaiting_approval";
   const title = overview?.course.title || snapshot?.title;
+  // Studio courses can be edited in words by whoever may repair them (owner, editors, admins).
+  const editable = mayRepair && courseId !== FEATURED_COURSE;
+  const edit = overview?.edit ?? null;
+  const editBusy = edit?.status === "running";
 
   const actions = (
     <>
@@ -158,6 +193,11 @@ function CourseApp({ courseId, base, rest, directory }: { courseId: string; base
       {published && mayViewLearners && (
         <button className={`btn sm ${learnerMatch ? "primary" : "quiet"}`} onClick={() => go(learnerMatch ? "" : "/learners")} aria-current={learnerMatch ? "page" : undefined}>
           Learners
+        </button>
+      )}
+      {published && (
+        <button className={`btn sm ${onCoachPage ? "primary" : "quiet"}`} onClick={() => go(onCoachPage ? "" : "/coach")} aria-current={onCoachPage ? "page" : undefined}>
+          Study coach
         </button>
       )}
       {published && (
@@ -200,6 +240,8 @@ function CourseApp({ courseId, base, rest, directory }: { courseId: string; base
         call={call}
         overview={overview}
         courseId={courseId}
+        onOpenSource={openSource}
+        onDelete={deleteCourse}
         onPublished={() => {
           directory.refresh();
           go("");
@@ -209,7 +251,7 @@ function CourseApp({ courseId, base, rest, directory }: { courseId: string; base
   } else if (published === false) {
     // A course that isn't published yet: its owner works on it in the studio; anyone else waits.
     page = mayManage ? (
-      <Studio call={call} overview={overview} courseId={courseId} onPublished={() => directory.refresh()} />
+      <Studio call={call} overview={overview} courseId={courseId} onOpenSource={openSource} onDelete={deleteCourse} onPublished={() => directory.refresh()} />
     ) : me ? (
       <div className="page narrow">
         <h1>{title}</h1>
@@ -218,6 +260,8 @@ function CourseApp({ courseId, base, rest, directory }: { courseId: string; base
     ) : (
       <div className="empty">Loading the course…</div>
     );
+  } else if (onCoachPage && snapshot) {
+    page = <Coach key={courseId} call={call} snapshot={snapshot} lessonId={lessonId} citations={citations} onOpenLesson={openLesson} onOpenSection={openSection} />;
   } else if (onProgressPage) {
     page = <MyProgress key={progress.length} call={call} onOpenLesson={openLesson} />;
   } else if (learnerMatch && mayViewLearners) {
@@ -247,6 +291,12 @@ function CourseApp({ courseId, base, rest, directory }: { courseId: string; base
         onAnswered={refreshProgress}
         onOpenLesson={openLesson}
         onOpenSection={openSection}
+        onCoach={(id) => {
+          setChosenLesson(id);
+          go("/coach");
+        }}
+        {...(editable && { sectionTools: (section) => <TuneButton call={call} sectionId={section.id} busy={editBusy} onRequested={() => setDrawer("repair")} /> })}
+        citations={citations}
       />
     );
   } else {
@@ -267,6 +317,14 @@ function CourseApp({ courseId, base, rest, directory }: { courseId: string; base
       drawers={
         <>
           <Drawer open={mayRepair && drawer === "repair"} title="Course repair" onClose={closeDrawer}>
+            {editable && (
+              <section className="ask-change stack">
+                <h3>Ask for a change</h3>
+                <AskForm call={call} busy={editBusy} placeholder="e.g. Learners keep confusing NUMA and UMA: add a comparison and two questions on it." />
+                <EditStatus call={call} edit={edit} published />
+                <hr />
+              </section>
+            )}
             <RepairDrawer
               overview={overview}
               mayReset={me?.permissions.includes("reset") ?? false}
@@ -283,12 +341,17 @@ function CourseApp({ courseId, base, rest, directory }: { courseId: string; base
           <Drawer open={drawer === "history"} title="Releases" onClose={closeDrawer}>
             <HistoryDrawer
               overview={overview}
+              call={call}
+              mayUndo={editable}
               viewing={viewVersion ?? home ?? null}
               onView={(v) => {
                 setViewVersion(v === home ? null : v);
                 setDrawer(null);
               }}
             />
+          </Drawer>
+          <Drawer open={drawer === "source" && source !== null} title={source?.target.source.name ?? "Source"} onClose={closeDrawer}>
+            {source && <SourceViewer key={source.opened} call={call} target={source.target} />}
           </Drawer>
         </>
       }

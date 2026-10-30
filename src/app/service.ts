@@ -7,7 +7,7 @@ import { gradeAttempt } from "../analytics/performance.js";
 import { type Grade, gradeItem } from "../assessment/grade.js";
 import { drawExam, examSeed } from "../assessment/exam.js";
 import type { Certainty, QuizItem, Response } from "../assessment/items.js";
-import { type CheckBlock, type CourseSnapshot, courseFromSnapshot, type LiveIntervention, liveInterventions, liveObjectives } from "../course/compile.js";
+import { type CheckBlock, type CourseSnapshot, courseFromSnapshot, isTextBlock, type LiveIntervention, liveInterventions, liveObjectives } from "../course/compile.js";
 import type { Course } from "../course/schema.js";
 import { buildGraph, graphModels } from "../graph.js";
 import type { Embedder, Guard } from "../guards/guards.js";
@@ -16,24 +16,27 @@ import { type Arm, armOf, isPending, measureReal, type PendingMeasurement, RealM
 import { createApprover, createApproverModel } from "../nodes/approver.js";
 import { type ApprovalMode, type ApprovalRequest, type ApprovalResponse, type Harness, settleTrial } from "../nodes/release.js";
 import { nextSteps, type PathStep } from "../path/route.js";
-import { describeChange } from "../releases/changes.js";
+import { applyChanges, type Change, describeChange, invertChanges, maxBump, maxTier, riskTier, semverBump } from "../releases/changes.js";
 import { type Release, revert } from "../releases/release.js";
 import { releasePerformance, scenarioSnapshot } from "../simulation/index.js";
 import type { Scenario } from "../simulation/scenarios.js";
 import { NoExemplar } from "../interventions/reference.js";
 import { defaultModels, type ModelConfig, ModelProvider } from "../models.js";
 import { keysAvailable, openSecret, sealSecret } from "../crypto/keys.js";
-import { MAX_PAGE_CHARS, SOURCE_ROLES, type Source, SourceSchema } from "../course/sources.js";
+import { MAX_PAGE_CHARS, SOURCE_ROLES, type Source, type SourceRole, SourceSchema } from "../course/sources.js";
 import type { State } from "../state.js";
 import { PersistentMemorySaver } from "../storage/checkpointer.js";
 import { type LearnerEvent, type Sql, SqlEventLog, SqlMeta, SqlProfiles, SqlReleaseStore, SqlThreadStore } from "../storage/sql.js";
 import { type Member, SqlMembers, SqlSources, type SourceSummary } from "../storage/studio.js";
 import type { Identity as Person } from "../auth/identity.js";
 import { COURSE_ROLES, type CourseRole } from "./access.js";
-import { builtInCourse, type CourseBuilder, type CourseDefinition, FEATURED_COURSE, isStudioId } from "./courses.js";
-import type { BuildStep } from "../generate/types.js";
-import { initialRelease } from "../releases/release.js";
-import { type CourseDetails, CourseDetailsSchema, type CourseRecord, type CourseStatus, firstIssue } from "./directory.js";
+import { builtInCourse, type CoachRepairer, type CourseBuilder, type CourseDefinition, type CourseEditor, FEATURED_COURSE, isStudioId } from "./courses.js";
+import { type DiagnosisResult, drawDiagnostic, scoreDiagnostic, type Target, targetKey } from "../coach/diagnose.js";
+import { type Approach, approachFor, type PersonalSection, recheckItems, sectionsFor } from "../coach/repair.js";
+import type { Audience, BuildStep } from "../generate/types.js";
+import { bumpVersion, initialRelease } from "../releases/release.js";
+import { EDIT_PRESETS, type EditProposal, type EditRequest } from "../edit/types.js";
+import { type CourseDetailsInput, CourseDetailsSchema, type CourseRecord, type CourseStatus, firstIssue } from "./directory.js";
 import { approveWithinCeiling, referenceModels } from "./reference.js";
 import { flushTraces, traceConfig } from "../observability.js";
 import { type RunStep, stepFor } from "./timeline.js";
@@ -159,10 +162,36 @@ export interface StudioRecord {
   goal: string;
   /** Language to write in; empty: the material's. */
   language: string;
+  /** Who it is for. Missing on records stored before audiences existed: read as "beginner" (see record()). */
+  audience: Audience;
   status: CourseStatus;
   owner: string;
   created_at: string;
 }
+
+/** A source as the owner's list shows it. */
+export interface OwnerSourceSummary extends SourceSummary {
+  /** Whether learners may open it from the lessons that cite it (past exams and briefs never, whatever this says). */
+  shared: boolean;
+}
+
+/** A file a learner may open from the lessons that cite it. */
+export interface CitedSource {
+  id: string;
+  name: string;
+  pages: number;
+}
+
+/** One page of a source, as the viewer shows it. */
+export interface SourcePage {
+  source: CitedSource;
+  /** 1-based. */
+  page: number;
+  text: string;
+}
+
+/** Files learners never see: they show what is assessed, and may hold the answers. */
+const NEVER_SHOWN: ReadonlySet<SourceRole> = new Set(["assessment", "brief"]);
 
 /** How a course object tells the directory what changed, so course lists stay current. */
 export interface DirectoryLink {
@@ -194,6 +223,7 @@ const DetailsUpdateSchema = z.strictObject({
   description: CourseDetailsSchema.shape.description.optional(),
   goal: z.string().trim().max(2_000).optional(),
   language: z.string().trim().max(40).optional(),
+  audience: CourseDetailsSchema.shape.audience.unwrap().optional(),
 });
 
 /** Compares secrets in time that doesn't depend on where they differ. */
@@ -265,9 +295,97 @@ export interface BuildState {
   model_calls?: number;
 }
 
+/** A question the coach shows, by id: the item is looked up in the release it was drawn from. */
+interface CoachQuestion {
+  lesson: string;
+  item_id: string;
+}
+
+/** One learner's study coach: their latest diagnosis and repair, and what they have fixed. */
+export interface CoachState {
+  diagnosis?: {
+    id: string;
+    lesson: string;
+    release: string;
+    note?: string;
+    started_at: string;
+    questions: CoachQuestion[];
+    status: "open" | "done";
+    result?: DiagnosisResult;
+  };
+  repair?: {
+    id: string;
+    target: Target;
+    approach: Approach;
+    /** How many approaches have been tried on this target before this one. */
+    attempt: number;
+    release: string;
+    status: "running" | "ready" | "failed" | "fixed" | "not_yet";
+    started_at: string;
+    finished_at?: string;
+    lesson?: PersonalSection;
+    /** Without a model (the featured course, or no key): the course's own help instead of a new lesson. */
+    fallback?: { kind: "intervention"; block_id: string } | { kind: "review"; lesson: string; section_id: string };
+    problems?: string[];
+    recheck?: CoachQuestion[];
+  };
+  /** Target keys the learner has fixed (re-check passed). */
+  fixed: string[];
+  /** Every question the coach has shown, so exams prefer others. */
+  seen: string[];
+  repairs_today: { date: string; count: number };
+}
+
+/** Personal repair lessons one learner may ask for in a day: each costs the owner a few model calls. */
+export const MAX_REPAIRS_PER_DAY = 8;
+
+/** An owner's edit request, from asking to applying (studio courses). */
+export interface EditState {
+  id: string;
+  request: EditRequest;
+  /** Who asked. */
+  by: string;
+  status: "running" | "ready" | "applied" | "discarded" | "failed";
+  steps: BuildStep[];
+  started_at: string;
+  finished_at?: string;
+  /** What it was computed on: the draft (by revision) or a release. Applying needs it unchanged. */
+  base: { kind: "draft"; rev: number } | { kind: "release"; version: string };
+  proposal?: EditProposal;
+  problems?: string[];
+  warnings?: string[];
+  model_calls?: number;
+  /** "draft", or the version it was released as. */
+  applied_as?: string;
+}
+
+// Requests arrive from browsers untyped; the presets are the keys of EDIT_PRESETS.
+const EditRequestSchema = z.discriminatedUnion("kind", [
+  z.strictObject({
+    kind: z.literal("tune"),
+    section_id: z.string().min(1).max(200),
+    preset: z.enum(Object.keys(EDIT_PRESETS) as [keyof typeof EDIT_PRESETS, ...(keyof typeof EDIT_PRESETS)[]]).optional(),
+    instruction: z.string().trim().max(2_000).optional(),
+  }),
+  z.strictObject({ kind: z.literal("ask"), instruction: z.string().trim().min(3, "Say what you'd like to change").max(2_000) }),
+  z.strictObject({ kind: z.literal("add_source"), source_id: z.string().min(1).max(20), instruction: z.string().trim().max(2_000).optional() }),
+]);
+
+/** One line for the release history: what the owner asked for. */
+function describeRequest(request: EditRequest, sourceName?: string): string {
+  if (request.kind === "ask") return `Owner request: ${request.instruction}`;
+  if (request.kind === "add_source") return `Owner added ${sourceName ?? request.source_id}${request.instruction ? `: ${request.instruction}` : ""}`;
+  const what = [request.preset && request.preset.replace(/_/g, " "), request.instruction].filter(Boolean).join("; ");
+  return `Owner tuned ${request.section_id}: ${what}`;
+}
+
 export interface ServiceOptions {
   /** Generates a studio course from its sources (the Worker passes src/generate's; tests a fake). */
   builder?: CourseBuilder;
+  /** Turns an owner's request into proposed changes (the Worker passes src/edit's; tests canned models). */
+  editor?: CourseEditor;
+  /** Writes a learner's personal repair lesson (the Worker passes src/coach's; tests canned models). */
+  repairer?: CoachRepairer;
   /** A studio course's owner-key settings (ignored for built-in courses, which use `models`). */
   ownerModels?: OwnerModelSettings;
   /**
@@ -345,6 +463,8 @@ export class CourseService {
     // Builds and runs live in this instance's memory, so one still marked running at start was cut off by a restart.
     if (this.record()?.status === "building") this.endBuild("failed", { problems: ["The build was interrupted (the server restarted); build again"] });
     if (this.run()?.status === "running") this.recoverInterruptedRun();
+    const edit = this.editState();
+    if (edit?.status === "running") this.meta.set("edit", { ...edit, status: "failed", problems: ["The server restarted while this was being prepared; ask again"] });
   }
 
   /**
@@ -446,6 +566,7 @@ export class CourseService {
       trial: this.trial(),
       agentsAvailable: this.agentsAvailable(),
       build: this.buildState() ?? null,
+      edit: this.editState() ?? null,
     };
   }
 
@@ -501,10 +622,14 @@ export class CourseService {
     const previous = this.answersTo(learner, lessonId);
     const attempt = previous.length + 1;
     // Answers recorded before exams were drawn have no item_ids, but every one lists its graded items.
-    const seen = previous.flatMap((e) => {
-      const d = e.data as { item_ids?: string[]; items?: { item_id: string }[] };
-      return d.item_ids ?? d.items?.map((i) => i.item_id) ?? [];
-    });
+    const seen = [
+      // Questions the study coach showed count as seen, before the learner's own attempts.
+      ...(this.meta.get<CoachState>(`coach:${learner}`)?.seen ?? []),
+      ...previous.flatMap((e) => {
+        const d = e.data as { item_ids?: string[]; items?: { item_id: string }[] };
+        return d.item_ids ?? d.items?.map((i) => i.item_id) ?? [];
+      }),
+    ];
     const items = drawExam(lesson, course.objectives, { seen, seed: examSeed(learner, lessonId, attempt, release.version) });
     return { lesson, attempt, items };
   }
@@ -728,12 +853,247 @@ export class CourseService {
   /** Removes everything recorded about this learner, including their profile. Course releases are untouched. */
   deleteMyData(learner: string) {
     this.profiles.delete(learner);
+    this.meta.set(`coach:${learner}`, null);
     return { deleted: this.events.deleteLearner(learner) };
   }
 
   /** Remembers who signed in (name and email as their verified token carries them), for instructors' views. */
   recordProfile(identity: Identity) {
     this.profiles.seen({ user_id: identity.userId, name: identity.name, email: identity.email, role: identity.role }, this.now());
+  }
+
+  // ─── Study coach: diagnose → repair the one thing that matters now → re-check ──
+
+  private coach(learner: string): CoachState {
+    return this.meta.get<CoachState>(`coach:${learner}`) ?? { fixed: [], seen: [], repairs_today: { date: "", count: 0 } };
+  }
+
+  private saveCoach(learner: string, state: CoachState) {
+    this.meta.set(`coach:${learner}`, state);
+  }
+
+  private resolve(release: string, questions: readonly CoachQuestion[]) {
+    const snapshot = this.releases.get(release)?.snapshot;
+    if (!snapshot) throw new Error("That version of the course is gone; start again");
+    return questions.map((q) => {
+      const item = snapshot.lessons.find((l) => l.id === q.lesson)?.quiz.find((i) => i.id === q.item_id);
+      if (!item) throw new Error("A question is no longer in the course; start again");
+      return { lesson: q.lesson, item };
+    });
+  }
+
+  /** What the coach page shows: the latest diagnosis and repair, with their questions. */
+  coachState(learner: string) {
+    this.requirePublished();
+    const state = this.coach(learner);
+    const resolve = (release: string, qs?: readonly CoachQuestion[]) => {
+      try {
+        return qs ? this.resolve(release, qs) : undefined;
+      } catch {
+        return undefined;
+      }
+    };
+    return {
+      diagnosis: state.diagnosis && { ...state.diagnosis, questions: resolve(state.diagnosis.release, state.diagnosis.questions) ?? [] },
+      repair: state.repair && { ...state.repair, recheck: resolve(state.repair.release, state.repair.recheck) },
+      fixed: state.fixed,
+      repairs_left: MAX_REPAIRS_PER_DAY - (state.repairs_today.date === this.now().slice(0, 10) ? state.repairs_today.count : 0),
+      /** Whether the coach can write new lessons here (a studio course with a usable key). */
+      writes: Boolean(this.options.repairer && this.record() && this.agentsAvailable()),
+    };
+  }
+
+  /** Starts a short diagnostic on a lesson and the lessons it builds on. */
+  startDiagnosis(learner: string, lessonId: unknown, note?: unknown) {
+    if (typeof lessonId !== "string") throw new Error("Pick a lesson");
+    if (note !== undefined && (typeof note !== "string" || note.length > 1000)) throw new Error("Keep the note under 1000 characters");
+    const release = this.servedRelease(learner);
+    const state = this.coach(learner);
+    const answered = this.events.forLearner(learner).flatMap((e) => (e.kind === "answer" ? ((e.data as { item_ids?: string[] }).item_ids ?? []) : []));
+    const questions = drawDiagnostic(release.snapshot, lessonId, {
+      seen: [...state.seen, ...answered],
+      seed: examSeed(learner, lessonId, "coach", state.seen.length, release.version),
+    });
+    if (questions.length === 0) throw new Error("This lesson has no questions to diagnose with");
+    const trimmed = typeof note === "string" && note.trim() ? note.trim() : undefined;
+    state.diagnosis = {
+      id: this.newId(),
+      lesson: lessonId,
+      release: release.version,
+      ...(trimmed && { note: trimmed }),
+      started_at: this.now(),
+      questions: questions.map((q) => ({ lesson: q.lesson, item_id: q.item.id })),
+      status: "open",
+    };
+    this.saveCoach(learner, state);
+    return this.coachState(learner);
+  }
+
+  /** Scores the diagnostic and says what to repair first. */
+  submitDiagnosis(learner: string, id: unknown, answers: unknown) {
+    const state = this.coach(learner);
+    const d = state.diagnosis;
+    if (!d || d.id !== id || d.status !== "open") throw new Error("This diagnosis is over; start a new one");
+    if (!Array.isArray(answers)) throw new Error("Send the answers as a list");
+    const questions = this.resolve(d.release, d.questions);
+    const result = scoreDiagnostic(this.releases.get(d.release)!.snapshot, d.lesson, questions, answers as Response[]);
+    state.diagnosis = { ...d, status: "done", result };
+    state.seen = [...new Set([...state.seen, ...d.questions.map((q) => q.item_id)])];
+    this.saveCoach(learner, state);
+    this.events.append({
+      learner,
+      kind: "coach",
+      lesson: d.lesson,
+      release: d.release,
+      data: { type: "diagnosis", priority: targetKey(result.priority), target: result.priority, score: result.score, gaps: result.gaps, misconceptions: result.misconceptions.map((m) => m.id) },
+      at: this.now(),
+    });
+    return this.coachState(learner);
+  }
+
+  /**
+   * Starts repairing a target from the latest diagnosis (default: its priority). With a model, a lesson
+   * is written for this learner in the background (continueRepair); without one, the course's own help
+   * for it is used. `again` tries the same target with the next approach.
+   */
+  beginRepair(learner: string, key?: unknown, again = false): { state: ReturnType<CourseService["coachState"]>; write: boolean } {
+    const state = this.coach(learner);
+    const d = state.diagnosis;
+    if (!d?.result) throw new Error("Do a diagnosis first");
+    if (state.repair?.status === "running") throw new Error("A lesson is already being written for you");
+    const targets = [d.result.priority, ...d.result.next];
+    const target = again && state.repair ? state.repair.target : key === undefined ? d.result.priority : targets.find((t) => targetKey(t) === key);
+    if (!target) throw new Error("That isn't one of your diagnosis results");
+    if (target.kind === "ready") throw new Error("Nothing to repair: take the exam");
+    const attempt = again && state.repair && targetKey(state.repair.target) === targetKey(target) ? state.repair.attempt + 1 : 0;
+    const release = this.servedRelease(learner);
+    const base = { id: this.newId(), target, approach: approachFor(target, attempt), attempt, release: release.version, started_at: this.now() };
+
+    const write = Boolean(this.options.repairer && this.record() && this.agentsAvailable());
+    if (write) {
+      const today = this.now().slice(0, 10);
+      const used = state.repairs_today.date === today ? state.repairs_today.count : 0;
+      if (used >= MAX_REPAIRS_PER_DAY) throw new Error(`That's ${MAX_REPAIRS_PER_DAY} personal lessons today; the course's own sections are still there`);
+      state.repairs_today = { date: today, count: used + 1 };
+      state.repair = { ...base, status: "running" };
+    } else {
+      // The course's own help: a live intervention for the misconception, or the section that teaches it.
+      const intervention = target.kind === "misconception" ? liveInterventions(release.snapshot).find((i) => i.intervention.targets === target.id) : undefined;
+      const section = sectionsFor(release.snapshot, target)[0];
+      const fallback: NonNullable<CoachState["repair"]>["fallback"] = intervention
+        ? { kind: "intervention", block_id: intervention.block_id }
+        : { kind: "review", lesson: target.lesson, section_id: section ?? "" };
+      state.repair = { ...base, status: "ready", fallback, finished_at: this.now(), recheck: this.recheckFor(state, release.snapshot, target) };
+    }
+    this.saveCoach(learner, state);
+    return { state: this.coachState(learner), write };
+  }
+
+  private recheckFor(state: CoachState, snapshot: CourseSnapshot, target: Target): CoachQuestion[] {
+    return recheckItems(snapshot, target, new Set(state.seen)).map((q) => ({ lesson: q.lesson, item_id: q.item.id }));
+  }
+
+  /** The long part of a repair: writes the learner's lesson with the owner's key; never throws. */
+  async continueRepair(learner: string): Promise<void> {
+    const state = this.coach(learner);
+    const repair = state.repair;
+    if (!repair || repair.status !== "running") return;
+    const finish = (patch: Partial<NonNullable<CoachState["repair"]>>) => {
+      const latest = this.coach(learner);
+      if (latest.repair?.id !== repair.id) return;
+      latest.repair = { ...latest.repair, ...patch, finished_at: this.now() };
+      this.saveCoach(learner, latest);
+    };
+    try {
+      const record = this.studio();
+      const provider = await this.ownerProvider();
+      const snapshot = this.releases.get(repair.release)!.snapshot;
+      const wrong = (state.diagnosis?.result?.wrong ?? []).filter((w) => w.lesson === repair.target.lesson);
+      const result = await this.options.repairer!(
+        {
+          course: { course_id: record.id, title: record.title, ...(record.language && { language: record.language }) },
+          snapshot,
+          sources: this.sources.all(),
+          target: repair.target,
+          approach: repair.approach,
+          ...(state.diagnosis?.note && { note: state.diagnosis.note }),
+          wrong,
+        },
+        provider.structured,
+      );
+      if (result.ok) finish({ status: "ready", lesson: result.repair, recheck: this.recheckFor(state, snapshot, repair.target) });
+      else finish({ status: "failed", problems: result.problems.map((p) => this.redact(p)) });
+    } catch (error) {
+      finish({ status: "failed", problems: [this.redact(error instanceof Error ? error.message : String(error))] });
+    }
+  }
+
+  /** Grades the re-check after a repair: fixed when every answer is right and the mix-up didn't show. */
+  submitRecheck(learner: string, id: unknown, answers: unknown) {
+    const state = this.coach(learner);
+    const repair = state.repair;
+    if (!repair || repair.id !== id || repair.status !== "ready" || !repair.recheck) throw new Error("There is nothing to check right now");
+    if (!Array.isArray(answers) || answers.length !== repair.recheck.length) throw new Error(`Answer all ${repair.recheck.length} questions`);
+    const questions = this.resolve(repair.release, repair.recheck);
+    const grades = questions.map((q, i) => gradeItem(q.item, answers[i] as Response, q.lesson));
+    const target = repair.target;
+    const fixed = grades.every((g) => g.correct) && !(target.kind === "misconception" && grades.some((g) => g.errors.some((e) => e.misconception === target.id)));
+    const key = targetKey(target);
+    state.repair = { ...repair, status: fixed ? "fixed" : "not_yet" };
+    state.seen = [...new Set([...state.seen, ...repair.recheck.map((q) => q.item_id)])];
+    if (fixed && !state.fixed.includes(key)) state.fixed.push(key);
+    this.saveCoach(learner, state);
+    this.events.append({
+      learner,
+      kind: "coach",
+      lesson: target.lesson,
+      release: repair.release,
+      data: { type: "recheck", target_key: key, target, approach: repair.approach, attempt: repair.attempt, fixed, wrote: Boolean(repair.lesson) },
+      at: this.now(),
+    });
+    const remaining = [state.diagnosis?.result?.priority, ...(state.diagnosis?.result?.next ?? [])].filter(
+      (t): t is Target => Boolean(t) && t!.kind !== "ready" && !state.fixed.includes(targetKey(t!)),
+    );
+    return { fixed, grades: grades.map((g) => ({ correct: g.correct })), next: remaining[0] ?? null, state: this.coachState(learner) };
+  }
+
+  /**
+   * For owners and editors: what learners keep needing repaired, most learners first, and whether the
+   * personal lessons worked. The way back from one learner's repair to a fix for everyone.
+   */
+  coachInsights() {
+    this.requirePublished();
+    const byKey = new Map<string, { target: Target; learners: Set<string>; repaired: number; fixed: number; approaches: Record<string, { tried: number; fixed: number }> }>();
+    for (const { learner } of this.events.learners()) {
+      for (const e of this.events.forLearner(learner)) {
+        if (e.kind !== "coach") continue;
+        const d = e.data as { type: string; priority?: string; target?: Target; target_key?: string; approach?: string; fixed?: boolean };
+        const key = d.type === "diagnosis" ? d.priority : d.target_key;
+        if (!key || !d.target || d.target.kind === "ready") continue;
+        const row = byKey.get(key) ?? { target: d.target, learners: new Set<string>(), repaired: 0, fixed: 0, approaches: {} };
+        row.learners.add(learner);
+        if (d.type === "recheck") {
+          row.repaired++;
+          if (d.fixed) row.fixed++;
+          const a = (row.approaches[d.approach ?? "?"] ??= { tried: 0, fixed: 0 });
+          a.tried++;
+          if (d.fixed) a.fixed++;
+        }
+        byKey.set(key, row);
+      }
+    }
+    const live = this.releases.live().snapshot;
+    return [...byKey]
+      .map(([key, r]) => ({ key, target: r.target, label: this.targetLabel(live, r.target), learners: r.learners.size, repaired: r.repaired, fixed: r.fixed, approaches: r.approaches }))
+      .sort((a, b) => b.learners - a.learners || b.repaired - a.repaired);
+  }
+
+  private targetLabel(snapshot: CourseSnapshot, t: Target): string {
+    const lesson = snapshot.lessons.find((l) => l.id === t.lesson)?.title ?? t.lesson;
+    if (t.kind === "misconception") return `Mix-up: "${snapshot.misconceptions.find((m) => m.id === t.id)?.belief ?? t.id}"`;
+    if (t.kind === "objective") return (snapshot.objectives ?? []).find((o) => o.id === t.id)?.statement ?? t.id;
+    if (t.kind === "gap") return `Gap in "${lesson}"`;
+    return lesson;
   }
 
   // ─── Instructors ──────────────────────────────────────────────────
@@ -1042,7 +1402,9 @@ export class CourseService {
 
   /** A studio course's record; undefined for a built-in course or one not initialised yet. */
   record(): StudioRecord | undefined {
-    return this.fixed ? undefined : this.meta.get<StudioRecord>("course");
+    if (this.fixed) return undefined;
+    const stored = this.meta.get<Omit<StudioRecord, "audience"> & { audience?: Audience }>("course");
+    return stored && { ...stored, audience: stored.audience ?? "beginner" };
   }
 
   /** Whether this object holds a course: built in, or a studio course the directory initialised. */
@@ -1064,11 +1426,11 @@ export class CourseService {
   }
 
   /** Sets up a new studio course: called once, by the directory, right after it recorded the course. */
-  initialise(input: { id: string; owner: Person } & CourseDetails) {
+  initialise(input: { id: string; owner: Person } & CourseDetailsInput) {
     if (this.fixed) throw new Error("Built-in courses can't be initialised");
     if (this.record()) throw new Error("This course already exists");
     if (!isStudioId(input.id)) throw new Error("Not a studio course id");
-    const parsed = CourseDetailsSchema.safeParse({ title: input.title, description: input.description });
+    const parsed = CourseDetailsSchema.safeParse({ title: input.title, description: input.description, audience: input.audience });
     if (!parsed.success) throw new Error(firstIssue(parsed.error));
     const record: StudioRecord = { id: input.id, ...parsed.data, goal: "", language: "", status: "draft", owner: input.owner.userId, created_at: this.now() };
     this.meta.set("course", record);
@@ -1154,13 +1516,13 @@ export class CourseService {
     return { role };
   }
 
-  /** What the owner's details form shows: title, description, goal and language. */
-  details(): Pick<StudioRecord, "title" | "description" | "goal" | "language" | "status"> {
-    const { title, description, goal, language, status } = this.studio();
-    return { title, description, goal, language, status };
+  /** What the owner's details form shows: title, description, goal, language and audience. */
+  details(): Pick<StudioRecord, "title" | "description" | "goal" | "language" | "audience" | "status"> {
+    const { title, description, goal, language, audience, status } = this.studio();
+    return { title, description, goal, language, audience, status };
   }
 
-  /** The owner changes the title, description, goal or language. */
+  /** The owner changes the title, description, goal, language or audience (the next build writes for it). */
   async updateDetails(input: unknown) {
     const record = this.studio();
     const parsed = DetailsUpdateSchema.safeParse(input);
@@ -1176,15 +1538,27 @@ export class CourseService {
   // ─── Sources (studio courses) ─────────────────────────────────────
 
   /** Sources can change while a course is a draft or in review; a build reads them, and a published course cites them. */
-  private editableSources() {
+  private editableSources(adding = false) {
     const record = this.studio();
     if (record.status === "building") throw new Error("Wait for the build to finish before changing sources");
-    if (record.status === "published") throw new Error("A published course keeps its sources: lessons cite them");
+    // New files can join a published course (an edit then adds what they cover); cited ones stay as they are.
+    if (record.status === "published" && !adding) throw new Error("A published course keeps its sources: lessons cite them");
   }
 
-  sourceList(): SourceSummary[] {
+  /** Sources the owner has hidden from learners, by id (kept in meta: existing objects already have the sources table). */
+  private hiddenSources(): Set<string> {
+    return new Set(this.meta.get<string[]>("hidden_sources") ?? []);
+  }
+
+  private summaryOf(id: string): OwnerSourceSummary {
+    return this.sourceList().find((s) => s.id === id)!;
+  }
+
+  /** The files, without their text; `shared` is the owner's "learners can open" switch. */
+  sourceList(): OwnerSourceSummary[] {
     this.studio();
-    return this.sources.summaries();
+    const hidden = this.hiddenSources();
+    return this.sources.summaries().map((s) => ({ ...s, shared: !hidden.has(s.id) }));
   }
 
   /** The full sources, for a build. */
@@ -1205,7 +1579,7 @@ export class CourseService {
 
   /** Adds a file as page texts. Its id ("s1", "s2", …) is never reused, so a citation can't point at a different file. */
   addSource(input: unknown): SourceSummary {
-    this.editableSources();
+    this.editableSources(true);
     const parsed = SourceUploadSchema.safeParse(input);
     if (!parsed.success) throw new Error(firstIssue(parsed.error));
     if (this.sources.count() >= SOURCE_LIMITS.sources) throw new Error(`A course can have at most ${SOURCE_LIMITS.sources} sources`);
@@ -1214,19 +1588,19 @@ export class CourseService {
     const source = SourceSchema.parse({ id: `s${seq}`, name: parsed.data.name, ...(parsed.data.role && { role: parsed.data.role }), pages });
     this.sources.put(source, seq);
     this.meta.set("source_seq", seq);
-    return this.sources.summaries().find((s) => s.id === source.id)!;
+    return this.summaryOf(source.id);
   }
 
   /** Adds more pages to a source: how a file too big for one message arrives. */
   appendPages(id: unknown, pages: unknown): SourceSummary {
-    this.editableSources();
+    this.editableSources(true);
     const source = typeof id === "string" ? this.sources.get(id) : undefined;
     if (!source) throw new Error(`No source "${String(id)}"`);
     const parsed = SourceUploadSchema.shape.pages.safeParse(pages);
     if (!parsed.success) throw new Error(firstIssue(parsed.error));
     const added = this.pagesWithinLimits(parsed.data, { pages: source.pages.length, chars: 0 });
     this.sources.put(SourceSchema.parse({ ...source, pages: [...source.pages, ...added] }), this.sources.seq(source.id)!);
-    return this.sources.summaries().find((s) => s.id === source.id)!;
+    return this.summaryOf(source.id);
   }
 
   removeSource(id: unknown) {
@@ -1243,7 +1617,70 @@ export class CourseService {
     if (role !== null && !(SOURCE_ROLES as readonly unknown[]).includes(role)) throw new Error(`Unknown role "${String(role)}"`);
     const { role: _old, ...rest } = source;
     this.sources.put(SourceSchema.parse(role === null ? rest : { ...rest, role }), this.sources.seq(source.id)!);
-    return this.sources.summaries().find((s) => s.id === source.id)!;
+    return this.summaryOf(source.id);
+  }
+
+  /**
+   * The owner lets learners open a file from the lessons that cite it, or stops them. Allowed after
+   * publishing too: it changes who may read a file, not what the lessons say.
+   */
+  setSourceShared(id: unknown, shared: unknown): OwnerSourceSummary {
+    this.studio();
+    if (typeof id !== "string" || !this.sources.get(id)) throw new Error(`No source "${String(id)}"`);
+    if (typeof shared !== "boolean") throw new Error("shared is true or false");
+    const hidden = this.hiddenSources();
+    if (shared) hidden.delete(id);
+    else hidden.add(id);
+    this.meta.set("hidden_sources", [...hidden]);
+    return this.summaryOf(id);
+  }
+
+  /** One page of a source, checked; `page` is 1-based. */
+  private pageOf(source: Source, page: unknown): SourcePage {
+    if (typeof page !== "number" || !Number.isInteger(page) || page < 1 || page > source.pages.length) {
+      throw new Error(`"${source.name}" has pages 1 to ${source.pages.length}`);
+    }
+    return { source: { id: source.id, name: source.name, pages: source.pages.length }, page, text: source.pages[page - 1]! };
+  }
+
+  /** Any page of any of this course's sources, for the owner (draft or published). */
+  ownerSourcePage(id: unknown, page: unknown): SourcePage {
+    this.studio();
+    const source = typeof id === "string" ? this.sources.get(id) : undefined;
+    if (!source) throw new Error(`No source "${String(id)}"`);
+    return this.pageOf(source, page);
+  }
+
+  // ─── Sources learners can open (published studio courses) ─────────
+
+  /**
+   * The files a learner may open from their lessons: those cited by a live block of the release they are
+   * served, minus the ones the owner hid. Past exams and briefs never, even if a block somehow cites one:
+   * they show what is assessed and may hold the answers.
+   */
+  citedSources(learner: string): CitedSource[] {
+    if (this.fixed) return []; // built-in courses are written by hand, not from uploaded files
+    const snapshot = this.servedRelease(learner).snapshot;
+    const cited = new Set<string>();
+    for (const lesson of snapshot.lessons.filter((l) => !l.archived)) {
+      for (const section of lesson.sections.filter((s) => !s.archived)) {
+        for (const block of section.blocks) {
+          if (!block.archived && isTextBlock(block)) for (const c of block.cites ?? []) cited.add(c.source);
+        }
+      }
+    }
+    const hidden = this.hiddenSources();
+    return this.sources
+      .summaries()
+      .filter((s) => cited.has(s.id) && !hidden.has(s.id) && !(s.role && NEVER_SHOWN.has(s.role)))
+      .map((s) => ({ id: s.id, name: s.name, pages: s.pages }));
+  }
+
+  /** A page of a file the learner may open (see citedSources): any page of it, not only the cited ones. */
+  sourcePage(learner: string, id: unknown, page: unknown): SourcePage {
+    if (this.fixed) throw new Error("This course has no source files");
+    if (typeof id !== "string" || !this.citedSources(learner).some((s) => s.id === id)) throw new Error("This file isn't shared with learners");
+    return this.pageOf(this.sources.get(id)!, page);
   }
 
   // ─── The owner's model key (studio courses) ───────────────────────
@@ -1369,6 +1806,7 @@ export class CourseService {
         ...(record.goal && { goal: record.goal }),
         ...(record.description && { description: record.description }),
         ...(record.language && { language: record.language }),
+        audience: record.audience,
         sources: this.sources.all(),
       };
       const result = await this.options.builder!(input, provider.structured, (step) => {
@@ -1383,7 +1821,7 @@ export class CourseService {
         // Code sets what identifies the release; the generator only supplies content.
         const snapshot = { ...result.snapshot, course_id: record.id, version: "1.0.0" };
         courseFromSnapshot(snapshot); // throws if the course isn't valid
-        this.meta.set("draft", snapshot);
+        this.setDraft(snapshot);
         this.endBuild("done", report, onUpdate);
       }
     } catch (error) {
@@ -1411,6 +1849,166 @@ export class CourseService {
     this.compiled = undefined;
     this.setStatus("published");
     return { live: this.releases.live().version };
+  }
+
+  /** Each new draft gets a revision, so an edit computed on an older one isn't applied to it. */
+  private setDraft(snapshot: CourseSnapshot) {
+    this.meta.set("draft", snapshot);
+    this.meta.set("draft_rev", (this.meta.get<number>("draft_rev") ?? 0) + 1);
+  }
+
+  // ─── Owner edits (studio courses): request → proposal → apply ─────
+
+  editState(): EditState | undefined {
+    return this.fixed ? undefined : (this.meta.get<EditState>("edit") ?? undefined);
+  }
+
+  /**
+   * Checks an edit can start and records it; the work itself (continueEdit) runs in the background.
+   * A built course in review is edited in place; a published one gets a new release when the owner applies.
+   */
+  beginEdit(input: unknown, by: string, onUpdate?: () => void): EditState {
+    const record = this.studio();
+    const parsed = EditRequestSchema.safeParse(input);
+    if (!parsed.success) throw new Error(firstIssue(parsed.error));
+    const request = parsed.data as EditRequest;
+    if (record.status === "building") throw new Error("Wait for the build to finish");
+    if (record.status === "draft") throw new Error("Build the course first; then you can tune it");
+    if (this.editState()?.status === "running") throw new Error("An edit is already being prepared");
+    if (!this.options.editor) throw new Error("Editing isn't available on this server yet");
+    if (!this.agentsAvailable()) throw new Error(this.whyNoModels());
+    if (request.kind === "add_source" && !this.sources.get(request.source_id)) throw new Error(`No file "${request.source_id}"`);
+    const base: EditState["base"] =
+      record.status === "published" ? { kind: "release", version: this.releases.live().version } : { kind: "draft", rev: this.meta.get<number>("draft_rev") ?? 0 };
+    const edit: EditState = { id: this.newId(), request, by, status: "running", steps: [], started_at: this.now(), base };
+    this.meta.set("edit", edit);
+    onUpdate?.();
+    return edit;
+  }
+
+  /** The long part of an edit: runs the editor with the owner's key; never throws. */
+  async continueEdit(edit: EditState, onUpdate?: () => void): Promise<EditState> {
+    const record = this.studio();
+    const save = (patch: Partial<EditState>) => {
+      Object.assign(edit, patch);
+      this.meta.set("edit", edit);
+      onUpdate?.();
+    };
+    try {
+      const provider = await this.ownerProvider();
+      const snapshot = edit.base.kind === "release" ? this.releases.live().snapshot : this.draft();
+      const context = {
+        course: {
+          course_id: record.id,
+          title: record.title,
+          ...(record.goal && { goal: record.goal }),
+          ...(record.description && { description: record.description }),
+          ...(record.language && { language: record.language }),
+        },
+        snapshot,
+        sources: this.sources.all(),
+      };
+      const result = await this.options.editor!(edit.request, context, provider.structured, (step) => {
+        edit.steps.push({ ...step, ...(step.detail && { detail: this.redact(step.detail) }) });
+        this.meta.set("edit", edit);
+        onUpdate?.();
+      });
+      const report = { warnings: result.warnings.map((w) => this.redact(w)), model_calls: result.model_calls, finished_at: this.now() };
+      if (result.ok) save({ ...report, status: "ready", proposal: result.proposal });
+      else save({ ...report, status: "failed", problems: result.problems.map((p) => this.redact(p)) });
+    } catch (error) {
+      save({ status: "failed", finished_at: this.now(), problems: [this.redact(error instanceof Error ? error.message : String(error))] });
+    }
+    return edit;
+  }
+
+  /**
+   * Applies a ready proposal: to the draft in place, or as a new live release with the changes and their
+   * exact inverse recorded (so it can be reverted like any release). Refused if the course moved on.
+   */
+  applyEdit(id: unknown, by: string): { applied_as: string } {
+    const record = this.studio();
+    const edit = this.editState();
+    if (!edit || edit.id !== id || edit.status !== "ready" || !edit.proposal) throw new Error("There is no proposal to apply");
+    const changes = edit.proposal.changes as Change[];
+    let appliedAs: string;
+    if (edit.base.kind === "draft") {
+      if (record.status !== "review" || (this.meta.get<number>("draft_rev") ?? 0) !== edit.base.rev) {
+        throw new Error("The course changed since this was proposed; ask again");
+      }
+      const next = applyChanges(this.draft(), changes);
+      courseFromSnapshot(next);
+      this.setDraft(next);
+      appliedAs = "draft";
+    } else {
+      const live = this.releases.live();
+      if (live.version !== edit.base.version) throw new Error(`v${live.version} went live since this was proposed; ask again`);
+      if (this.openTrial()) throw new Error("A trial is running; finish it before applying an edit");
+      if (this.run()?.status === "running") throw new Error("A repair run is in progress; apply this once it finishes");
+      const bump = maxBump(changes.map((c) => semverBump(live.snapshot, c)));
+      const version = bumpVersion(live.version, bump);
+      const snapshot = { ...applyChanges(live.snapshot, changes), version };
+      courseFromSnapshot(snapshot);
+      const source = edit.request.kind === "add_source" ? this.sources.get(edit.request.source_id)?.name : undefined;
+      this.releases.update(live.version, { status: "superseded" });
+      this.releases.add({
+        version,
+        parent: live.version,
+        status: "live",
+        changes,
+        inverse: invertChanges(live.snapshot, changes),
+        tier: maxTier(changes.map((c) => riskTier(live.snapshot, c))),
+        bump,
+        snapshot,
+        rationale: describeRequest(edit.request, source),
+        // The owner reviewed the exact changes; an edit isn't a measurable fix, so it isn't trialled.
+        approval: { approved: true, by: "human", note: `Applied by ${by}` },
+        created_at: this.now(),
+      });
+      appliedAs = version;
+    }
+    this.meta.set("edit", { ...edit, status: "applied", applied_as: appliedAs, finished_at: this.now() } satisfies EditState);
+    return { applied_as: appliedAs };
+  }
+
+  /**
+   * Undoes the live release by releasing its recorded inverse as a new version (history is never
+   * rewritten). Works for any release built on a parent: an applied edit, or a kept repair.
+   */
+  undoRelease(version: unknown, by: string): { live: string } {
+    this.requirePublished();
+    const live = this.releases.live();
+    if (live.version !== version) throw new Error(`Only the live release (v${live.version}) can be undone`);
+    if (!live.parent || live.inverse.length === 0) throw new Error("The first release can't be undone");
+    if (this.openTrial()) throw new Error("A trial is running; finish it first");
+    if (this.run()?.status === "running") throw new Error("A repair run is in progress; undo once it finishes");
+    const changes = live.inverse;
+    const bump = maxBump(changes.map((c) => semverBump(live.snapshot, c)));
+    const next = bumpVersion(live.version, bump);
+    const snapshot = { ...applyChanges(live.snapshot, changes), version: next };
+    courseFromSnapshot(snapshot);
+    this.releases.update(live.version, { status: "superseded" });
+    this.releases.add({
+      version: next,
+      parent: live.version,
+      status: "live",
+      changes,
+      inverse: invertChanges(live.snapshot, changes),
+      tier: maxTier(changes.map((c) => riskTier(live.snapshot, c))),
+      bump,
+      snapshot,
+      rationale: `Undid v${live.version}`,
+      approval: { approved: true, by: "human", note: `Undone by ${by}` },
+      created_at: this.now(),
+    });
+    return { live: next };
+  }
+
+  discardEdit() {
+    this.studio();
+    const edit = this.editState();
+    if (!edit || edit.status === "running") throw new Error(edit ? "Wait for the proposal first" : "There is no proposal");
+    this.meta.set("edit", { ...edit, status: "discarded" } satisfies EditState);
   }
 
   /** Tells the directory; a failure there is logged, not thrown: this object stays the authority. */

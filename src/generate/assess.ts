@@ -3,7 +3,7 @@ import { checkItem, type QuizItem, QuizItemSchema, type WrongAnswerTag } from ".
 import type { MisconceptionDef } from "../course/schema.js";
 import { type AssessmentSentence, copiedSentence, itemPrompts } from "./checks.js";
 import type { PlannedLesson } from "./plan.js";
-import { fitParts, languageLine, pageLabel, uniqueSlug } from "./prompt.js";
+import { audienceLine, fitParts, languageLine, pageLabel, uniqueSlug } from "./prompt.js";
 import type { AssessmentDraft, ItemDraft, OptionDraft } from "./schemas.js";
 import type { SourceDigest } from "./sources.js";
 import type { BuildInput } from "./types.js";
@@ -70,7 +70,10 @@ export function examinerPrompt(
       ? `Prerequisites (gap ids; most questions need a wrong option tagged with each):\n${prerequisites.join("\n")}`
       : "This lesson has no prerequisites: leave every gap null.",
     languageLine(input.language),
-  ].join("\n\n");
+    audienceLine(input.audience),
+  ]
+    .filter(Boolean)
+    .join("\n\n");
   const style = evaluated.flatMap((d) => d.points.map((p) => `- ${p.text}`)).join("\n");
   const text = lesson.sections
     .map((s) => {
@@ -141,7 +144,17 @@ export function assessmentFromDraft(
     perObjective,
     takenMisconceptions,
     sentences,
-  }: { perObjective: number; takenMisconceptions: ReadonlySet<string>; sentences: readonly AssessmentSentence[] },
+    added = false,
+  }: {
+    perObjective: number;
+    takenMisconceptions: ReadonlySet<string>;
+    sentences: readonly AssessmentSentence[];
+    /**
+     * Questions added to an existing lesson (owner edits): the lesson's other questions already express
+     * its misconceptions and fill its pools, so only the per-question checks apply.
+     */
+    added?: boolean;
+  },
 ): { assessment?: LessonAssessment; problems: string[]; warnings: string[] } {
   const problems: string[] = [];
   const warnings: string[] = [];
@@ -231,7 +244,9 @@ export function assessmentFromDraft(
   const target = poolTarget(perObjective);
   lesson.objectives.forEach((objective, k) => {
     const count = items.filter((item) => item.objective === objective.id).length;
-    if (count < 2 * perObjective) problems.push(`objective ${k + 1} has ${count} questions; write at least ${target}`);
+    if (added) {
+      if (count === 0) problems.push(`objective ${k + 1} has no questions`);
+    } else if (count < 2 * perObjective) problems.push(`objective ${k + 1} has ${count} questions; write at least ${target}`);
     else if (count < target) warnings.push(`Objective "${objective.id}" has ${count} questions (${target} asked for): retakes may repeat questions`);
   });
 
@@ -245,7 +260,7 @@ export function assessmentFromDraft(
         warnings.push(`Only ${revealing} of ${sound.length} questions in "${lesson.id}" can reveal a gap in "${prereq}": a missing prerequisite would be hard to detect`);
       }
     }
-    misconceptions.forEach((mc, i) => {
+    if (!added) misconceptions.forEach((mc, i) => {
       if (!reveals.some((r) => r.some((w) => w.misconception === mc.id))) problems.push(`misconception ${i + 1} ("${mc.belief.slice(0, 60)}") is not expressed by any wrong option`);
     });
   }
