@@ -322,7 +322,7 @@ export function RepairDrawer({
               </span>
             )}
           </div>
-          {source === "simulated" && (
+          {source === "simulated" && overview.scenarios.length > 0 && (
           <label className="field">
             <span>Scenario</span>
             <select className="input" value={selected} disabled={!mayReset && selected === overview.scenario} onChange={(e) => setScenario(e.target.value)}>

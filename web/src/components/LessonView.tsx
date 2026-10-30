@@ -1,7 +1,7 @@
 import { marked } from "marked";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { interventionTracker, useLessonTimer } from "../tracking.js";
-import type { Block, Call, Certainty, CourseSnapshot, Intervention, QuizResult, Response } from "../types.js";
+import type { Block, Call, Certainty, CheckResult, CourseSnapshot, Exam, Intervention, QuizItem, QuizResult, Response } from "../types.js";
 import { InterventionView } from "./Interventions.js";
 import { QuizFlow } from "./Quiz.js";
 
@@ -11,11 +11,54 @@ const html = (markdown: string) => ({ __html: marked.parse(markdown, { async: fa
 
 const TEMPLATE_NAME = { contrast: "Contrast card", practice: "Practice set", step_through: "Step-through player" } as const;
 
-function BlockView({ block, isNew, belief, preview, call }: { block: Block; isNew: boolean; belief: string; preview: boolean; call: Call }) {
+type CheckBlock = Extract<Block, { kind: "check" }>;
+
+/**
+ * A practice question inside a section. A learner's answer goes to the server, which records it and
+ * says why; in a preview (nothing is published yet) the option's own feedback is shown.
+ */
+function CheckView({ block, call, live }: { block: CheckBlock; call: Call; live: boolean }) {
+  const [picked, setPicked] = useState<number | null>(null);
+  const [result, setResult] = useState<CheckResult | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  async function pick(i: number) {
+    setPicked(i);
+    setError(null);
+    const option = block.check.options[i]!;
+    if (!live) return setResult({ correct: option.correct, feedback: option.feedback });
+    try {
+      setResult(await call<CheckResult>("answerCheck", [block.id, i]));
+    } catch (e) {
+      setResult(null);
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  }
+  return (
+    <div className="block check">
+      <div className="check-label small">Practice</div>
+      <div className="prompt">{block.check.prompt}</div>
+      <div className="options" role="radiogroup">
+        {block.check.options.map((o, i) => (
+          <button key={i} className={`option ${picked === i ? "picked" : ""}`} role="radio" aria-checked={picked === i} onClick={() => void pick(i)}>
+            <span className="mark" aria-hidden />
+            <span>{o.text}</span>
+          </button>
+        ))}
+      </div>
+      {result && (
+        <div className={`check-feedback ${result.correct ? "right" : "wrong"}`} role="status">
+          <strong>{result.correct ? "Right." : "Not quite."}</strong> {result.feedback}
+        </div>
+      )}
+      {error && <div className="notice">{error}</div>}
+    </div>
+  );
+}
+
+function BlockView({ block, isNew, belief, preview, live, call }: { block: Block; isNew: boolean; belief: string; preview: boolean; live: boolean; call: Call }) {
   const [open, setOpen] = useState(preview);
   const track = useMemo(() => interventionTracker(call, block.id, "preview"), [call, block.id]);
-  // Section checks get their own view with the exam work; until then they aren't shown.
-  if (block.kind === "check") return null;
+  if (block.kind === "check") return <CheckView block={block} call={call} live={live} />;
   if (block.kind !== "intervention") {
     return <div className={`block prose ${isNew ? "new" : ""} ${block.archived ? "archived" : ""}`} dangerouslySetInnerHTML={html(block.markdown)} />;
   }
@@ -50,6 +93,7 @@ function Result({
   beliefOf,
   onRetake,
   onOpenLesson,
+  onOpenSection,
   nextLesson,
   call,
 }: {
@@ -59,10 +103,12 @@ function Result({
   beliefOf: (id: string) => string;
   onRetake: () => void;
   onOpenLesson: (id: string) => void;
+  onOpenSection: (lesson: string, section: string) => void;
   nextLesson: { id: string; title: string } | null;
 }) {
   const scored = result.items.filter((i) => !i.pilot && !i.grade.needs_review);
-  const help = result.steps.filter((s) => s.kind === "intervention" || s.kind === "review");
+  const help = result.steps.filter((s) => s.kind === "intervention" || s.kind === "review" || s.kind === "review_section");
+  const sectionTitle = (lesson: string, id: string) => snapshot.lessons.find((l) => l.id === lesson)?.sections.find((s) => s.id === id)?.title ?? id;
   return (
     <>
       <div className={`result ${result.passed ? "pass" : "fail"}`}>
@@ -105,6 +151,19 @@ function Result({
                 </div>
               );
             }
+            if (step.kind === "review_section") {
+              const objective = snapshot.objectives?.find((o) => o.id === step.objective);
+              return (
+                <div key={i} className="card soft row between">
+                  <span className="small">
+                    You missed: <strong>{objective?.statement ?? step.objective}</strong>
+                  </span>
+                  <button className="btn secondary sm" onClick={() => onOpenSection(step.lesson, step.section_id)}>
+                    Review §{sectionTitle(step.lesson, step.section_id)}
+                  </button>
+                </div>
+              );
+            }
             if (step.kind === "review") {
               return (
                 <div key={i} className="card soft row between">
@@ -123,19 +182,26 @@ function Result({
   );
 }
 
+/**
+ * One lesson. `learn`: the learner's view, with checks and the exam. `history`: an earlier release, read
+ * only, with archived blocks. `preview`: the owner's look at a built course before it is published.
+ */
 export function LessonView(props: {
   snapshot: CourseSnapshot;
   parent: CourseSnapshot | null;
   lessonId: string;
-  viewingHistory: boolean;
+  mode: "learn" | "history" | "preview";
   onBackToLive: () => void;
   approvalWaiting: string | null;
   onReviewApproval: () => void;
   call: Call;
   onAnswered: () => void;
   onOpenLesson: (id: string) => void;
+  onOpenSection?: (lesson: string, section: string) => void;
 }) {
-  const { snapshot, parent, lessonId, viewingHistory, call } = props;
+  const { snapshot, parent, lessonId, mode, call } = props;
+  const viewingHistory = mode === "history";
+  const learning = mode === "learn";
   const lessons = snapshot.lessons.filter((l) => !l.archived);
   const lesson = lessons.find((l) => l.id === lessonId) ?? lessons[0]!;
   const index = lessons.indexOf(lesson);
@@ -145,7 +211,20 @@ export function LessonView(props: {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  useLessonTimer(lesson.id, call, !viewingHistory);
+  useLessonTimer(lesson.id, call, learning);
+
+  // A lesson with an exam config shows a draw from its pool (different questions on a retake); one
+  // without shows its whole quiz, as the featured course always has.
+  const drawn = Boolean(lesson.exam);
+  const [exam, setExam] = useState<Exam | null>(null);
+  useEffect(() => {
+    if (!learning || !drawn) return;
+    setExam(null);
+    call<Exam>("exam", [lesson.id])
+      .then(setExam)
+      .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)));
+  }, [call, learning, drawn, lesson.id, attempt]);
+  const questions: QuizItem[] | null = drawn ? (exam?.items ?? null) : lesson.quiz;
   const beliefOf = (id: string) => snapshot.misconceptions.find((m) => m.id === id)?.belief ?? id;
   // Blocks that are new in this release, compared with the release it was built on.
   const parentBlocks = useMemo(
@@ -157,7 +236,9 @@ export function LessonView(props: {
     setBusy(true);
     setError(null);
     try {
-      setResult(await call<QuizResult>("submitQuiz", [lesson.id, answers, certainty]));
+      const args: unknown[] = [lesson.id, answers, certainty];
+      if (drawn && questions) args.push(questions.map((q) => q.id));
+      setResult(await call<QuizResult>("submitQuiz", args));
       props.onAnswered();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -223,18 +304,32 @@ export function LessonView(props: {
                   block={block}
                   isNew={parentBlocks !== null && !parentBlocks.has(block.id)}
                   belief={block.kind === "intervention" ? beliefOf(block.intervention.targets) : ""}
-                  preview={viewingHistory}
+                  preview={!learning}
+                  live={learning}
                   call={call}
                 />
               ))}
           </section>
         ))}
 
-      {!viewingHistory && (
+      {mode === "preview" && (
+        <section className="quiz" aria-label="Exam">
+          <div className="quiz-top">
+            <h2>Exam</h2>
+          </div>
+          <p className="small muted">
+            {lesson.exam
+              ? `${lesson.quiz.length} questions in the pool; each attempt draws ${lesson.exam.per_objective} per objective, unseen ones first.`
+              : `${lesson.quiz.length} questions, all shown on every attempt.`}
+          </p>
+        </section>
+      )}
+
+      {learning && (
         <section className="quiz" aria-label="Quiz">
           <div className="quiz-top">
             <h2>Check your understanding</h2>
-            <span className="small muted">Pass at 75%</span>
+            <span className="small muted">{drawn ? "Pass at 75%, with every objective shown" : "Pass at 75%"}</span>
           </div>
           {error && <div className="notice">{error}</div>}
           {result ? (
@@ -245,14 +340,17 @@ export function LessonView(props: {
               beliefOf={beliefOf}
               nextLesson={next ? { id: next.id, title: next.title } : null}
               onOpenLesson={props.onOpenLesson}
+              onOpenSection={props.onOpenSection ?? ((lessonId) => props.onOpenLesson(lessonId))}
               onRetake={() => {
                 setResult(null);
                 setAttempt((a) => a + 1);
               }}
             />
-          ) : (
+          ) : questions ? (
             // A new attempt, or a release that changes the questions, starts the quiz fresh.
-            <QuizFlow key={`${attempt}:${lesson.quiz.map((q) => q.id).join()}`} quiz={lesson.quiz} busy={busy} onSubmit={submit} />
+            <QuizFlow key={`${attempt}:${questions.map((q) => q.id).join()}`} quiz={questions} busy={busy} onSubmit={submit} />
+          ) : (
+            !error && <div className="small muted">Drawing your questions…</div>
           )}
         </section>
       )}

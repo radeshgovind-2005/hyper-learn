@@ -1,56 +1,105 @@
-import { UserButton, useAuth } from "@clerk/react";
 import { useAgent } from "agents/react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router";
 import { CoursePanel } from "./components/CoursePanel.js";
+import { CourseSwitcher } from "./components/CourseSwitcher.js";
 import { Drawer } from "./components/Drawer.js";
 import { HistoryDrawer } from "./components/HistoryDrawer.js";
 import { LessonView } from "./components/LessonView.js";
 import { RepairDrawer } from "./components/RepairDrawer.js";
+import { Shell } from "./components/Shell.js";
+import { coursePath, type Directory, FEATURED_COURSE, useDirectory, useSessionQuery } from "./directory.js";
+import { CreateCourse } from "./pages/CreateCourse.js";
+import { JoinCourse } from "./pages/JoinCourse.js";
 import { LearnerDetail, Learners } from "./pages/Learners.js";
 import { MyProgress } from "./pages/MyProgress.js";
+import { Studio } from "./pages/Studio.js";
 import type { AgentState, Call, CourseSnapshot, LessonProgress, Me, Overview, ServedRelease } from "./types.js";
+
+type Route =
+  | { page: "new" }
+  | { page: "join"; course: string; token: string }
+  /** `base` is the course's path prefix ("" for the featured course); `rest` is the page within it. */
+  | { page: "course"; course: string; base: string; rest: string };
+
+function routeOf(pathname: string): Route {
+  if (pathname === "/new") return { page: "new" };
+  const join = /^\/join\/([^/]+)\/([^/]+)\/?$/.exec(pathname);
+  if (join) return { page: "join", course: decodeURIComponent(join[1]!), token: decodeURIComponent(join[2]!) };
+  const course = /^\/c\/([^/]+)(\/.*)?$/.exec(pathname);
+  if (course) {
+    const id = decodeURIComponent(course[1]!);
+    return { page: "course", course: id, base: coursePath(id).replace(/\/$/, ""), rest: course[2] ?? "" };
+  }
+  return { page: "course", course: FEATURED_COURSE, base: "", rest: pathname === "/" ? "" : pathname };
+}
+
+/** The signed-in app: the directory connection, and whichever page the URL names. */
+export function App() {
+  const location = useLocation();
+  const directory = useDirectory();
+  const route = routeOf(location.pathname);
+
+  if (route.page === "course") {
+    // Keyed by course, so switching courses opens a fresh connection and fresh page state.
+    return <CourseApp key={route.course} courseId={route.course} base={route.base} rest={route.rest} directory={directory} />;
+  }
+  return (
+    <Shell connected={directory.ready} navKey={location.pathname} sidebar={<CourseSwitcher courses={directory.courses} current={null} />}>
+      {route.page === "new" ? <CreateCourse directory={directory} /> : <JoinCourse directory={directory} courseId={route.course} token={route.token} />}
+    </Shell>
+  );
+}
 
 type DrawerName = "repair" | "history" | null;
 
-export function App() {
-  const { getToken, userId } = useAuth();
-  const location = useLocation();
+/** The lesson a course opens on: the featured course's demo starts at the agent loop, others at lesson 1. */
+const START_LESSON: Record<string, string> = { [FEATURED_COURSE]: "agent-loop" };
+
+function CourseApp({ courseId, base, rest, directory }: { courseId: string; base: string; rest: string; directory: Directory }) {
   const navigate = useNavigate();
-  const onProgressPage = location.pathname === "/me";
-  const learnerMatch = /^\/learners(?:\/([^/]+))?$/.exec(location.pathname);
+  const go = useCallback((path: string) => navigate(`${base}${path}` || "/"), [navigate, base]);
+  const onProgressPage = rest === "/me";
+  const onStudioPage = rest === "/studio";
+  const learnerMatch = /^\/learners(?:\/([^/]+))?$/.exec(rest);
   const [me, setMe] = useState<Me | null>(null);
   const [overview, setOverview] = useState<Overview | null>(null);
-  const [lessonId, setLessonId] = useState("agent-loop");
+  const [chosenLesson, setChosenLesson] = useState<string | null>(null);
   const [viewVersion, setViewVersion] = useState<string | null>(null);
   const [served, setServed] = useState<ServedRelease | null>(null);
   const [snapshot, setSnapshot] = useState<CourseSnapshot | null>(null);
   const [parent, setParent] = useState<CourseSnapshot | null>(null);
   const [progress, setProgress] = useState<LessonProgress[]>([]);
   const [drawer, setDrawer] = useState<DrawerName>(null);
-  const [navOpen, setNavOpen] = useState(false);
+  const [refused, setRefused] = useState<string | null>(null);
 
-  // The connection carries this person's Clerk session token; the Worker verifies it before the agent
-  // sees anything. Tokens live about a minute, so a cached one is reused for at most 30 s on reconnect.
-  const query = useCallback(async () => ({ token: (await getToken()) ?? "" }), [getToken]);
+  // Tokens live about a minute, so a cached one is reused for at most 30 s on reconnect. The server closes
+  // with 40xx when someone may not enter (not a member, unknown course): that is final, so don't retry.
+  const { query, userId } = useSessionQuery();
   const agent = useAgent<AgentState>({
     agent: "course-agent",
-    name: "agentic-coding",
+    name: courseId,
     query,
     queryDeps: [userId],
     cacheTtl: 30_000,
+    shouldReconnectOnClose: (event) => event.code < 4000 || event.code >= 5000,
+    onConnectionError: (error) => setRefused(error.reason || "You can't open this course."),
     onStateUpdate: (state) => state.overview && setOverview(state.overview),
   });
   const call: Call = useCallback((method, args = []) => agent.call(method, args), [agent]);
 
+  const published = overview ? overview.live !== null : null;
   useEffect(() => {
     if (!agent.identified) return;
     void call<Me>("me").then(setMe);
     void call<Overview>("overview").then(setOverview);
-    void call<LessonProgress[]>("progress").then(setProgress);
   }, [call, agent.identified]);
+  useEffect(() => {
+    if (agent.identified && published) void call<LessonProgress[]>("progress").then(setProgress);
+  }, [call, agent.identified, published]);
   const mayRepair = me?.permissions.includes("repair") ?? false;
   const mayViewLearners = me?.permissions.includes("view_learners") ?? false;
+  const mayManage = (me?.permissions.includes("manage_course") ?? false) && courseId !== FEATURED_COURSE;
 
   // When a run starts waiting for a human, bring its approval card into view (for people who may approve).
   const status = overview?.run?.status;
@@ -79,119 +128,172 @@ export function App() {
     else setParent(null);
   }, [call, shown, shownParent, viewVersion]);
 
+  const lessons = snapshot?.lessons.filter((l) => !l.archived) ?? [];
+  const lessonId = chosenLesson ?? (lessons.some((l) => l.id === START_LESSON[courseId]) ? START_LESSON[courseId]! : (lessons[0]?.id ?? ""));
+
   const refreshProgress = useCallback(() => void call<LessonProgress[]>("progress").then(setProgress), [call]);
   const closeDrawer = useCallback(() => setDrawer(null), []);
   const toggle = (name: Exclude<DrawerName, null>) => setDrawer((d) => (d === name ? null : name));
   const openLesson = (id: string) => {
-    setLessonId(id);
-    setNavOpen(false);
-    if (location.pathname !== "/") navigate("/");
+    setChosenLesson(id);
+    if (rest !== "") go("");
+  };
+  // After the lesson renders, bring the section into view (a "review §…" step).
+  const openSection = (lesson: string, section: string) => {
+    openLesson(lesson);
+    setTimeout(() => document.getElementById(section)?.scrollIntoView({ behavior: "smooth", block: "start" }), 50);
   };
 
   const running = status === "running";
   const waiting = status === "awaiting_approval";
+  const title = overview?.course.title || snapshot?.title;
 
-  return (
-    <div className="app">
-      <header className="header">
-        <button className="icon-btn menu-btn" onClick={() => setNavOpen((o) => !o)} aria-label="Learning path">
-          ☰
+  const actions = (
+    <>
+      {mayManage && (
+        <button className={`btn sm ${onStudioPage ? "primary" : "quiet"}`} onClick={() => go(onStudioPage ? "" : "/studio")} aria-current={onStudioPage ? "page" : undefined}>
+          Studio
         </button>
-        <div className="brand">
-          <img className="app-logo" src="/hyperlearn-logo.png" alt="HyperLearn" />
-        </div>
-        <span className="spacer" />
-        {mayViewLearners && (
-          <button className={`btn sm ${learnerMatch ? "primary" : "quiet"}`} onClick={() => navigate(learnerMatch ? "/" : "/learners")} aria-current={learnerMatch ? "page" : undefined}>
-            Learners
-          </button>
-        )}
-        <button className={`btn sm ${onProgressPage ? "primary" : "quiet"}`} onClick={() => navigate(onProgressPage ? "/" : "/me")} aria-current={onProgressPage ? "page" : undefined}>
+      )}
+      {published && mayViewLearners && (
+        <button className={`btn sm ${learnerMatch ? "primary" : "quiet"}`} onClick={() => go(learnerMatch ? "" : "/learners")} aria-current={learnerMatch ? "page" : undefined}>
+          Learners
+        </button>
+      )}
+      {published && (
+        <button className={`btn sm ${onProgressPage ? "primary" : "quiet"}`} onClick={() => go(onProgressPage ? "" : "/me")} aria-current={onProgressPage ? "page" : undefined}>
           My progress
         </button>
-        {home && (
-          <button className="chip blue" onClick={() => toggle("history")} title={served?.arm ? "Release history · a trial is running, and you're in it" : "Release history"}>
-            v{home}
+      )}
+      {home && (
+        <button className="chip blue" onClick={() => toggle("history")} title={served?.arm ? "Release history · a trial is running, and you're in it" : "Release history"}>
+          v{home}
+        </button>
+      )}
+      {published && mayRepair && (
+        <button className={`btn sm ${drawer === "repair" ? "primary" : "secondary"} header-btn`} onClick={() => toggle("repair")} aria-expanded={drawer === "repair"}>
+          {running && <span className="spinner" />}
+          {waiting ? "Approval needed" : "Course repair"}
+          {waiting && drawer !== "repair" && <span className="badge-dot" />}
+        </button>
+      )}
+      {me && me.role !== "learner" && <span className="chip">{me.role}</span>}
+    </>
+  );
+
+  let page;
+  if (refused) {
+    page = (
+      <div className="page narrow stack">
+        <h1>Can't open this course</h1>
+        <div className="notice">{refused}</div>
+        <div className="row">
+          <button className="btn secondary" onClick={() => navigate("/")}>
+            Go to the featured course
           </button>
-        )}
-        {mayRepair && (
-          <button className={`btn sm ${drawer === "repair" ? "primary" : "secondary"} header-btn`} onClick={() => toggle("repair")} aria-expanded={drawer === "repair"}>
-            {running && <span className="spinner" />}
-            {waiting ? "Approval needed" : "Course repair"}
-            {waiting && drawer !== "repair" && <span className="badge-dot" />}
-          </button>
-        )}
-        {me && me.role !== "learner" && <span className="chip">{me.role}</span>}
-        <span className="account" title={agent.identified ? "connected" : "connecting…"}>
-          <UserButton />
-          <span className={`status ${agent.identified ? "on" : ""}`} />
-        </span>
-      </header>
-
-      <div className="body">
-        <nav className={`sidebar ${navOpen ? "open" : ""}`} aria-label="Learning path">
-          <CoursePanel snapshot={snapshot} lessonId={lessonId} onSelectLesson={openLesson} progress={progress} />
-        </nav>
-
-        <main className="main">
-          {onProgressPage ? (
-            <MyProgress key={progress.length} call={call} onOpenLesson={openLesson} />
-          ) : learnerMatch && mayViewLearners ? (
-            learnerMatch[1] ? (
-              <LearnerDetail
-                call={call}
-                userId={decodeURIComponent(learnerMatch[1])}
-                onBack={() => navigate("/learners")}
-                roles={me?.permissions.includes("manage_roles") ? { self: me.userId, configured: me.rolesConfigured } : null}
-              />
-            ) : (
-              <Learners call={call} onOpen={(id) => navigate(`/learners/${encodeURIComponent(id)}`)} />
-            )
-          ) : snapshot ? (
-            <LessonView
-              // Keyed by lesson, not version: a release going live mid-quiz updates the page without wiping the learner's answers.
-              key={`${viewVersion ?? "live"}:${lessonId}`}
-              snapshot={snapshot}
-              parent={parent}
-              lessonId={lessonId}
-              viewingHistory={viewVersion !== null && viewVersion !== home}
-              onBackToLive={() => setViewVersion(null)}
-              approvalWaiting={mayRepair && waiting && drawer !== "repair" ? (overview?.run?.approval?.version ?? null) : null}
-              onReviewApproval={() => setDrawer("repair")}
-              call={call}
-              onAnswered={refreshProgress}
-              onOpenLesson={openLesson}
-            />
-          ) : (
-            <div className="empty">Loading the course…</div>
-          )}
-        </main>
-
-        <Drawer open={mayRepair && drawer === "repair"} title="Course repair" onClose={closeDrawer}>
-          <RepairDrawer
-            overview={overview}
-            mayReset={me?.permissions.includes("reset") ?? false}
-            call={call}
-            onReset={() => {
-              setViewVersion(null);
-              refreshProgress();
-            }}
-            onView={(v) => {
-              setViewVersion(v);
-            }}
-          />
-        </Drawer>
-        <Drawer open={drawer === "history"} title="Releases" onClose={closeDrawer}>
-          <HistoryDrawer
-            overview={overview}
-            viewing={viewVersion ?? home ?? null}
-            onView={(v) => {
-              setViewVersion(v === home ? null : v);
-              setDrawer(null);
-            }}
-          />
-        </Drawer>
+        </div>
       </div>
-    </div>
+    );
+  } else if (onStudioPage && mayManage) {
+    page = (
+      <Studio
+        call={call}
+        overview={overview}
+        courseId={courseId}
+        onPublished={() => {
+          directory.refresh();
+          go("");
+        }}
+      />
+    );
+  } else if (published === false) {
+    // A course that isn't published yet: its owner works on it in the studio; anyone else waits.
+    page = mayManage ? (
+      <Studio call={call} overview={overview} courseId={courseId} onPublished={() => directory.refresh()} />
+    ) : me ? (
+      <div className="page narrow">
+        <h1>{title}</h1>
+        <p className="lede">This course isn't published yet. You'll find it here once its owner publishes it.</p>
+      </div>
+    ) : (
+      <div className="empty">Loading the course…</div>
+    );
+  } else if (onProgressPage) {
+    page = <MyProgress key={progress.length} call={call} onOpenLesson={openLesson} />;
+  } else if (learnerMatch && mayViewLearners) {
+    page = learnerMatch[1] ? (
+      <LearnerDetail
+        call={call}
+        userId={decodeURIComponent(learnerMatch[1])}
+        onBack={() => go("/learners")}
+        roles={me?.permissions.includes("manage_roles") ? { self: me.userId, configured: me.rolesConfigured } : null}
+      />
+    ) : (
+      <Learners call={call} onOpen={(id) => go(`/learners/${encodeURIComponent(id)}`)} />
+    );
+  } else if (snapshot) {
+    page = (
+      <LessonView
+        // Keyed by lesson, not version: a release going live mid-quiz updates the page without wiping the learner's answers.
+        key={`${viewVersion ?? "live"}:${lessonId}`}
+        snapshot={snapshot}
+        parent={parent}
+        lessonId={lessonId}
+        mode={viewVersion !== null && viewVersion !== home ? "history" : "learn"}
+        onBackToLive={() => setViewVersion(null)}
+        approvalWaiting={mayRepair && waiting && drawer !== "repair" ? (overview?.run?.approval?.version ?? null) : null}
+        onReviewApproval={() => setDrawer("repair")}
+        call={call}
+        onAnswered={refreshProgress}
+        onOpenLesson={openLesson}
+        onOpenSection={openSection}
+      />
+    );
+  } else {
+    page = <div className="empty">Loading the course…</div>;
+  }
+
+  return (
+    <Shell
+      connected={agent.identified}
+      navKey={`${rest}:${lessonId}`}
+      actions={actions}
+      sidebar={
+        <>
+          <CourseSwitcher courses={directory.courses} current={courseId} currentTitle={title} />
+          {published && <CoursePanel snapshot={snapshot} lessonId={lessonId} onSelectLesson={openLesson} progress={progress} />}
+        </>
+      }
+      drawers={
+        <>
+          <Drawer open={mayRepair && drawer === "repair"} title="Course repair" onClose={closeDrawer}>
+            <RepairDrawer
+              overview={overview}
+              mayReset={me?.permissions.includes("reset") ?? false}
+              call={call}
+              onReset={() => {
+                setViewVersion(null);
+                refreshProgress();
+              }}
+              onView={(v) => {
+                setViewVersion(v);
+              }}
+            />
+          </Drawer>
+          <Drawer open={drawer === "history"} title="Releases" onClose={closeDrawer}>
+            <HistoryDrawer
+              overview={overview}
+              viewing={viewVersion ?? home ?? null}
+              onView={(v) => {
+                setViewVersion(v === home ? null : v);
+                setDrawer(null);
+              }}
+            />
+          </Drawer>
+        </>
+      }
+    >
+      {page}
+    </Shell>
   );
 }
