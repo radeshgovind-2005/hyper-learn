@@ -338,6 +338,9 @@ export interface CoachState {
   repairs_today: { date: string; count: number };
 }
 
+/** Lesson-time reports are kept one by one for this long, then merged per learner, lesson and day. */
+export const RETAIN_DETAIL_DAYS = 30;
+
 /** Personal repair lessons one learner may ask for in a day: each costs the owner a few model calls. */
 export const MAX_REPAIRS_PER_DAY = 8;
 
@@ -821,6 +824,7 @@ export class CourseService {
     if (event.kind === "lesson") {
       if (!live.snapshot.lessons.some((l) => l.id === event.lesson && !l.archived)) throw new Error(`No lesson "${event.lesson}"`);
       this.events.append({ learner, kind: "lesson", lesson: event.lesson, release: live.version, data: { active_ms: event.active_ms, session }, at: this.now() });
+      this.compactOldEvents();
       return;
     }
     const block = liveInterventions(live.snapshot).find((i) => i.block_id === event.block_id);
@@ -875,6 +879,14 @@ export class CourseService {
     this.profiles.delete(learner);
     this.meta.set(`coach:${learner}`, null);
     return { deleted: this.events.deleteLearner(learner) };
+  }
+
+  /** At most once a day, on a write that already happens: old lesson-time rows merged per day (see compactLessonTime). */
+  private compactOldEvents() {
+    const today = this.now().slice(0, 10);
+    if (this.meta.get<string>("compacted_on") === today) return;
+    this.meta.set("compacted_on", today);
+    this.events.compactLessonTime(new Date(Date.parse(this.now()) - RETAIN_DETAIL_DAYS * 86_400_000).toISOString());
   }
 
   /** Remembers who signed in (name and email as their verified token carries them), for instructors' views. */

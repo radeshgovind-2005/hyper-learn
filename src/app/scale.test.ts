@@ -57,4 +57,22 @@ describe("at volume", () => {
     assert.equal(helped, needHelp);
     assert.throws(() => s.learners({ limit: 1000 }));
   });
+
+  it("merges old lesson-time rows per day, keeping every total", () => {
+    let t = Date.parse("2026-08-01T09:00:00.000Z");
+    const s = new CourseService(sqlite(), { now: () => new Date(t).toISOString() });
+    // Six weeks of a learner reading, a report every 5 minutes for an hour a day.
+    for (let day = 0; day < 42; day++) {
+      t = Date.parse("2026-08-01T09:00:00.000Z") + day * 86_400_000;
+      for (let k = 0; k < 12; k++) {
+        t += 5 * 60_000;
+        s.track("user_ada", "c1", { kind: "lesson", lesson: lesson.id, active_ms: 5 * 60_000 });
+      }
+    }
+    const events = (s as unknown as { events: { forLearner(l: string): { kind: string }[] } }).events.forLearner("user_ada").filter((e) => e.kind === "lesson");
+    // On the last day, days older than 30 are one row each (11 of them); the last 31 days keep every report.
+    assert.equal(events.length, 11 + 31 * 12, "older days merged to one row each");
+    const total = s.myProgress("user_ada").lessons.find((l) => l.lesson === lesson.id)!.active_ms;
+    assert.equal(total, 42 * 12 * 5 * 60_000, "the same total time");
+  });
 });

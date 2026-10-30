@@ -22,41 +22,57 @@ Architecture and setup are in README.md.
 - Learner events are append-only and pinned to the release the learner was *served* (`servedRelease`).
   During a real trial, that may be the trial and not the live release.
 
-## Engineering for scale (apply without being asked)
-Design every feature as if a course has 10,000 learners, a million events and 100 releases. Fast with
-10 rows proves nothing. Current gaps are in `docs/engineering/scaling-audit.md`: fix them when you touch
-that code, and don't add new ones.
-- **Lists grow, so paginate on the server.** Anything that grows with users, events, releases or time is
-  paged with a keyset cursor (`WHERE (col, id) < (?, ?) ORDER BY col DESC, id DESC LIMIT n+1`), returning
-  `{ items, next_cursor }`. Default page size 50, clamped to 200. Never return or load "all" of a growing set.
-- **SQLite does the work.** Filter, sort, count and aggregate in SQL, never by loading rows and using
-  `.filter`/`.map` in JS. Every column in a `WHERE`/`ORDER BY` on a growing table has an index; check new
-  queries with `EXPLAIN QUERY PLAN`. No N+1: no query or RPC inside a loop over learners, courses or events.
-- **Precompute what is read often.** Dashboards and insights read summary rows updated on write (or a
-  cache with explicit invalidation), not a recomputation over the whole event log per request.
-- **Don't parse big blobs to read one field.** Fields you query (status, version) live in their own
-  columns. Keep a parsed hot object (the live snapshot) in memory per instance, invalidated on write.
+## Engineering: how things grow (apply without being asked)
+For everything you add, work out three things before you write it. Keep the fix simple, with no
+infrastructure "for later", but make sure the cost stays bounded. Known gaps are in
+`docs/engineering/scaling-audit.md`. Fix them when you touch that code, and don't add new ones.
+
+1. **What does it grow with?** Every table, list, cache, broadcast or model call grows with something:
+   - per course, per learner, per release, per event, per member, per file;
+   - or "with time": an append-only log.
+
+   Name it, and know whether that dimension stays small (sources: capped at 30) or doesn't (learners,
+   events, releases, members).
+2. **When does the work happen, and who pays?** Choose the moment deliberately:
+   - **On write, once:** keep a summary row current when the thing that changes it happens. Example:
+     `hl_learner_state` is refreshed when a quiz is submitted.
+   - **On read, many times:** cheap only if bounded by a page or an index.
+   - **In the background:** for slow work (builds, edits, coach lessons).
+
+   Don't recompute over everything on every request, and don't write more often than anyone reads.
+   Lesson time is reported every 5 minutes, not every minute.
+3. **Can it be shared?** If many users get the same result, compute it once and reuse it, keyed by what
+   it depends on:
+   - the parsed live release, cached per instance until a write;
+   - coach lessons per release, target and approach, when the learner gave no words of their own;
+   - course existence, cached in the Worker for a minute.
+
+   Personal work only where it is actually personal.
+
+The rules that follow from that:
+- **Lists that grow are paged on the server** with a keyset cursor (`WHERE (col, id) > (?, ?) ORDER BY
+  col, id LIMIT n+1`), returning `{ items, next_cursor }`. Default page 50, clamped to 200. The UI shows
+  "Load more". Never return or load all of a set that grows: learners, members, events, releases.
+- **SQLite does the filtering, sorting and counting.** Don't load rows and use `.filter` in JS. Every
+  `WHERE`/`ORDER BY` column on a growing table is indexed. No query or RPC inside a loop over a growing set.
+- **Don't parse big blobs to read one field.** Queryable fields get their own columns (releases keep
+  `status` and `info` beside the snapshot). Schema changes are additive and fill old rows once.
 - **Durable Object limits** ([docs](https://developers.cloudflare.com/durable-objects/platform/limits/)):
-  - One object is single-threaded with a soft limit of about 1,000 requests per second.
-  - The isolate has 128 MB of memory. Each object's SQLite holds at most 10 GB.
-  - A row is at most 2 MB, and a query takes at most 100 bound parameters.
-  - An incoming WebSocket message is at most 1 MiB.
-  - So no global object on the per-request path (cache lookups), small rows, chunked uploads, and
-    bounded work per call.
-- **Broadcast state stays small and bounded.** `setState` goes to every connection on every change: put
-  only summaries there, never per-learner data or unbounded lists. Send details when asked.
-- **Every input and every expensive operation is bounded.** Sizes are checked on the server. Model calls
-  carry a per-user quota and a per-run budget. Every network call has a timeout and bounded retries with
-  backoff. Polling stops or backs off.
-- **Logs that only grow need a retention or compaction plan** before they ship.
-- **Concurrency: re-read state after every `await`.** Another call may have run in between (input gates
-  only hold between awaits). Long work runs in the background, is idempotent, and recovers after a restart.
-- **Schema changes are additive and work on live objects** (`CREATE … IF NOT EXISTS`, guarded `ALTER`).
-  Old rows must still read.
-- **Send each role only what it needs.** Learners never get answer keys or other learners' data.
-- **Test at volume.** Anything that loops over learners, events or releases gets a test with realistic
-  volume (for example 10k events) that bounds its time or query count.
-- **The UI doesn't fetch whole datasets.** It pages ("Load more"), and it debounces input.
+  - One object is single-threaded (about 1,000 requests per second), with 128 MB of memory and 10 GB
+    of SQLite.
+  - A row is at most 2 MB, and an incoming WebSocket message at most 1 MiB.
+  - So no single global object on the per-request path, small rows, and chunked uploads.
+- **State broadcast to every connection holds summaries only**, never per-learner data or growing lists.
+- **Every expensive or user-triggered operation is bounded:**
+  - input sizes are checked on the server;
+  - model calls have a per-user quota and a per-run budget;
+  - network calls have a timeout and bounded retries;
+  - polling stops.
+- **Append-only logs need a retention plan.** Re-read state after every `await`. Long work is
+  idempotent and recovers after a restart.
+- **Each role gets only what it needs.** Learners never get answer keys or other learners' data.
+- **Test at volume.** Anything that touches a growing set gets a test with realistic volume that checks
+  page size and time (`src/app/scale.test.ts`).
 
 ## Security rules
 - Never commit or print secrets: `.dev.vars`, `.env`, `.admin-token`.

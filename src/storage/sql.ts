@@ -192,6 +192,26 @@ export class SqlEventLog {
   learners(): { learner: string; last_at: string }[] {
     return this.sql<{ learner: string; last_at: string }>`SELECT learner, MAX(at) AS last_at FROM hl_events GROUP BY learner ORDER BY last_at DESC`;
   }
+  /**
+   * Retention: lesson-time reports older than `before` are only ever summed, so they are merged into one
+   * row per learner, lesson and day (same totals, far fewer rows). Answers, checks, sessions and coach
+   * events are kept as they are: trials, diagnosis and timelines read them one by one.
+   */
+  compactLessonTime(before: string): number {
+    const [{ max }] = this.sql<{ max: number | null }>`SELECT MAX(id) AS max FROM hl_events` as [{ max: number | null }];
+    if (max === null) return 0;
+    this.sql`INSERT INTO hl_events (learner, kind, lesson, release, data, at)
+      SELECT learner, 'lesson', lesson, MAX(release),
+        json_object('active_ms', SUM(json_extract(data, '$.active_ms')), 'compacted', COUNT(*)), MIN(at)
+      FROM hl_events
+      WHERE kind = 'lesson' AND at < ${before} AND id <= ${max} AND json_extract(data, '$.compacted') IS NULL
+      GROUP BY learner, lesson, substr(at, 1, 10)`;
+    const [{ n }] = this.sql<{ n: number }>`SELECT COUNT(*) AS n FROM hl_events
+      WHERE kind = 'lesson' AND at < ${before} AND id <= ${max} AND json_extract(data, '$.compacted') IS NULL` as [{ n: number }];
+    this.sql`DELETE FROM hl_events WHERE kind = 'lesson' AND at < ${before} AND id <= ${max} AND json_extract(data, '$.compacted') IS NULL`;
+    return n;
+  }
+
   /** Removes one learner's history; returns how many events were deleted. */
   deleteLearner(learner: string): number {
     const [{ n }] = this.sql<{ n: number }>`SELECT COUNT(*) AS n FROM hl_events WHERE learner = ${learner}` as [{ n: number }];
