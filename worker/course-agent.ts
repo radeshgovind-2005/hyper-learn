@@ -544,9 +544,9 @@ export class CourseAgent extends Agent<Env, CourseAgentState> {
 
   /** Every learner, summarised for instructors. */
   @callable()
-  learners() {
+  learners(query?: unknown) {
     this.actor("view_learners");
-    return this.app.learners();
+    return this.app.learners(query);
   }
 
   /** One learner's progress and timeline, for instructors. */

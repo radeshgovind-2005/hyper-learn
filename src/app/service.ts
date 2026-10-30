@@ -371,6 +371,13 @@ const EditRequestSchema = z.discriminatedUnion("kind", [
   z.strictObject({ kind: z.literal("add_source"), source_id: z.string().min(1).max(20), instruction: z.string().trim().max(2_000).optional() }),
 ]);
 
+/** The instructors' list: a page size (50 by default, at most 200), a cursor, and a filter. */
+const LearnersQuerySchema = z.strictObject({
+  cursor: z.string().max(300).optional(),
+  limit: z.number().int().min(1).max(200).default(50),
+  needs_help: z.boolean().default(false),
+});
+
 /** One line for the release history: what the owner asked for. */
 function describeRequest(request: EditRequest, sourceName?: string): string {
   if (request.kind === "ask") return `Owner request: ${request.instruction}`;
@@ -602,6 +609,7 @@ export class CourseService {
     this.meta.set("run", null);
     this.releases.reset(this.startingSnapshot(scenario), this.now);
     this.events.clear();
+    this.profiles.clearStates();
   }
 
   // ─── Learners ─────────────────────────────────────────────────────
@@ -678,6 +686,7 @@ export class CourseService {
     const at = this.now();
     this.events.append({ learner, kind: "answer", lesson: lessonId, release: live.version, data: { item_ids: expected, responses, certainty, items, passed, score, attempt, session }, at });
     this.events.append({ learner, kind: "path", lesson: lessonId, release: live.version, data: { steps, session }, at });
+    this.refreshLearner(learner, at);
 
     return {
       release: live.version,
@@ -1097,54 +1106,70 @@ export class CourseService {
 
   // ─── Instructors ──────────────────────────────────────────────────
 
-  /** Every learner with a summary an instructor can scan: activity, mastery, and beliefs still showing. */
-  learners() {
-    const profiles = new Map(this.profiles.all().map((p) => [p.user_id, p] as const));
-    const lastEvent = new Map(this.events.learners().map((l) => [l.learner, l.last_at] as const));
-    const ids = [...new Set([...profiles.keys(), ...lastEvent.keys()])];
-    const now = Date.parse(this.now());
+  /**
+   * A learner's row in the instructors' list, recomputed from their own events when they submit a quiz
+   * (the one thing that changes it), so the list reads one row per learner instead of every event.
+   */
+  private refreshLearner(learner: string, at: string) {
+    this.profiles.touch(learner, at);
+    const p = this.myProgress(learner);
+    const open = p.beliefs.filter((b) => !b.cleared);
+    const lastQuiz = p.quizzes[0];
+    this.profiles.setState(learner, { needs_help: open.length > 0 || (lastQuiz !== undefined && !lastQuiz.passed), open_beliefs: open.map((b) => ({ id: b.id, belief: b.belief, lesson: b.lesson })) }, at);
+  }
 
-    const rows = ids.map((id) => {
-      const p = this.myProgress(id);
-      const profile = profiles.get(id);
-      const open = p.beliefs.filter((b) => !b.cleared);
-      const lastQuiz = p.quizzes[0];
-      const last_active = [profile?.last_seen, lastEvent.get(id)].filter((x): x is string => Boolean(x)).sort().at(-1) ?? null;
+  /** Courses from before the list kept rows: fill them once from the event log. */
+  private backfillLearners() {
+    if (this.meta.get<boolean>("learner_state_v1")) return;
+    for (const { learner, last_at } of this.events.learners()) {
+      this.profiles.touch(learner, last_at);
+      this.refreshLearner(learner, last_at);
+    }
+    this.meta.set("learner_state_v1", true);
+  }
+
+  /**
+   * One page of learners for instructors, most recently active first (keyset cursor), with headline
+   * numbers and the most widespread beliefs counted in SQL. Each row's progress is computed for that
+   * page only, so the cost grows with the page size, not with the number of learners.
+   */
+  learners(input: unknown = {}) {
+    const parsed = LearnersQuerySchema.safeParse(input ?? {});
+    if (!parsed.success) throw new Error(firstIssue(parsed.error));
+    const { cursor, limit, needs_help } = parsed.data;
+    this.backfillLearners();
+    let after: { last_seen: string; user_id: string } | undefined;
+    if (cursor) {
+      const [last_seen, user_id] = cursor.split("|");
+      if (!last_seen || !user_id) throw new Error("Bad cursor");
+      after = { last_seen, user_id };
+    }
+    const page = this.profiles.page({ ...(after && { after }), limit: limit + 1, needsHelp: needs_help });
+    const rows = page.slice(0, limit).map((profile) => {
+      const p = this.myProgress(profile.user_id);
       return {
-        user_id: id,
-        name: profile?.name ?? null,
-        email: profile?.email ?? null,
-        role: profile?.role ?? "learner",
-        last_active,
+        user_id: profile.user_id,
+        name: profile.name ?? null,
+        email: profile.email ?? null,
+        role: profile.role ?? "learner",
+        last_active: profile.last_seen,
         sessions: p.totals.sessions,
         active_ms: p.totals.active_ms,
         quizzes: p.totals.quizzes,
         mastered: p.totals.mastered,
         lessons: p.totals.lessons,
-        open_beliefs: open.map((b) => ({ id: b.id, belief: b.belief, lesson: b.lesson })),
+        open_beliefs: profile.open_beliefs ?? [],
         /** Still showing a belief, or failed their latest quiz. */
-        needs_help: open.length > 0 || (lastQuiz !== undefined && !lastQuiz.passed),
+        needs_help: profile.needs_help ?? false,
       };
     });
-    rows.sort((a, b) => (b.last_active ?? "").localeCompare(a.last_active ?? ""));
-
-    const holders = new Map<string, { id: string; belief: string; learners: number }>();
-    for (const row of rows) {
-      for (const b of row.open_beliefs) {
-        const entry = holders.get(b.id) ?? { id: b.id, belief: b.belief, learners: 0 };
-        entry.learners++;
-        holders.set(b.id, entry);
-      }
-    }
-    const week = 7 * 24 * 3_600_000;
+    const last = rows.at(-1);
+    const week = new Date(Date.parse(this.now()) - 7 * 24 * 3_600_000).toISOString();
+    const totals = this.profiles.totals(week);
     return {
-      summary: {
-        learners: rows.length,
-        active_this_week: rows.filter((r) => r.last_active && now - Date.parse(r.last_active) < week).length,
-        needs_help: rows.filter((r) => r.needs_help).length,
-        common_beliefs: [...holders.values()].sort((a, b) => b.learners - a.learners).slice(0, 5),
-      },
+      summary: { learners: totals.learners, active_this_week: totals.active, needs_help: totals.needs_help, common_beliefs: totals.common_beliefs },
       learners: rows,
+      next_cursor: page.length > limit && last ? `${last.last_active}|${last.user_id}` : null,
     };
   }
 

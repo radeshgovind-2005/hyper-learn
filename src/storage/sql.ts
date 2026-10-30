@@ -227,9 +227,23 @@ export interface Profile {
   last_seen: string;
 }
 
+/** One row of the instructors' list, kept current on write so the list never scans the event log. */
+export interface LearnerState {
+  needs_help: boolean;
+  open_beliefs: { id: string; belief: string; lesson: string }[];
+}
+
 export class SqlProfiles {
   constructor(private readonly sql: Sql) {
     createTables(sql);
+    sql`CREATE INDEX IF NOT EXISTS hl_profiles_seen ON hl_profiles (last_seen, user_id)`;
+    // Updated when a learner submits a quiz: what the list filters and counts by.
+    sql`CREATE TABLE IF NOT EXISTS hl_learner_state (
+      user_id TEXT PRIMARY KEY,
+      needs_help INTEGER NOT NULL,
+      open_beliefs TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    )`;
   }
   /** Records a sign-in: creates the profile or refreshes its name, email, role and last-seen time. */
   seen(profile: { user_id: string; name?: string | undefined; email?: string | undefined; role: string }, at: string) {
@@ -241,14 +255,60 @@ export class SqlProfiles {
         role = excluded.role,
         last_seen = excluded.last_seen`;
   }
+  /** Marks activity (a quiz) without changing who they are; creates a bare profile if there is none. */
+  touch(userId: string, at: string) {
+    this.sql`INSERT INTO hl_profiles (user_id, name, email, role, first_seen, last_seen)
+      VALUES (${userId}, NULL, NULL, 'learner', ${at}, ${at})
+      ON CONFLICT (user_id) DO UPDATE SET last_seen = MAX(hl_profiles.last_seen, excluded.last_seen)`;
+  }
   get(userId: string): Profile | undefined {
     return this.sql<Profile>`SELECT * FROM hl_profiles WHERE user_id = ${userId}`[0];
   }
   all(): Profile[] {
     return this.sql<Profile>`SELECT * FROM hl_profiles ORDER BY last_seen DESC`;
   }
+  /**
+   * One page of profiles, most recently active first, from a keyset cursor (the last row's last_seen
+   * and user_id). `needsHelp` keeps only learners whose state says so.
+   */
+  page({ after, limit, needsHelp }: { after?: { last_seen: string; user_id: string }; limit: number; needsHelp: boolean }): (Profile & Partial<LearnerState>)[] {
+    const seen = after?.last_seen ?? "\uffff";
+    const id = after?.user_id ?? "\uffff";
+    return this.sql<Profile & { needs_help: number | null; open_beliefs: string | null }>`
+      SELECT p.*, s.needs_help, s.open_beliefs FROM hl_profiles p LEFT JOIN hl_learner_state s ON s.user_id = p.user_id
+      WHERE (p.last_seen < ${seen} OR (p.last_seen = ${seen} AND p.user_id < ${id}))
+        AND (${needsHelp ? 1 : 0} = 0 OR s.needs_help = 1)
+      ORDER BY p.last_seen DESC, p.user_id DESC LIMIT ${limit}`.map((row) => ({
+      ...row,
+      needs_help: row.needs_help === 1,
+      open_beliefs: row.open_beliefs ? (JSON.parse(row.open_beliefs) as LearnerState["open_beliefs"]) : [],
+    }));
+  }
+  /** The list's headline numbers and most widespread beliefs, counted in SQL. */
+  totals(activeSince: string): { learners: number; active: number; needs_help: number; common_beliefs: { id: string; belief: string; learners: number }[] } {
+    const [row] = this.sql<{ learners: number; active: number; needs_help: number }>`
+      SELECT COUNT(*) AS learners,
+        SUM(CASE WHEN p.last_seen >= ${activeSince} THEN 1 ELSE 0 END) AS active,
+        SUM(CASE WHEN s.needs_help = 1 THEN 1 ELSE 0 END) AS needs_help
+      FROM hl_profiles p LEFT JOIN hl_learner_state s ON s.user_id = p.user_id`;
+    const common_beliefs = this.sql<{ id: string; belief: string; learners: number }>`
+      SELECT json_extract(b.value, '$.id') AS id, json_extract(b.value, '$.belief') AS belief, COUNT(*) AS learners
+      FROM hl_learner_state s, json_each(s.open_beliefs) b
+      GROUP BY id ORDER BY learners DESC, id LIMIT 5`.map((r) => ({ id: r.id, belief: r.belief, learners: r.learners }));
+    return { learners: row?.learners ?? 0, active: row?.active ?? 0, needs_help: row?.needs_help ?? 0, common_beliefs };
+  }
+  setState(userId: string, state: LearnerState, at: string) {
+    this.sql`INSERT INTO hl_learner_state (user_id, needs_help, open_beliefs, updated_at)
+      VALUES (${userId}, ${state.needs_help ? 1 : 0}, ${JSON.stringify(state.open_beliefs)}, ${at})
+      ON CONFLICT (user_id) DO UPDATE SET needs_help = excluded.needs_help, open_beliefs = excluded.open_beliefs, updated_at = excluded.updated_at`;
+  }
   delete(userId: string) {
     this.sql`DELETE FROM hl_profiles WHERE user_id = ${userId}`;
+    this.sql`DELETE FROM hl_learner_state WHERE user_id = ${userId}`;
+  }
+  /** Every learner's state is about the course as it was: a reset clears them all. */
+  clearStates() {
+    this.sql`DELETE FROM hl_learner_state`;
   }
   /** Records a role change made in the app, so lists show it before the person next signs in. */
   setRole(userId: string, role: string) {
