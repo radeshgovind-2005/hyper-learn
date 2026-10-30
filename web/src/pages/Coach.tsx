@@ -26,7 +26,7 @@ interface Question {
   lesson: string;
   item: Parameters<typeof QuizFlow>[0]["quiz"][number];
 }
-interface CoachView {
+export interface CoachView {
   diagnosis?: {
     id: string;
     lesson: string;
@@ -133,6 +133,7 @@ export function Coach({
   citations,
   onOpenLesson,
   onOpenSection,
+  initialView,
 }: {
   call: Call;
   snapshot: CourseSnapshot;
@@ -140,8 +141,10 @@ export function Coach({
   citations?: Citations;
   onOpenLesson: (id: string) => void;
   onOpenSection: (lesson: string, section: string) => void;
+  /** A known state to start from (rendering checks); the page then still loads the learner's own. */
+  initialView?: CoachView;
 }) {
-  const [view, setView] = useState<CoachView | null>(null);
+  const [view, setView] = useState<CoachView | null>(initialView ?? null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [restart, setRestart] = useState(false);
@@ -290,7 +293,7 @@ export function Coach({
                 ) : repair.status === "running" ? (
                   <div className="row small">
                     <span className="spinner" />
-                    <span>Writing a lesson just for you from the course's pages ({APPROACH[repair.approach].toLowerCase()}), and fact-checking it… about half a minute.</span>
+                    <span>Writing a lesson just for you from the course's pages ({APPROACH[repair.approach].toLowerCase()}), and fact-checking it… about a minute.</span>
                   </div>
                 ) : repair.status === "failed" ? (
                   <div className="notice stack">
