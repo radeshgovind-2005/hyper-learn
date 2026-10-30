@@ -1580,6 +1580,39 @@ export class CourseService {
     return { applied_as: appliedAs };
   }
 
+  /**
+   * Undoes the live release by releasing its recorded inverse as a new version (history is never
+   * rewritten). Works for any release built on a parent: an applied edit, or a kept repair.
+   */
+  undoRelease(version: unknown, by: string): { live: string } {
+    this.requirePublished();
+    const live = this.releases.live();
+    if (live.version !== version) throw new Error(`Only the live release (v${live.version}) can be undone`);
+    if (!live.parent || live.inverse.length === 0) throw new Error("The first release can't be undone");
+    if (this.openTrial()) throw new Error("A trial is running; finish it first");
+    if (this.run()?.status === "running") throw new Error("A repair run is in progress; undo once it finishes");
+    const changes = live.inverse;
+    const bump = maxBump(changes.map((c) => semverBump(live.snapshot, c)));
+    const next = bumpVersion(live.version, bump);
+    const snapshot = { ...applyChanges(live.snapshot, changes), version: next };
+    courseFromSnapshot(snapshot);
+    this.releases.update(live.version, { status: "superseded" });
+    this.releases.add({
+      version: next,
+      parent: live.version,
+      status: "live",
+      changes,
+      inverse: invertChanges(live.snapshot, changes),
+      tier: maxTier(changes.map((c) => riskTier(live.snapshot, c))),
+      bump,
+      snapshot,
+      rationale: `Undid v${live.version}`,
+      approval: { approved: true, by: "human", note: `Undone by ${by}` },
+      created_at: this.now(),
+    });
+    return { live: next };
+  }
+
   discardEdit() {
     this.studio();
     const edit = this.editState();

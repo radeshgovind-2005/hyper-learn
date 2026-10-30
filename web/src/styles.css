@@ -599,3 +599,4 @@ select.input { padding: 7px 10px; }
 .file-row:has(.add-to-course) { flex-wrap: wrap; }
 .ask-change h3 { margin: 0; font-size: var(--t-md); }
 .ask-change hr { border: none; border-top: 1px solid var(--line); margin: var(--s2) 0 0; width: 100%; }
+.history .undo-btn { margin: 4px 0 0 var(--s2); }

@@ -100,6 +100,13 @@ describe("owner edits in the studio", () => {
     assert.ok(s.snapshot().lessons[1]!.sections[0]!.blocks.some((b) => b.archived));
     // Learners are served the new release.
     assert.equal(s.myRelease("user_bob").version, "1.1.0");
+
+    // Undo releases the inverse as a new version, giving back 1.0.0's content.
+    assert.throws(() => s.undoRelease("1.0.0", "user_ada"), /Only the live release/);
+    assert.deepEqual(s.undoRelease("1.1.0", "user_ada"), { live: "1.2.0" });
+    const restored = s.snapshot();
+    assert.deepEqual({ ...restored, version: "1.0.0" }, s.snapshot("1.0.0"));
+    assert.match(s.overview().releases.at(-1)!.rationale ?? "", /Undid v1\.1\.0/);
   });
 
   it("adds a file to a published course and releases what it adds", async () => {

@@ -298,6 +298,8 @@ function CourseApp({ courseId, base, rest, directory }: { courseId: string; base
           <Drawer open={drawer === "history"} title="Releases" onClose={closeDrawer}>
             <HistoryDrawer
               overview={overview}
+              call={call}
+              mayUndo={editable}
               viewing={viewVersion ?? home ?? null}
               onView={(v) => {
                 setViewVersion(v === home ? null : v);

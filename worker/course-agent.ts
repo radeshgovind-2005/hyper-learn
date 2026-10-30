@@ -337,6 +337,16 @@ export class CourseAgent extends Agent<Env, CourseAgentState> {
     return result;
   }
 
+  /** Undoes the live release as a new version (its recorded inverse). */
+  @callable()
+  undoRelease(version: string) {
+    const { userId } = this.actor("repair");
+    const result = this.app.undoRelease(version, userId);
+    console.log(`Course ${this.name}: v${version} undone as v${result.live} by ${userId}`);
+    this.pushState();
+    return result;
+  }
+
   @callable()
   discardEdit() {
     this.actor(this.app.record()?.status === "published" ? "repair" : "manage_course");

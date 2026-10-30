@@ -189,7 +189,7 @@ export function EditStatus({ call, edit, published, sourceName }: { call: Call; 
       )}
       {edit.status === "applied" && (
         <div className="notice">
-          <span className="grow">{edit.applied_as === "draft" ? "Applied to the draft." : `Released as v${edit.applied_as}: learners see it now.`}</span>
+          <span className="grow">{edit.applied_as === "draft" ? "Applied to the draft." : `Released as v${edit.applied_as}: learners see it now. To take it back, use "Undo this release" in the release history.`}</span>
           <button className="btn quiet sm" disabled={busy} onClick={() => void act("discardEdit", [])}>
             OK
           </button>
