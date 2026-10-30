@@ -56,8 +56,13 @@ Branch `studio/integration`, off `studio/base`. Merged in order: `studio/assessm
   single-choice questions (options are now shuffled in code); practice options over 200 characters (the
   limits are now in the writer prompt and schema); 3 of 23 objectives taught only by the test, not the
   lectures (the planner is now told assessments set emphasis, not content); one failed call ended the
-  build (now retried with growing waits). Not yet re-run after these fixes. Still to look at: the right
-  answer was the longest option in 31 of 46; the stress test said 15 of 15 questions reveal the gap.
+  build (now retried with growing waits). Re-run with the fixes: 120 questions in 80 calls, the right
+  answer spread over all positions, no rejected practice question, no objective from the test alone, no
+  fact-check warning. Still to look at: the right answer is the longest option in 34 of 48 (the prompt
+  alone didn't fix it); the stress test says every question of a lesson reveals the gap; practice
+  feedback sometimes says "the pages say", which learners don't see.
+- Smoke-tested in local workerd: a studio course built by the Worker with Muse Spark on the owner's key
+  (4 lessons, 60 questions, 2 minutes), published, exam drawn, check answered.
 - One lesson that doesn't converge in 3 rounds fails the whole build.
 - `exam()` and `snapshot()` send answer keys to the browser (as on `main`).
 - Short answers are still stored `needs_review` (known issue 3); generated pools have none.
