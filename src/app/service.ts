@@ -30,7 +30,9 @@ import { type LearnerEvent, type Sql, SqlEventLog, SqlMeta, SqlProfiles, SqlRele
 import { type Member, SqlMembers, SqlSources, type SourceSummary } from "../storage/studio.js";
 import type { Identity as Person } from "../auth/identity.js";
 import { COURSE_ROLES, type CourseRole } from "./access.js";
-import { builtInCourse, type CourseBuilder, type CourseDefinition, type CourseEditor, FEATURED_COURSE, isStudioId } from "./courses.js";
+import { builtInCourse, type CoachRepairer, type CourseBuilder, type CourseDefinition, type CourseEditor, FEATURED_COURSE, isStudioId } from "./courses.js";
+import { type DiagnosisResult, drawDiagnostic, scoreDiagnostic, type Target, targetKey } from "../coach/diagnose.js";
+import { type Approach, approachFor, type PersonalSection, recheckItems, sectionsFor } from "../coach/repair.js";
 import type { Audience, BuildStep } from "../generate/types.js";
 import { bumpVersion, initialRelease } from "../releases/release.js";
 import { EDIT_PRESETS, type EditProposal, type EditRequest } from "../edit/types.js";
@@ -293,6 +295,50 @@ export interface BuildState {
   model_calls?: number;
 }
 
+/** A question the coach shows, by id: the item is looked up in the release it was drawn from. */
+interface CoachQuestion {
+  lesson: string;
+  item_id: string;
+}
+
+/** One learner's study coach: their latest diagnosis and repair, and what they have fixed. */
+export interface CoachState {
+  diagnosis?: {
+    id: string;
+    lesson: string;
+    release: string;
+    note?: string;
+    started_at: string;
+    questions: CoachQuestion[];
+    status: "open" | "done";
+    result?: DiagnosisResult;
+  };
+  repair?: {
+    id: string;
+    target: Target;
+    approach: Approach;
+    /** How many approaches have been tried on this target before this one. */
+    attempt: number;
+    release: string;
+    status: "running" | "ready" | "failed" | "fixed" | "not_yet";
+    started_at: string;
+    finished_at?: string;
+    lesson?: PersonalSection;
+    /** Without a model (the featured course, or no key): the course's own help instead of a new lesson. */
+    fallback?: { kind: "intervention"; block_id: string } | { kind: "review"; lesson: string; section_id: string };
+    problems?: string[];
+    recheck?: CoachQuestion[];
+  };
+  /** Target keys the learner has fixed (re-check passed). */
+  fixed: string[];
+  /** Every question the coach has shown, so exams prefer others. */
+  seen: string[];
+  repairs_today: { date: string; count: number };
+}
+
+/** Personal repair lessons one learner may ask for in a day: each costs the owner a few model calls. */
+export const MAX_REPAIRS_PER_DAY = 8;
+
 /** An owner's edit request, from asking to applying (studio courses). */
 export interface EditState {
   id: string;
@@ -338,6 +384,8 @@ export interface ServiceOptions {
   builder?: CourseBuilder;
   /** Turns an owner's request into proposed changes (the Worker passes src/edit's; tests canned models). */
   editor?: CourseEditor;
+  /** Writes a learner's personal repair lesson (the Worker passes src/coach's; tests canned models). */
+  repairer?: CoachRepairer;
   /** A studio course's owner-key settings (ignored for built-in courses, which use `models`). */
   ownerModels?: OwnerModelSettings;
   /**
@@ -574,10 +622,14 @@ export class CourseService {
     const previous = this.answersTo(learner, lessonId);
     const attempt = previous.length + 1;
     // Answers recorded before exams were drawn have no item_ids, but every one lists its graded items.
-    const seen = previous.flatMap((e) => {
-      const d = e.data as { item_ids?: string[]; items?: { item_id: string }[] };
-      return d.item_ids ?? d.items?.map((i) => i.item_id) ?? [];
-    });
+    const seen = [
+      // Questions the study coach showed count as seen, before the learner's own attempts.
+      ...(this.meta.get<CoachState>(`coach:${learner}`)?.seen ?? []),
+      ...previous.flatMap((e) => {
+        const d = e.data as { item_ids?: string[]; items?: { item_id: string }[] };
+        return d.item_ids ?? d.items?.map((i) => i.item_id) ?? [];
+      }),
+    ];
     const items = drawExam(lesson, course.objectives, { seen, seed: examSeed(learner, lessonId, attempt, release.version) });
     return { lesson, attempt, items };
   }
@@ -801,12 +853,247 @@ export class CourseService {
   /** Removes everything recorded about this learner, including their profile. Course releases are untouched. */
   deleteMyData(learner: string) {
     this.profiles.delete(learner);
+    this.meta.set(`coach:${learner}`, null);
     return { deleted: this.events.deleteLearner(learner) };
   }
 
   /** Remembers who signed in (name and email as their verified token carries them), for instructors' views. */
   recordProfile(identity: Identity) {
     this.profiles.seen({ user_id: identity.userId, name: identity.name, email: identity.email, role: identity.role }, this.now());
+  }
+
+  // ─── Study coach: diagnose → repair the one thing that matters now → re-check ──
+
+  private coach(learner: string): CoachState {
+    return this.meta.get<CoachState>(`coach:${learner}`) ?? { fixed: [], seen: [], repairs_today: { date: "", count: 0 } };
+  }
+
+  private saveCoach(learner: string, state: CoachState) {
+    this.meta.set(`coach:${learner}`, state);
+  }
+
+  private resolve(release: string, questions: readonly CoachQuestion[]) {
+    const snapshot = this.releases.get(release)?.snapshot;
+    if (!snapshot) throw new Error("That version of the course is gone; start again");
+    return questions.map((q) => {
+      const item = snapshot.lessons.find((l) => l.id === q.lesson)?.quiz.find((i) => i.id === q.item_id);
+      if (!item) throw new Error("A question is no longer in the course; start again");
+      return { lesson: q.lesson, item };
+    });
+  }
+
+  /** What the coach page shows: the latest diagnosis and repair, with their questions. */
+  coachState(learner: string) {
+    this.requirePublished();
+    const state = this.coach(learner);
+    const resolve = (release: string, qs?: readonly CoachQuestion[]) => {
+      try {
+        return qs ? this.resolve(release, qs) : undefined;
+      } catch {
+        return undefined;
+      }
+    };
+    return {
+      diagnosis: state.diagnosis && { ...state.diagnosis, questions: resolve(state.diagnosis.release, state.diagnosis.questions) ?? [] },
+      repair: state.repair && { ...state.repair, recheck: resolve(state.repair.release, state.repair.recheck) },
+      fixed: state.fixed,
+      repairs_left: MAX_REPAIRS_PER_DAY - (state.repairs_today.date === this.now().slice(0, 10) ? state.repairs_today.count : 0),
+      /** Whether the coach can write new lessons here (a studio course with a usable key). */
+      writes: Boolean(this.options.repairer && this.record() && this.agentsAvailable()),
+    };
+  }
+
+  /** Starts a short diagnostic on a lesson and the lessons it builds on. */
+  startDiagnosis(learner: string, lessonId: unknown, note?: unknown) {
+    if (typeof lessonId !== "string") throw new Error("Pick a lesson");
+    if (note !== undefined && (typeof note !== "string" || note.length > 1000)) throw new Error("Keep the note under 1000 characters");
+    const release = this.servedRelease(learner);
+    const state = this.coach(learner);
+    const answered = this.events.forLearner(learner).flatMap((e) => (e.kind === "answer" ? ((e.data as { item_ids?: string[] }).item_ids ?? []) : []));
+    const questions = drawDiagnostic(release.snapshot, lessonId, {
+      seen: [...state.seen, ...answered],
+      seed: examSeed(learner, lessonId, "coach", state.seen.length, release.version),
+    });
+    if (questions.length === 0) throw new Error("This lesson has no questions to diagnose with");
+    const trimmed = typeof note === "string" && note.trim() ? note.trim() : undefined;
+    state.diagnosis = {
+      id: this.newId(),
+      lesson: lessonId,
+      release: release.version,
+      ...(trimmed && { note: trimmed }),
+      started_at: this.now(),
+      questions: questions.map((q) => ({ lesson: q.lesson, item_id: q.item.id })),
+      status: "open",
+    };
+    this.saveCoach(learner, state);
+    return this.coachState(learner);
+  }
+
+  /** Scores the diagnostic and says what to repair first. */
+  submitDiagnosis(learner: string, id: unknown, answers: unknown) {
+    const state = this.coach(learner);
+    const d = state.diagnosis;
+    if (!d || d.id !== id || d.status !== "open") throw new Error("This diagnosis is over; start a new one");
+    if (!Array.isArray(answers)) throw new Error("Send the answers as a list");
+    const questions = this.resolve(d.release, d.questions);
+    const result = scoreDiagnostic(this.releases.get(d.release)!.snapshot, d.lesson, questions, answers as Response[]);
+    state.diagnosis = { ...d, status: "done", result };
+    state.seen = [...new Set([...state.seen, ...d.questions.map((q) => q.item_id)])];
+    this.saveCoach(learner, state);
+    this.events.append({
+      learner,
+      kind: "coach",
+      lesson: d.lesson,
+      release: d.release,
+      data: { type: "diagnosis", priority: targetKey(result.priority), target: result.priority, score: result.score, gaps: result.gaps, misconceptions: result.misconceptions.map((m) => m.id) },
+      at: this.now(),
+    });
+    return this.coachState(learner);
+  }
+
+  /**
+   * Starts repairing a target from the latest diagnosis (default: its priority). With a model, a lesson
+   * is written for this learner in the background (continueRepair); without one, the course's own help
+   * for it is used. `again` tries the same target with the next approach.
+   */
+  beginRepair(learner: string, key?: unknown, again = false): { state: ReturnType<CourseService["coachState"]>; write: boolean } {
+    const state = this.coach(learner);
+    const d = state.diagnosis;
+    if (!d?.result) throw new Error("Do a diagnosis first");
+    if (state.repair?.status === "running") throw new Error("A lesson is already being written for you");
+    const targets = [d.result.priority, ...d.result.next];
+    const target = again && state.repair ? state.repair.target : key === undefined ? d.result.priority : targets.find((t) => targetKey(t) === key);
+    if (!target) throw new Error("That isn't one of your diagnosis results");
+    if (target.kind === "ready") throw new Error("Nothing to repair: take the exam");
+    const attempt = again && state.repair && targetKey(state.repair.target) === targetKey(target) ? state.repair.attempt + 1 : 0;
+    const release = this.servedRelease(learner);
+    const base = { id: this.newId(), target, approach: approachFor(target, attempt), attempt, release: release.version, started_at: this.now() };
+
+    const write = Boolean(this.options.repairer && this.record() && this.agentsAvailable());
+    if (write) {
+      const today = this.now().slice(0, 10);
+      const used = state.repairs_today.date === today ? state.repairs_today.count : 0;
+      if (used >= MAX_REPAIRS_PER_DAY) throw new Error(`That's ${MAX_REPAIRS_PER_DAY} personal lessons today; the course's own sections are still there`);
+      state.repairs_today = { date: today, count: used + 1 };
+      state.repair = { ...base, status: "running" };
+    } else {
+      // The course's own help: a live intervention for the misconception, or the section that teaches it.
+      const intervention = target.kind === "misconception" ? liveInterventions(release.snapshot).find((i) => i.intervention.targets === target.id) : undefined;
+      const section = sectionsFor(release.snapshot, target)[0];
+      const fallback: NonNullable<CoachState["repair"]>["fallback"] = intervention
+        ? { kind: "intervention", block_id: intervention.block_id }
+        : { kind: "review", lesson: target.lesson, section_id: section ?? "" };
+      state.repair = { ...base, status: "ready", fallback, finished_at: this.now(), recheck: this.recheckFor(state, release.snapshot, target) };
+    }
+    this.saveCoach(learner, state);
+    return { state: this.coachState(learner), write };
+  }
+
+  private recheckFor(state: CoachState, snapshot: CourseSnapshot, target: Target): CoachQuestion[] {
+    return recheckItems(snapshot, target, new Set(state.seen)).map((q) => ({ lesson: q.lesson, item_id: q.item.id }));
+  }
+
+  /** The long part of a repair: writes the learner's lesson with the owner's key; never throws. */
+  async continueRepair(learner: string): Promise<void> {
+    const state = this.coach(learner);
+    const repair = state.repair;
+    if (!repair || repair.status !== "running") return;
+    const finish = (patch: Partial<NonNullable<CoachState["repair"]>>) => {
+      const latest = this.coach(learner);
+      if (latest.repair?.id !== repair.id) return;
+      latest.repair = { ...latest.repair, ...patch, finished_at: this.now() };
+      this.saveCoach(learner, latest);
+    };
+    try {
+      const record = this.studio();
+      const provider = await this.ownerProvider();
+      const snapshot = this.releases.get(repair.release)!.snapshot;
+      const wrong = (state.diagnosis?.result?.wrong ?? []).filter((w) => w.lesson === repair.target.lesson);
+      const result = await this.options.repairer!(
+        {
+          course: { course_id: record.id, title: record.title, ...(record.language && { language: record.language }) },
+          snapshot,
+          sources: this.sources.all(),
+          target: repair.target,
+          approach: repair.approach,
+          ...(state.diagnosis?.note && { note: state.diagnosis.note }),
+          wrong,
+        },
+        provider.structured,
+      );
+      if (result.ok) finish({ status: "ready", lesson: result.repair, recheck: this.recheckFor(state, snapshot, repair.target) });
+      else finish({ status: "failed", problems: result.problems.map((p) => this.redact(p)) });
+    } catch (error) {
+      finish({ status: "failed", problems: [this.redact(error instanceof Error ? error.message : String(error))] });
+    }
+  }
+
+  /** Grades the re-check after a repair: fixed when every answer is right and the mix-up didn't show. */
+  submitRecheck(learner: string, id: unknown, answers: unknown) {
+    const state = this.coach(learner);
+    const repair = state.repair;
+    if (!repair || repair.id !== id || repair.status !== "ready" || !repair.recheck) throw new Error("There is nothing to check right now");
+    if (!Array.isArray(answers) || answers.length !== repair.recheck.length) throw new Error(`Answer all ${repair.recheck.length} questions`);
+    const questions = this.resolve(repair.release, repair.recheck);
+    const grades = questions.map((q, i) => gradeItem(q.item, answers[i] as Response, q.lesson));
+    const target = repair.target;
+    const fixed = grades.every((g) => g.correct) && !(target.kind === "misconception" && grades.some((g) => g.errors.some((e) => e.misconception === target.id)));
+    const key = targetKey(target);
+    state.repair = { ...repair, status: fixed ? "fixed" : "not_yet" };
+    state.seen = [...new Set([...state.seen, ...repair.recheck.map((q) => q.item_id)])];
+    if (fixed && !state.fixed.includes(key)) state.fixed.push(key);
+    this.saveCoach(learner, state);
+    this.events.append({
+      learner,
+      kind: "coach",
+      lesson: target.lesson,
+      release: repair.release,
+      data: { type: "recheck", target_key: key, target, approach: repair.approach, attempt: repair.attempt, fixed, wrote: Boolean(repair.lesson) },
+      at: this.now(),
+    });
+    const remaining = [state.diagnosis?.result?.priority, ...(state.diagnosis?.result?.next ?? [])].filter(
+      (t): t is Target => Boolean(t) && t!.kind !== "ready" && !state.fixed.includes(targetKey(t!)),
+    );
+    return { fixed, grades: grades.map((g) => ({ correct: g.correct })), next: remaining[0] ?? null, state: this.coachState(learner) };
+  }
+
+  /**
+   * For owners and editors: what learners keep needing repaired, most learners first, and whether the
+   * personal lessons worked. The way back from one learner's repair to a fix for everyone.
+   */
+  coachInsights() {
+    this.requirePublished();
+    const byKey = new Map<string, { target: Target; learners: Set<string>; repaired: number; fixed: number; approaches: Record<string, { tried: number; fixed: number }> }>();
+    for (const { learner } of this.events.learners()) {
+      for (const e of this.events.forLearner(learner)) {
+        if (e.kind !== "coach") continue;
+        const d = e.data as { type: string; priority?: string; target?: Target; target_key?: string; approach?: string; fixed?: boolean };
+        const key = d.type === "diagnosis" ? d.priority : d.target_key;
+        if (!key || !d.target || d.target.kind === "ready") continue;
+        const row = byKey.get(key) ?? { target: d.target, learners: new Set<string>(), repaired: 0, fixed: 0, approaches: {} };
+        row.learners.add(learner);
+        if (d.type === "recheck") {
+          row.repaired++;
+          if (d.fixed) row.fixed++;
+          const a = (row.approaches[d.approach ?? "?"] ??= { tried: 0, fixed: 0 });
+          a.tried++;
+          if (d.fixed) a.fixed++;
+        }
+        byKey.set(key, row);
+      }
+    }
+    const live = this.releases.live().snapshot;
+    return [...byKey]
+      .map(([key, r]) => ({ key, target: r.target, label: this.targetLabel(live, r.target), learners: r.learners.size, repaired: r.repaired, fixed: r.fixed, approaches: r.approaches }))
+      .sort((a, b) => b.learners - a.learners || b.repaired - a.repaired);
+  }
+
+  private targetLabel(snapshot: CourseSnapshot, t: Target): string {
+    const lesson = snapshot.lessons.find((l) => l.id === t.lesson)?.title ?? t.lesson;
+    if (t.kind === "misconception") return `Mix-up: "${snapshot.misconceptions.find((m) => m.id === t.id)?.belief ?? t.id}"`;
+    if (t.kind === "objective") return (snapshot.objectives ?? []).find((o) => o.id === t.id)?.statement ?? t.id;
+    if (t.kind === "gap") return `Gap in "${lesson}"`;
+    return lesson;
   }
 
   // ─── Instructors ──────────────────────────────────────────────────

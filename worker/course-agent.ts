@@ -11,7 +11,7 @@ import { LANGSMITH_SETTINGS } from "../src/observability.js";
 import type { ApprovalMode } from "../src/nodes/release.js";
 import type { Sql } from "../src/storage/sql.js";
 import { workersAiEmbedder, workersAiGuard } from "./ai.js";
-import { courseBuilder, courseEditor } from "./builder.js";
+import { coachRepairer, courseBuilder, courseEditor } from "./builder.js";
 
 /** What every connected browser sees, kept in sync by the Agents SDK. */
 export interface CourseAgentState {
@@ -55,6 +55,7 @@ export class CourseAgent extends Agent<Env, CourseAgentState> {
           : {
               ...(courseBuilder && { builder: courseBuilder }),
               editor: courseEditor,
+              repairer: coachRepairer,
               ownerModels: {
                 secret: env.KEY_ENCRYPTION_SECRET,
                 // The Worker's endpoint and limits; the key comes from the owner, opened only when used.
@@ -344,6 +345,49 @@ export class CourseAgent extends Agent<Env, CourseAgentState> {
     this.actor("manage_course");
     const build = this.app.beginBuild(() => this.pushState());
     this.background(() => this.app.continueBuild(build, () => this.pushState()));
+  }
+
+  // ─── Study coach (any learner): diagnose → personal repair → re-check ──
+  // Personal state never goes into the shared overview; the page asks for it (and polls while a lesson is written).
+
+  @callable()
+  coachState() {
+    const { userId } = this.actor("learn");
+    return this.app.coachState(userId);
+  }
+
+  @callable()
+  startDiagnosis(lesson: string, note?: string) {
+    const { userId } = this.actor("learn");
+    return this.app.startDiagnosis(userId, lesson, note);
+  }
+
+  @callable()
+  submitDiagnosis(id: string, answers: unknown) {
+    const { userId } = this.actor("learn");
+    return this.app.submitDiagnosis(userId, id, answers);
+  }
+
+  /** Repairs a target from the diagnosis (default: its priority); `again` tries the next approach. */
+  @callable()
+  startRepair(target?: string, again?: boolean) {
+    const { userId } = this.actor("learn");
+    const { state, write } = this.app.beginRepair(userId, target, again === true);
+    if (write) this.background(() => this.app.continueRepair(userId));
+    return state;
+  }
+
+  @callable()
+  submitRecheck(id: string, answers: unknown) {
+    const { userId } = this.actor("learn");
+    return this.app.submitRecheck(userId, id, answers);
+  }
+
+  /** What learners keep needing repaired (owners, editors, instructors). */
+  @callable()
+  coachInsights() {
+    this.actor("view_learners");
+    return this.app.coachInsights();
   }
 
   // ─── Owner edits: tune a section, ask for a change, add a file ──────

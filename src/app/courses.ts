@@ -1,3 +1,4 @@
+import type { RepairInput, RepairResult } from "../coach/repair.js";
 import type { EditContext } from "../edit/run.js";
 import type { EditRequest, EditResult } from "../edit/types.js";
 import { baseSnapshot } from "../course/bundle.js";
@@ -29,6 +30,9 @@ export interface CourseDefinition {
  * works and tests can pass a fake. `structured` makes models with the course owner's key.
  */
 export type CourseBuilder = (input: BuildInput, structured: StructuredFactory, onStep: (step: BuildStep) => void) => Promise<BuildResult>;
+
+/** Writes one learner's personal repair lesson (src/coach), with the owner's key. Injected like the builder. */
+export type CoachRepairer = (input: RepairInput, structured: StructuredFactory) => Promise<RepairResult>;
 
 /** Turns an owner's request into proposed changes (src/edit), with the owner's key. Injected like the builder. */
 export type CourseEditor = (request: EditRequest, context: EditContext, structured: StructuredFactory, onStep: (step: BuildStep) => void) => Promise<EditResult>;
