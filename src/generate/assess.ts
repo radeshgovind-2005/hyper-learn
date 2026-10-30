@@ -3,7 +3,7 @@ import { checkItem, type QuizItem, QuizItemSchema, type WrongAnswerTag } from ".
 import type { MisconceptionDef } from "../course/schema.js";
 import { type AssessmentSentence, copiedSentence, itemPrompts } from "./checks.js";
 import type { PlannedLesson } from "./plan.js";
-import { fitParts, languageLine, pageLabel, uniqueSlug } from "./prompt.js";
+import { audienceLine, fitParts, languageLine, pageLabel, uniqueSlug } from "./prompt.js";
 import type { AssessmentDraft, ItemDraft, OptionDraft } from "./schemas.js";
 import type { SourceDigest } from "./sources.js";
 import type { BuildInput } from "./types.js";
@@ -70,7 +70,10 @@ export function examinerPrompt(
       ? `Prerequisites (gap ids; most questions need a wrong option tagged with each):\n${prerequisites.join("\n")}`
       : "This lesson has no prerequisites: leave every gap null.",
     languageLine(input.language),
-  ].join("\n\n");
+    audienceLine(input.audience),
+  ]
+    .filter(Boolean)
+    .join("\n\n");
   const style = evaluated.flatMap((d) => d.points.map((p) => `- ${p.text}`)).join("\n");
   const text = lesson.sections
     .map((s) => {

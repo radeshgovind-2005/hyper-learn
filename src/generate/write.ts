@@ -3,7 +3,7 @@ import type { Citation } from "../course/schema.js";
 import { citedPage, type Source } from "../course/sources.js";
 import { type CheckQuestion, CheckQuestionSchema } from "../interventions/templates.js";
 import type { PlannedLesson, PlannedSection } from "./plan.js";
-import { fitParts, languageLine, pageLabel, type Part } from "./prompt.js";
+import { audienceLine, fitParts, languageLine, pageLabel, type Part } from "./prompt.js";
 import type { SectionDraft } from "./schemas.js";
 import type { BuildInput } from "./types.js";
 
@@ -76,6 +76,7 @@ export function writerPrompt({ input, sources, lesson, section }: WriterContext,
     `Write the section "${section.title}".`,
     objectives.length > 0 && `It teaches:\n${objectives.join("\n")}`,
     languageLine(input.language),
+    audienceLine(input.audience),
     `Cite only these pages: ${section.pages.map(pageLabel).join(", ")}.`,
   ]
     .filter(Boolean)

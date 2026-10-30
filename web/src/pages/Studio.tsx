@@ -1,9 +1,11 @@
-import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AskForm, EditStatus } from "../components/EditPanel.js";
-import { LessonView } from "../components/LessonView.js";
+import { type Citations, LessonView } from "../components/LessonView.js";
+import type { SourceTarget } from "../components/SourceViewer.js";
 import { TuneButton } from "../components/TuneButton.js";
 import { ACCEPTED, chunkPages, readFile } from "../files.js";
-import type { BuildState, BuildStep, Call, CourseDetails, CourseSnapshot, Member, ModelSettings, Overview, SourceRole, SourceSummary } from "../types.js";
+import { AudienceField } from "./CreateCourse.js";
+import type { BuildState, BuildStep, Call, CourseDetails, CourseSnapshot, Member, ModelSettings, Overview, OwnerSourceSummary, SourceRole, SourceSummary } from "../types.js";
 
 // The owner's page for one course: what it is, the files it is built from, the model key, the build, a
 // preview, publishing and sharing. Every call is checked on the server (manage_course); this page only
@@ -31,11 +33,26 @@ function useAction() {
   return { busy, error, run, setError };
 }
 
-function Card({ step, title, done, children, aside }: { step: number; title: string; done?: boolean; children: ReactNode; aside?: ReactNode }) {
+function Card({
+  step,
+  title,
+  done,
+  danger,
+  children,
+  aside,
+}: {
+  /** Absent: a card that isn't a step (deleting). */
+  step?: number;
+  title: string;
+  done?: boolean;
+  danger?: boolean;
+  children: ReactNode;
+  aside?: ReactNode;
+}) {
   return (
-    <section className="card studio-card">
+    <section className={`card studio-card ${danger ? "danger" : ""}`}>
       <div className="studio-card-head">
-        <span className={`num ${done ? "mastered" : ""}`}>{done ? "✓" : step}</span>
+        {step !== undefined && <span className={`num ${done ? "mastered" : ""}`}>{done ? "✓" : step}</span>}
         <h2 className="grow">{title}</h2>
         {aside}
       </div>
@@ -47,7 +64,7 @@ function Card({ step, title, done, children, aside }: { step: number; title: str
 function Details({ call, details, onSaved }: { call: Call; details: CourseDetails; onSaved: (d: CourseDetails) => void }) {
   const [form, setForm] = useState(details);
   const { busy, error, run } = useAction();
-  const changed = (["title", "description", "goal", "language"] as const).some((k) => form[k] !== details[k]);
+  const changed = (["title", "description", "goal", "language", "audience"] as const).some((k) => form[k] !== details[k]);
   const set = (key: "title" | "description" | "goal" | "language") => (e: { target: { value: string } }) => setForm((f) => ({ ...f, [key]: e.target.value }));
   return (
     <form
@@ -55,8 +72,8 @@ function Details({ call, details, onSaved }: { call: Call; details: CourseDetail
       onSubmit={(e) => {
         e.preventDefault();
         void run(async () => {
-          const { title, description, goal, language } = form;
-          await call("updateDetails", [{ title, description, goal, language }]);
+          const { title, description, goal, language, audience } = form;
+          await call("updateDetails", [{ title, description, goal, language, audience }]);
           onSaved(form);
         });
       }}
@@ -77,6 +94,7 @@ function Details({ call, details, onSaved }: { call: Call; details: CourseDetail
         <span>Language (optional)</span>
         <input className="input" value={form.language} onChange={set("language")} maxLength={40} placeholder="The material's language" />
       </label>
+      <AudienceField value={form.audience} onChange={(audience) => setForm((f) => ({ ...f, audience }))} />
       {error && <div className="notice">{error}</div>}
       <div className="row">
         <button className="btn secondary sm" type="submit" disabled={busy || !changed || !form.title.trim()}>
@@ -134,18 +152,23 @@ function AddToCourse({ call, source, busy }: { call: Call; source: SourceSummary
   );
 }
 
+/** Roles learners never see, whatever the owner's switch says (the server enforces it). */
+const NEVER_SHOWN: ReadonlySet<SourceRole> = new Set(["assessment", "brief"]);
+
 function Sources({
   call,
   sources,
   locked,
   onChange,
+  onView,
   unused,
   editBusy,
 }: {
   call: Call;
-  sources: SourceSummary[];
+  sources: OwnerSourceSummary[];
   locked: string | null;
   onChange: () => void;
+  onView: (source: OwnerSourceSummary) => void;
   /** Files a built course doesn't cite yet (null before there is a built course). */
   unused: Set<string> | null;
   editBusy: boolean;
@@ -229,6 +252,22 @@ function Sources({
                   · {s.pages} {s.pages === 1 ? "page" : "pages"}
                 </span>
               </span>
+              {s.role && NEVER_SHOWN.has(s.role) ? null : (
+                <label className="share-toggle small" title="Learners can open this file's pages from the lessons that cite it">
+                  <input
+                    type="checkbox"
+                    checked={s.shared}
+                    onChange={(e) => void run(async () => {
+                      await call("setSourceShared", [s.id, e.target.checked]);
+                      onChange();
+                    })}
+                  />
+                  Learners can open
+                </label>
+              )}
+              <button className="btn quiet sm" type="button" onClick={() => onView(s)} aria-label={`View ${s.name}`}>
+                View
+              </button>
               <select
                 className="input sm"
                 value={s.role ?? ""}
@@ -275,6 +314,12 @@ function Sources({
             </li>
           ))}
         </ul>
+      )}
+      {sources.length > 0 && (
+        <p className="small muted">
+          Learners see citation chips under the lessons and can open the pages they cite. Past exams and project briefs are never shown to learners, so they have no
+          switch.
+        </p>
       )}
       {error && <div className="notice">{error}</div>}
     </div>
@@ -442,7 +487,7 @@ function Build({ build, canBuild, blocker, onBuild, busy, error }: { build: Buil
   );
 }
 
-function Preview({ call, draft, warnings, editBusy }: { call: Call; draft: CourseSnapshot; warnings: string[]; editBusy: boolean }) {
+function Preview({ call, draft, warnings, citations, editBusy }: { call: Call; draft: CourseSnapshot; warnings: string[]; citations: Citations; editBusy: boolean }) {
   const lessons = draft.lessons.filter((l) => !l.archived);
   const [lessonId, setLessonId] = useState<string | null>(null);
   const questions = lessons.reduce((n, l) => n + l.quiz.length, 0);
@@ -491,6 +536,7 @@ function Preview({ call, draft, warnings, editBusy }: { call: Call; draft: Cours
             onAnswered={() => {}}
             onOpenLesson={setLessonId}
             sectionTools={(section) => <TuneButton call={call} sectionId={section.id} busy={editBusy} />}
+            citations={citations}
           />
         </div>
       )}
@@ -589,9 +635,53 @@ function Share({ call, courseId }: { call: Call; courseId: string }) {
   );
 }
 
-export function Studio({ call, overview, courseId, onPublished }: { call: Call; overview: Overview | null; courseId: string; onPublished: () => void }) {
+/** The owner types the title to confirm, so a slip of the mouse can't delete a course. */
+function DeleteCourse({ title, onDelete }: { title: string; onDelete: () => Promise<void> }) {
+  const [typed, setTyped] = useState("");
+  const { busy, error, run } = useAction();
+  const confirmed = typed.trim() === title.trim();
+  return (
+    <form
+      className="stack"
+      onSubmit={(e) => {
+        e.preventDefault();
+        if (confirmed) void run(onDelete);
+      }}
+    >
+      <p className="small muted">Deletes the course for everyone: its files, lessons, releases, members and every learner's progress. This can't be undone.</p>
+      <label className="field">
+        <span>Type the title to confirm: {title}</span>
+        <input className="input" value={typed} onChange={(e) => setTyped(e.target.value)} autoComplete="off" spellCheck={false} />
+      </label>
+      {error && <div className="notice">{error}</div>}
+      <div className="row">
+        <button className="btn danger sm" type="submit" disabled={!confirmed || busy}>
+          {busy ? "Deleting…" : "Delete course"}
+        </button>
+      </div>
+    </form>
+  );
+}
+
+export function Studio({
+  call,
+  overview,
+  courseId,
+  onPublished,
+  onOpenSource,
+  onDelete,
+}: {
+  call: Call;
+  overview: Overview | null;
+  courseId: string;
+  onPublished: () => void;
+  /** Opens a file's page in the course's source drawer. */
+  onOpenSource: (target: SourceTarget) => void;
+  /** Deletes the course through the directory, then leaves its pages. */
+  onDelete: () => Promise<void>;
+}) {
   const [details, setDetails] = useState<CourseDetails | null>(null);
-  const [sources, setSources] = useState<SourceSummary[]>([]);
+  const [sources, setSources] = useState<OwnerSourceSummary[]>([]);
   const [settings, setSettings] = useState<ModelSettings | null>(null);
   const [draft, setDraft] = useState<CourseSnapshot | null>(null);
   const build = overview?.build ?? null;
@@ -601,7 +691,15 @@ export function Studio({ call, overview, courseId, onPublished }: { call: Call; 
   const building = useAction();
   const publishing = useAction();
 
-  const loadSources = useCallback(() => void call<SourceSummary[]>("sources").then(setSources), [call]);
+  const loadSources = useCallback(() => void call<OwnerSourceSummary[]>("sources").then(setSources), [call]);
+  // The owner's preview shows chips for every cited file, opened with ownerSourcePage.
+  const citations = useMemo<Citations>(
+    () => ({
+      sources: new Map(sources.map((s) => [s.id, { id: s.id, name: s.name, pages: s.pages }])),
+      open: (source, page, passage) => onOpenSource({ source, page, passage, owner: true }),
+    }),
+    [sources, onOpenSource],
+  );
   useEffect(() => {
     void call<CourseDetails>("details").then(setDetails);
     void call<ModelSettings>("modelSettings").then(setSettings);
@@ -650,7 +748,15 @@ export function Studio({ call, overview, courseId, onPublished }: { call: Call; 
       </Card>
 
       <Card step={2} title="Files" done={sources.length > 0}>
-        <Sources call={call} sources={sources} locked={locked} onChange={loadSources} unused={unused} editBusy={editBusy} />
+        <Sources
+          call={call}
+          sources={sources}
+          locked={locked}
+          onChange={loadSources}
+          onView={(s) => onOpenSource({ source: { id: s.id, name: s.name, pages: s.pages }, page: 1, owner: true })}
+          unused={unused}
+          editBusy={editBusy}
+        />
       </Card>
 
       <Card step={3} title="Model key" done={settings.hasKey}>
@@ -670,7 +776,7 @@ export function Studio({ call, overview, courseId, onPublished }: { call: Call; 
 
       {draft && (
         <Card step={5} title={status === "published" ? "The course" : "Review and publish"} done={status === "published"}>
-          <Preview call={call} draft={draft} warnings={status === "published" ? [] : (build?.warnings ?? [])} editBusy={editBusy} />
+          <Preview call={call} draft={draft} warnings={status === "published" ? [] : (build?.warnings ?? [])} citations={citations} editBusy={editBusy} />
           {status === "review" && (
             <div className="row" style={{ marginTop: "var(--s4)" }}>
               <button
@@ -703,6 +809,10 @@ export function Studio({ call, overview, courseId, onPublished }: { call: Call; 
 
       <Card step={draft ? 7 : 5} title="Share">
         <Share call={call} courseId={courseId} />
+      </Card>
+
+      <Card title="Delete course" danger>
+        <DeleteCourse title={details.title} onDelete={onDelete} />
       </Card>
     </article>
   );

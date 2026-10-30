@@ -1,7 +1,7 @@
 import type { Citation, Objective } from "../course/schema.js";
 import { citedPage, type Source } from "../course/sources.js";
 import type { BuildInput } from "./types.js";
-import { fitParts, languageLine, pageLabel, thinLines, uniqueSlug } from "./prompt.js";
+import { audienceLine, fitParts, languageLine, pageLabel, thinLines, uniqueSlug } from "./prompt.js";
 import type { PlanDraft } from "./schemas.js";
 import type { SourceDigest } from "./sources.js";
 
@@ -46,6 +46,7 @@ export function plannerPrompt(input: BuildInput, digests: readonly SourceDigest[
     input.description && `Description: ${input.description}`,
     input.goal && `The owner's goal for learners: ${input.goal}`,
     languageLine(input.language),
+    audienceLine(input.audience),
     `Plan ${limits.minLessons} to ${limits.maxLessons} lessons with ${limits.minObjectives} to ${limits.maxObjectives} objectives each.`,
     `Teaching-material sources you may cite: ${material.map((d) => `${d.source.id} "${d.source.name}" (pages 1-${d.source.pages.length})`).join("; ")}`,
   ]

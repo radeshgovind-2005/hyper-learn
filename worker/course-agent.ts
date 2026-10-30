@@ -1,6 +1,7 @@
 import { Agent, type Connection, type ConnectionContext, callable, getAgentByName, getCurrentAgent } from "agents";
 import { coursePermissions, mayEnter, type Permission, requireCoursePermission } from "../src/app/access.js";
 import { builtInCourse, DIRECTORY_NAME, isBuiltIn, isStudioId } from "../src/app/courses.js";
+import type { CourseDetailsInput } from "../src/app/directory.js";
 import { CourseService, type DataSource, type DirectoryLink, parseApproval, type QuizResult } from "../src/app/service.js";
 import type { Certainty, Response } from "../src/assessment/items.js";
 import { type Identity, identityFrom } from "../src/auth/identity.js";
@@ -89,12 +90,30 @@ export class CourseAgent extends Agent<Env, CourseAgentState> {
   // ─── RPC only (not @callable): the directory ─────────────────────────
 
   /** Sets up a new studio course. The directory calls this once, right after recording the course. */
-  async initialise(input: { id: string; title: string; description: string; owner: Identity }) {
+  async initialise(input: { id: string; owner: Identity } & CourseDetailsInput) {
     if (input?.id !== this.name) throw new Error("Course id doesn't match this object");
     const record = this.app.initialise(input);
     this.pushState();
     await this.scheduleEvery(CourseAgent.TRIAL_CHECK_INTERVAL, "checkTrial");
     return { id: record.id };
+  }
+
+  /** Set once wipe() starts: nothing more is recorded in storage that is about to go. */
+  private deleted = false;
+
+  /**
+   * Deletes this course for good, for the directory's deleteCourse() (which checked the caller may).
+   * Everyone connected is told and disconnected first. Then destroy(), the Agents SDK's documented
+   * teardown: it cancels schedules (the hourly trial check) and the alarm, deletes all storage
+   * (ctx.storage.deleteAll) and resets the object. Calling ctx.storage.deleteAll ourselves would leave the
+   * SDK's alarm and schedules behind. destroy() aborts the isolate just after it returns, so the directory
+   * may see this call fail although it worked; wiping again is harmless, and the course stays listed until it succeeds.
+   */
+  async wipe() {
+    if (!isStudioId(this.name)) throw new Error("Built-in courses can't be deleted");
+    this.deleted = true;
+    for (const connection of this.getConnections()) connection.close(4004, "This course was deleted");
+    await this.destroy();
   }
 
   /** Joins with an invite token, for the directory's join(). Returns the caller's role in the course. */
@@ -133,7 +152,7 @@ export class CourseAgent extends Agent<Env, CourseAgentState> {
 
   override onClose(connection: Connection<ConnectionState>) {
     const identity = connection.state?.identity;
-    if (identity) this.app.endSession(identity.userId, connection.id);
+    if (identity && !this.deleted) this.app.endSession(identity.userId, connection.id);
   }
 
   /** State is the server's view; a browser can't overwrite what other people see. */
@@ -225,14 +244,14 @@ export class CourseAgent extends Agent<Env, CourseAgentState> {
 
   // ─── Course details, sources and model key (owner, or an admin) ───────
 
-  /** Title, description, goal (guides the build), language and status, for the owner's form. */
+  /** Title, description, goal (guides the build), language, audience and status, for the owner's form. */
   @callable()
   details() {
     this.actor("manage_course");
     return this.app.details();
   }
 
-  /** Title, description, goal (guides the build) and language. */
+  /** Title, description, goal (guides the build), language and audience. */
   @callable()
   async updateDetails(input: unknown) {
     this.actor("manage_course");
@@ -272,6 +291,21 @@ export class CourseAgent extends Agent<Env, CourseAgentState> {
   setSourceRole(id: string, role: string | null) {
     this.actor("manage_course");
     return this.app.setSourceRole(id, role);
+  }
+
+  /** Any page (1-based) of any of the course's files, for the owner's viewer. */
+  @callable()
+  ownerSourcePage(id: string, page: number) {
+    this.actor("manage_course");
+    return this.app.ownerSourcePage(id, page);
+  }
+
+  /** Whether learners may open a file from the lessons that cite it (past exams and briefs never). */
+  @callable()
+  setSourceShared(id: string, shared: boolean) {
+    this.actor("manage_course");
+    // Not in the shared state: learners' pages ask for citedSources when they open the course.
+    return this.app.setSourceShared(id, shared);
   }
 
   /** Whether a key is set and which model is used. The key itself is never returned. */
@@ -428,6 +462,20 @@ export class CourseAgent extends Agent<Env, CourseAgentState> {
   answerCheck(blockId: string, option: number) {
     const { userId } = this.actor("learn");
     return this.app.answerCheck(userId, String(blockId), option, this.connectionId());
+  }
+
+  /** The files the caller may open from the lessons that cite them, on the release they are served. */
+  @callable()
+  citedSources() {
+    const { userId } = this.actor("learn");
+    return this.app.citedSources(userId);
+  }
+
+  /** A page (1-based) of a file citedSources lists. */
+  @callable()
+  sourcePage(id: string, page: number) {
+    const { userId } = this.actor("learn");
+    return this.app.sourcePage(userId, id, page);
   }
 
   /** Time on a lesson, or an intervention shown or completed, reported by the learner's own browser. */

@@ -1,7 +1,9 @@
 import { z } from "zod";
+import type { Identity } from "../auth/identity.js";
+import { type Audience, AUDIENCES } from "../generate/types.js";
 import type { Sql } from "../storage/sql.js";
 import { COURSE_ROLES, type CourseRole } from "./access.js";
-import { BUILT_IN_COURSES, builtInCourse, newCourseId } from "./courses.js";
+import { BUILT_IN_COURSES, builtInCourse, isBuiltIn, newCourseId } from "./courses.js";
 
 // The list of courses and who belongs to which, for the sidebar ("mine", "shared with me", "featured")
 // and for the Worker's check that a course id exists. One directory object holds it. Each course object
@@ -31,8 +33,12 @@ export interface CourseCard extends Omit<CourseRecord, "owner"> {
 export const CourseDetailsSchema = z.strictObject({
   title: z.string().trim().min(1, "Give the course a title").max(120),
   description: z.string().trim().max(2_000).default(""),
+  /** Who the course is for; the build writes for them. Kept by the course object, not in the directory. */
+  audience: z.enum(AUDIENCES, { error: "Pick who the course is for: beginner, intermediate or advanced" }).default("beginner"),
 });
 export type CourseDetails = z.infer<typeof CourseDetailsSchema>;
+/** Details as a caller sends them: description and audience may be left out. */
+export type CourseDetailsInput = z.input<typeof CourseDetailsSchema>;
 
 /** The first readable problem in a Zod error. */
 export const firstIssue = (error: z.ZodError) => error.issues[0]?.message ?? "Invalid input";
@@ -76,22 +82,39 @@ export class DirectoryService {
     createDirectoryTables(sql);
   }
 
-  /** Records a new course owned by `owner`. The caller then initialises its course object (and calls remove if that fails). */
-  createCourse(owner: string, input: unknown): CourseRecord {
+  /**
+   * Records a new course owned by `owner`. The caller then initialises its course object with the record
+   * and the audience (and calls remove if that fails).
+   */
+  createCourse(owner: string, input: unknown): CourseRecord & { audience: Audience } {
     const parsed = CourseDetailsSchema.safeParse(input);
     if (!parsed.success) throw new Error(firstIssue(parsed.error));
     const [{ n }] = this.sql<{ n: number }>`SELECT COUNT(*) AS n FROM dir_courses WHERE owner = ${owner}` as [{ n: number }];
-    if (n >= MAX_COURSES_PER_OWNER) throw new Error(`You already own ${MAX_COURSES_PER_OWNER} courses; delete one first`);
+    if (n >= MAX_COURSES_PER_OWNER) throw new Error(`You already own ${MAX_COURSES_PER_OWNER} courses; delete one (at the end of its studio page) first`);
     let id = this.newId();
     while (this.exists(id)) id = this.newId();
-    const record: CourseRecord = { id, ...parsed.data, owner, status: "draft", created_at: this.now() };
+    const { audience, ...details } = parsed.data;
+    const record: CourseRecord = { id, ...details, owner, status: "draft", created_at: this.now() };
     this.sql`INSERT INTO dir_courses (id, title, description, owner, status, created_at)
       VALUES (${record.id}, ${record.title}, ${record.description}, ${owner}, ${record.status}, ${record.created_at})`;
     this.sql`INSERT INTO dir_members (course_id, user_id, role) VALUES (${id}, ${owner}, 'owner')`;
+    return { ...record, audience };
+  }
+
+  /**
+   * The course `person` asks to delete, if they may: its owner as the memberships here record it, or a
+   * global admin. Built-in courses can't be deleted. The caller wipes the course object, then calls remove.
+   */
+  deletable(person: Pick<Identity, "userId" | "role">, id: unknown): CourseRecord {
+    if (typeof id === "string" && isBuiltIn(id)) throw new Error("Built-in courses can't be deleted");
+    const record = typeof id === "string" ? this.get(id) : undefined;
+    if (!record) throw new Error("No such course");
+    const [membership] = this.sql<{ role: CourseRole }>`SELECT role FROM dir_members WHERE course_id = ${record.id} AND user_id = ${person.userId}`;
+    if (membership?.role !== "owner" && person.role !== "admin") throw new Error("Only the course's owner can delete it");
     return record;
   }
 
-  /** Forgets a course and its memberships (a course object that couldn't be initialised). */
+  /** Forgets a course and everyone's membership of it (deleted, or a course object that couldn't be initialised). */
   remove(id: string) {
     this.sql`DELETE FROM dir_members WHERE course_id = ${id}`;
     this.sql`DELETE FROM dir_courses WHERE id = ${id}`;

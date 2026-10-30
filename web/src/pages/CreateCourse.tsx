@@ -1,12 +1,30 @@
 import { useState } from "react";
 import { useNavigate } from "react-router";
-import { coursePath, type Directory } from "../directory.js";
+import { AUDIENCE_LABEL, coursePath, type Directory } from "../directory.js";
+import type { Audience } from "../types.js";
 
-/** Step one of a new course: a title and a description. Files, key and build follow on its studio page. */
+/** Who the course is for: the build explains more, or less, to match. Also on the studio's details form. */
+export function AudienceField({ value, onChange }: { value: Audience; onChange: (a: Audience) => void }) {
+  return (
+    <label className="field">
+      <span>Who it's for</span>
+      <select className="input" value={value} onChange={(e) => onChange(e.target.value as Audience)}>
+        {(Object.keys(AUDIENCE_LABEL) as Audience[]).map((a) => (
+          <option key={a} value={a}>
+            {AUDIENCE_LABEL[a]}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
+/** Step one of a new course: a title, a description and who it is for. Files, key and build follow on its studio page. */
 export function CreateCourse({ directory }: { directory: Directory }) {
   const navigate = useNavigate();
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
+  const [audience, setAudience] = useState<Audience>("beginner");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -14,7 +32,7 @@ export function CreateCourse({ directory }: { directory: Directory }) {
     setBusy(true);
     setError(null);
     try {
-      const { id } = await directory.call<{ id: string }>("createCourse", [{ title, description }]);
+      const { id } = await directory.call<{ id: string }>("createCourse", [{ title, description, audience }]);
       directory.refresh();
       navigate(`${coursePath(id)}/studio`);
     } catch (e) {
@@ -43,6 +61,7 @@ export function CreateCourse({ directory }: { directory: Directory }) {
           <span>Description (optional)</span>
           <textarea className="input text" rows={3} value={description} onChange={(e) => setDescription(e.target.value)} maxLength={2000} placeholder="Who it's for and what it covers" />
         </label>
+        <AudienceField value={audience} onChange={setAudience} />
         {error && <div className="notice">{error}</div>}
         <div className="row">
           <button className="btn primary" type="submit" disabled={busy || !directory.ready || !title.trim()}>

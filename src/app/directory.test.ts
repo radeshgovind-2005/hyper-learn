@@ -24,6 +24,15 @@ describe("DirectoryService", () => {
     assert.ok(!("owner" in mine.owned[0]!), "cards don't carry the owner's user id");
   });
 
+  it("takes who the course is for and hands it on, without keeping it in the directory", () => {
+    const d = directory();
+    assert.equal(d.createCourse("user_ada", { title: "Course" }).audience, "beginner");
+    const course = d.createCourse("user_ada", { title: "Course", audience: "advanced" });
+    assert.equal(course.audience, "advanced");
+    assert.ok(!("audience" in d.get(course.id)!));
+    assert.throws(() => d.createCourse("user_ada", { title: "Course", audience: "expert" }), /beginner, intermediate or advanced/);
+  });
+
   it("refuses bad details, unknown fields and too many courses", () => {
     const d = directory();
     assert.throws(() => d.createCourse("user_ada", { title: "  " }), /title/);
@@ -49,6 +58,34 @@ describe("DirectoryService", () => {
     assert.throws(() => d.membershipChanged("c-nope00000000", "user_bob", "learner"), /No course/);
     assert.throws(() => d.courseUpdated(id, { status: "deleted" }));
     assert.throws(() => d.courseUpdated(id, { owner: "user_eve" }));
+  });
+
+  it("lets only the owner or a global admin delete a course, never a built-in one", () => {
+    const d = directory();
+    const { id } = d.createCourse("user_ada", { title: "Course" });
+    d.membershipChanged(id, "user_bob", "editor");
+    d.membershipChanged(id, "user_cy", "learner");
+    assert.throws(() => d.deletable({ userId: "user_bob", role: "learner" }, id), /Only the course's owner/, "an editor can't");
+    assert.throws(() => d.deletable({ userId: "user_cy", role: "instructor" }, id), /Only the course's owner/, "nor a learner, whatever their global role");
+    assert.throws(() => d.deletable({ userId: "user_eve", role: "learner" }, id), /Only the course's owner/);
+    assert.throws(() => d.deletable({ userId: "user_ada", role: "learner" }, "c-nope00000000"), /No such course/);
+    assert.throws(() => d.deletable({ userId: "user_ada", role: "learner" }, 42), /No such course/);
+    assert.throws(() => d.deletable({ userId: "user_root", role: "admin" }, FEATURED_COURSE), /Built-in courses can't be deleted/);
+    assert.equal(d.deletable({ userId: "user_ada", role: "learner" }, id).id, id);
+    assert.equal(d.deletable({ userId: "user_root", role: "admin" }, id).id, id);
+  });
+
+  it("forgets a deleted course and everyone's membership, so the owner can create another", () => {
+    const d = directory();
+    for (let i = 0; i < MAX_COURSES_PER_OWNER; i++) d.createCourse("user_ada", { title: `c${i}` });
+    const { id } = d.myCourses("user_ada").owned[0]!;
+    d.membershipChanged(id, "user_bob", "learner");
+    assert.throws(() => d.createCourse("user_ada", { title: "one more" }), /delete one/);
+    d.remove(d.deletable({ userId: "user_ada", role: "learner" }, id).id);
+    assert.equal(d.exists(id), false);
+    assert.deepEqual(d.myCourses("user_bob").shared, []);
+    assert.equal(d.myCourses("user_ada").owned.length, MAX_COURSES_PER_OWNER - 1);
+    assert.ok(d.createCourse("user_ada", { title: "one more" }));
   });
 
   it("forgets a course whose object couldn't be initialised", () => {
