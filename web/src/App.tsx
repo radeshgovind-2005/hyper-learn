@@ -3,11 +3,13 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router";
 import { CoursePanel } from "./components/CoursePanel.js";
 import { CourseSwitcher } from "./components/CourseSwitcher.js";
+import { AskForm, EditStatus } from "./components/EditPanel.js";
 import { Drawer } from "./components/Drawer.js";
 import { HistoryDrawer } from "./components/HistoryDrawer.js";
 import { LessonView } from "./components/LessonView.js";
 import { RepairDrawer } from "./components/RepairDrawer.js";
 import { Shell } from "./components/Shell.js";
+import { TuneButton } from "./components/TuneButton.js";
 import { coursePath, type Directory, FEATURED_COURSE, useDirectory, useSessionQuery } from "./directory.js";
 import { CreateCourse } from "./pages/CreateCourse.js";
 import { JoinCourse } from "./pages/JoinCourse.js";
@@ -147,6 +149,10 @@ function CourseApp({ courseId, base, rest, directory }: { courseId: string; base
   const running = status === "running";
   const waiting = status === "awaiting_approval";
   const title = overview?.course.title || snapshot?.title;
+  // Studio courses can be edited in words by whoever may repair them (owner, editors, admins).
+  const editable = mayRepair && courseId !== FEATURED_COURSE;
+  const edit = overview?.edit ?? null;
+  const editBusy = edit?.status === "running";
 
   const actions = (
     <>
@@ -247,6 +253,7 @@ function CourseApp({ courseId, base, rest, directory }: { courseId: string; base
         onAnswered={refreshProgress}
         onOpenLesson={openLesson}
         onOpenSection={openSection}
+        {...(editable && { sectionTools: (section) => <TuneButton call={call} sectionId={section.id} busy={editBusy} onRequested={() => setDrawer("repair")} /> })}
       />
     );
   } else {
@@ -267,6 +274,14 @@ function CourseApp({ courseId, base, rest, directory }: { courseId: string; base
       drawers={
         <>
           <Drawer open={mayRepair && drawer === "repair"} title="Course repair" onClose={closeDrawer}>
+            {editable && (
+              <section className="ask-change stack">
+                <h3>Ask for a change</h3>
+                <AskForm call={call} busy={editBusy} placeholder="e.g. Learners keep confusing NUMA and UMA: add a comparison and two questions on it." />
+                <EditStatus call={call} edit={edit} published />
+                <hr />
+              </section>
+            )}
             <RepairDrawer
               overview={overview}
               mayReset={me?.permissions.includes("reset") ?? false}

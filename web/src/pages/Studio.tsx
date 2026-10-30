@@ -1,5 +1,7 @@
 import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
+import { AskForm, EditStatus } from "../components/EditPanel.js";
 import { LessonView } from "../components/LessonView.js";
+import { TuneButton } from "../components/TuneButton.js";
 import { ACCEPTED, chunkPages, readFile } from "../files.js";
 import type { BuildState, BuildStep, Call, CourseDetails, CourseSnapshot, Member, ModelSettings, Overview, SourceRole, SourceSummary } from "../types.js";
 
@@ -97,7 +99,57 @@ interface Upload {
   error?: string;
 }
 
-function Sources({ call, sources, locked, onChange }: { call: Call; sources: SourceSummary[]; locked: string | null; onChange: () => void }) {
+/** For a built course: a file the course doesn't use yet can be folded in by an edit, with a note. */
+function AddToCourse({ call, source, busy }: { call: Call; source: SourceSummary; busy: boolean }) {
+  const [open, setOpen] = useState(false);
+  const [note, setNote] = useState("");
+  const { error, run } = useAction();
+  if (!open) {
+    return (
+      <button className="btn secondary sm" disabled={busy} onClick={() => setOpen(true)} title="Agents propose what this file adds; you review it first">
+        Add to the course
+      </button>
+    );
+  }
+  return (
+    <div className="add-to-course stack">
+      <input className="input" value={note} maxLength={2000} onChange={(e) => setNote(e.target.value)} placeholder="What is it for? e.g. covers MPI, which lesson 4 skips" aria-label={`Note for ${source.name}`} />
+      <div className="row">
+        <button
+          className="btn primary sm"
+          disabled={busy}
+          onClick={() => void run(async () => {
+            await call("requestEdit", [{ kind: "add_source", source_id: source.id, ...(note.trim() && { instruction: note.trim() }) }]);
+            setOpen(false);
+          })}
+        >
+          Propose changes
+        </button>
+        <button className="btn quiet sm" onClick={() => setOpen(false)}>
+          Cancel
+        </button>
+      </div>
+      {error && <div className="notice">{error}</div>}
+    </div>
+  );
+}
+
+function Sources({
+  call,
+  sources,
+  locked,
+  onChange,
+  unused,
+  editBusy,
+}: {
+  call: Call;
+  sources: SourceSummary[];
+  locked: string | null;
+  onChange: () => void;
+  /** Files a built course doesn't cite yet (null before there is a built course). */
+  unused: Set<string> | null;
+  editBusy: boolean;
+}) {
   const [uploads, setUploads] = useState<Upload[]>([]);
   const [dragging, setDragging] = useState(false);
   const { error, run } = useAction();
@@ -194,6 +246,7 @@ function Sources({ call, sources, locked, onChange }: { call: Call; sources: Sou
                   </option>
                 ))}
               </select>
+              {unused?.has(s.id) && <AddToCourse call={call} source={s} busy={editBusy} />}
               {!locked && (
                 <button
                   className="icon-btn"
@@ -389,7 +442,7 @@ function Build({ build, canBuild, blocker, onBuild, busy, error }: { build: Buil
   );
 }
 
-function Preview({ call, draft, warnings }: { call: Call; draft: CourseSnapshot; warnings: string[] }) {
+function Preview({ call, draft, warnings, editBusy }: { call: Call; draft: CourseSnapshot; warnings: string[]; editBusy: boolean }) {
   const lessons = draft.lessons.filter((l) => !l.archived);
   const [lessonId, setLessonId] = useState<string | null>(null);
   const questions = lessons.reduce((n, l) => n + l.quiz.length, 0);
@@ -437,6 +490,7 @@ function Preview({ call, draft, warnings }: { call: Call; draft: CourseSnapshot;
             call={call}
             onAnswered={() => {}}
             onOpenLesson={setLessonId}
+            sectionTools={(section) => <TuneButton call={call} sectionId={section.id} busy={editBusy} />}
           />
         </div>
       )}
@@ -541,6 +595,8 @@ export function Studio({ call, overview, courseId, onPublished }: { call: Call; 
   const [settings, setSettings] = useState<ModelSettings | null>(null);
   const [draft, setDraft] = useState<CourseSnapshot | null>(null);
   const build = overview?.build ?? null;
+  const edit = overview?.edit ?? null;
+  const editBusy = edit?.status === "running";
   const status = overview?.course.status ?? details?.status ?? "draft";
   const building = useAction();
   const publishing = useAction();
@@ -552,14 +608,20 @@ export function Studio({ call, overview, courseId, onPublished }: { call: Call; 
     loadSources();
   }, [call, loadSources]);
 
-  // The built course, once there is one to review (and again after each rebuild).
+  // The course as it stands: the draft to review (again after each rebuild or applied edit), or once
+  // published, the live release (edits become new releases).
   const builtAt = build?.status === "done" ? build.finished_at : null;
+  const appliedAt = edit?.status === "applied" ? edit.finished_at : null;
+  const live = overview?.live ?? null;
   useEffect(() => {
     if (status !== "review" && status !== "published") return setDraft(null);
-    void call<CourseSnapshot>("draft")
+    void call<CourseSnapshot>(status === "published" ? "snapshot" : "draft")
       .then(setDraft)
       .catch(() => setDraft(null));
-  }, [call, status, builtAt]);
+  }, [call, status, builtAt, appliedAt, live]);
+  const unused = draft
+    ? new Set(sources.map((s) => s.id).filter((id) => !draft.lessons.some((l) => l.sections.some((sec) => sec.blocks.some((b) => "cites" in b && b.cites?.some((c) => c.source === id))))))
+    : null;
 
   const locked = status === "building" ? "Files can't change while the course builds." : status === "published" ? "A published course keeps its files: its lessons cite them." : null;
   const blocker =
@@ -588,7 +650,7 @@ export function Studio({ call, overview, courseId, onPublished }: { call: Call; 
       </Card>
 
       <Card step={2} title="Files" done={sources.length > 0}>
-        <Sources call={call} sources={sources} locked={locked} onChange={loadSources} />
+        <Sources call={call} sources={sources} locked={locked} onChange={loadSources} unused={unused} editBusy={editBusy} />
       </Card>
 
       <Card step={3} title="Model key" done={settings.hasKey}>
@@ -608,7 +670,7 @@ export function Studio({ call, overview, courseId, onPublished }: { call: Call; 
 
       {draft && (
         <Card step={5} title={status === "published" ? "The course" : "Review and publish"} done={status === "published"}>
-          <Preview call={call} draft={draft} warnings={build?.warnings ?? []} />
+          <Preview call={call} draft={draft} warnings={status === "published" ? [] : (build?.warnings ?? [])} editBusy={editBusy} />
           {status === "review" && (
             <div className="row" style={{ marginTop: "var(--s4)" }}>
               <button
@@ -628,7 +690,18 @@ export function Studio({ call, overview, courseId, onPublished }: { call: Call; 
         </Card>
       )}
 
-      <Card step={draft ? 6 : 5} title="Share">
+      {draft && (
+        <Card step={6} title="Improve the course">
+          <p className="small muted">
+            Change it without rebuilding: ask in your own words, tune one section from the preview above (✎ Tune), or add a file and choose "Add to the course".
+            {status === "published" ? " Applied changes become a new release; the old one stays in the history and can be restored." : ""}
+          </p>
+          <AskForm call={call} busy={editBusy} />
+          <EditStatus call={call} edit={edit} published={status === "published"} sourceName={(id) => sources.find((s) => s.id === id)?.name} />
+        </Card>
+      )}
+
+      <Card step={draft ? 7 : 5} title="Share">
         <Share call={call} courseId={courseId} />
       </Card>
     </article>

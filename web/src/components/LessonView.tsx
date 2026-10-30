@@ -1,5 +1,5 @@
 import { marked } from "marked";
-import { useEffect, useMemo, useState } from "react";
+import { type ReactNode, useEffect, useMemo, useState } from "react";
 import { interventionTracker, useLessonTimer } from "../tracking.js";
 import type { Block, Call, Certainty, CheckResult, CourseSnapshot, Exam, Intervention, QuizItem, QuizResult, Response } from "../types.js";
 import { InterventionView } from "./Interventions.js";
@@ -198,6 +198,8 @@ export function LessonView(props: {
   onAnswered: () => void;
   onOpenLesson: (id: string) => void;
   onOpenSection?: (lesson: string, section: string) => void;
+  /** Controls shown under each section's title (e.g. "Tune" for people who may edit the course). */
+  sectionTools?: (section: { id: string; title: string }) => ReactNode;
 }) {
   const { snapshot, parent, lessonId, mode, call } = props;
   const viewingHistory = mode === "history";
@@ -296,6 +298,7 @@ export function LessonView(props: {
         .map((section) => (
           <section key={section.id} id={section.id} className="section">
             {section.title && <h2>{section.title}</h2>}
+            {!viewingHistory && props.sectionTools?.(section)}
             {section.blocks
               .filter((b) => !b.archived || viewingHistory)
               .map((block) => (

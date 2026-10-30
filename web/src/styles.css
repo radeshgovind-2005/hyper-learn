@@ -569,3 +569,33 @@ select.input { padding: 7px 10px; }
 .check-feedback { margin-top: var(--s3); padding: var(--s3) var(--s4); border-radius: var(--radius-sm); font-size: var(--t-sm); }
 .check-feedback.right { background: var(--green-soft); color: var(--green); }
 .check-feedback.wrong { background: var(--red-soft); color: var(--red); }
+
+/* ─── Owner edits: tune, ask, review ─────────────────── */
+
+.section-tools { margin: calc(-1 * var(--s2)) 0 var(--s4); }
+.tune { margin-top: var(--s2); padding: var(--s3) var(--s4); border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface-2); }
+.tune-presets { display: flex; flex-wrap: wrap; gap: var(--s2); }
+.chip-btn {
+  border: 1px solid var(--line-strong); background: var(--canvas); color: var(--ink-2);
+  border-radius: 999px; padding: 4px 12px; font-size: var(--t-sm); font-weight: 600;
+}
+.chip-btn:hover { border-color: var(--blue); color: var(--blue); }
+.chip-btn.on { background: var(--blue); border-color: var(--blue); color: #fff; }
+
+.edit-status { display: flex; flex-direction: column; gap: var(--s3); }
+.proposal-reply { margin: 0; font-size: var(--t-md); }
+.change { border: 1px solid var(--line); border-radius: var(--radius-sm); padding: var(--s3); display: flex; flex-direction: column; gap: var(--s3); }
+.change-head { display: flex; align-items: center; gap: var(--s2); }
+.change-head .grow { flex: 1; min-width: 0; }
+.diff { display: grid; grid-template-columns: 1fr; gap: var(--s3); }
+.diff.two { grid-template-columns: 1fr 1fr; }
+.drawer .diff.two { grid-template-columns: 1fr; }
+@media (max-width: 760px) { .diff.two { grid-template-columns: 1fr; } }
+.diff-side { border-radius: var(--radius-sm); padding: var(--s3); font-size: var(--t-sm); max-height: 360px; overflow-y: auto; }
+.diff-side .prose p, .diff-side .prose ul { margin-bottom: var(--s2); }
+.diff-side.before { background: var(--surface-2); color: var(--ink-2); }
+.diff-side.after { background: var(--green-soft); }
+.add-to-course { flex-basis: 100%; }
+.file-row:has(.add-to-course) { flex-wrap: wrap; }
+.ask-change h3 { margin: 0; font-size: var(--t-md); }
+.ask-change hr { border: none; border-top: 1px solid var(--line); margin: var(--s2) 0 0; width: 100%; }
