@@ -548,11 +548,24 @@ function Preview({ call, draft, warnings, citations, editBusy }: { call: Call; d
 function Share({ call, courseId }: { call: Call; courseId: string }) {
   const [token, setToken] = useState<string | null | undefined>(undefined);
   const [members, setMembers] = useState<Member[]>([]);
+  // Members are paged on the server: a course can be shared with a whole class.
+  const [moreMembers, setMoreMembers] = useState<string | null>(null);
+  const [totalMembers, setTotalMembers] = useState(0);
+  const loadMoreMembers = () =>
+    moreMembers &&
+    void call<{ members: Member[]; next_cursor: string | null }>("members", [{ cursor: moreMembers }]).then((p) => {
+      setMembers((m) => [...m, ...p.members]);
+      setMoreMembers(p.next_cursor);
+    });
   const [copied, setCopied] = useState(false);
   const { busy, error, run } = useAction();
   const load = useCallback(() => {
     void call<{ token: string | null }>("invite").then((i) => setToken(i.token));
-    void call<Member[]>("members").then(setMembers);
+    void call<{ members: Member[]; next_cursor: string | null; total: number }>("members").then((p) => {
+      setMembers(p.members);
+      setMoreMembers(p.next_cursor);
+      setTotalMembers(p.total);
+    });
   }, [call]);
   useEffect(load, [load]);
   const link = token ? `${location.origin}/join/${encodeURIComponent(courseId)}/${encodeURIComponent(token)}` : null;
@@ -630,6 +643,16 @@ function Share({ call, courseId }: { call: Call; courseId: string }) {
             </li>
           ))}
         </ul>
+      )}
+      {moreMembers && (
+        <div className="row">
+          <button className="btn quiet sm" onClick={loadMoreMembers}>
+            Show more members
+          </button>
+          <span className="small muted">
+            {members.length} of {totalMembers}
+          </span>
+        </div>
       )}
       {error && <div className="notice">{error}</div>}
     </div>

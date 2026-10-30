@@ -34,12 +34,24 @@ export interface Member {
 export class SqlMembers {
   constructor(private readonly sql: Sql) {
     createStudioTables(sql);
+    sql`CREATE INDEX IF NOT EXISTS hl_members_joined ON hl_members (joined_at, user_id)`;
   }
   get(userId: string): Member | undefined {
     return this.sql<Member>`SELECT * FROM hl_members WHERE user_id = ${userId}`[0];
   }
   all(): Member[] {
     return this.sql<Member>`SELECT * FROM hl_members ORDER BY joined_at, user_id`;
+  }
+  /** Members in joining order from a keyset cursor (the last row's joined_at and user_id). */
+  page({ after, limit }: { after?: { joined_at: string; user_id: string }; limit: number }): Member[] {
+    const at = after?.joined_at ?? "";
+    const id = after?.user_id ?? "";
+    return this.sql<Member>`SELECT * FROM hl_members
+      WHERE joined_at > ${at} OR (joined_at = ${at} AND user_id > ${id})
+      ORDER BY joined_at, user_id LIMIT ${limit}`;
+  }
+  count(): number {
+    return (this.sql<{ n: number }>`SELECT COUNT(*) AS n FROM hl_members`[0] as { n: number }).n;
   }
   /** Adds someone or changes their role; name and email are refreshed when given. */
   set(member: { user_id: string; role: CourseRole; name?: string | undefined; email?: string | undefined }, at: string) {
@@ -98,5 +110,40 @@ export class SqlSources {
   }
   delete(id: string) {
     this.sql`DELETE FROM hl_sources WHERE id = ${id}`;
+  }
+}
+
+/**
+ * Personal coach lessons written without the learner's own words: the same target and approach on the
+ * same release gives the same lesson, so it is written once and reused for everyone who needs it.
+ * Rows for releases that are no longer served are dropped when a new one is stored.
+ */
+export class SqlSharedRepairs {
+  constructor(private readonly sql: Sql) {
+    sql`CREATE TABLE IF NOT EXISTS hl_shared_repairs (
+      key TEXT PRIMARY KEY,
+      release TEXT NOT NULL,
+      data TEXT NOT NULL,
+      uses INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL
+    )`;
+  }
+  /** The stored lesson for a key, counting the reuse. */
+  take<T>(key: string): T | undefined {
+    const [row] = this.sql<{ data: string }>`SELECT data FROM hl_shared_repairs WHERE key = ${key}`;
+    if (!row) return undefined;
+    this.sql`UPDATE hl_shared_repairs SET uses = uses + 1 WHERE key = ${key}`;
+    return JSON.parse(row.data) as T;
+  }
+  put(key: string, release: string, data: unknown, at: string, served: readonly string[]) {
+    if (served.length > 0) {
+      const keep = JSON.stringify(served);
+      this.sql`DELETE FROM hl_shared_repairs WHERE release NOT IN (SELECT value FROM json_each(${keep}))`;
+    }
+    this.sql`INSERT INTO hl_shared_repairs (key, release, data, created_at) VALUES (${key}, ${release}, ${JSON.stringify(data)}, ${at})
+      ON CONFLICT (key) DO UPDATE SET data = excluded.data`;
+  }
+  clear() {
+    this.sql`DELETE FROM hl_shared_repairs`;
   }
 }

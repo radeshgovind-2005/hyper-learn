@@ -183,6 +183,33 @@ describe("study coach: through the service", () => {
     assert.equal(after.writes, false);
   });
 
+  it("writes a lesson once for learners with the same problem and no words of their own", async () => {
+    let writes = 0;
+    const counting: CoachRepairer = (input) => {
+      writes++;
+      return writeRepair(input, cannedBuilderModels());
+    };
+    const s = await published();
+    (s as unknown as { options: { repairer: CoachRepairer } }).options.repairer = counting;
+    const lesson = s.snapshot().lessons[0]!;
+    const diagnose = (who: string, note?: string) => {
+      const st = s.startDiagnosis(who, lesson.id, note);
+      return s.submitDiagnosis(who, st.diagnosis!.id, st.diagnosis!.questions.map((q) => wrongly(q, (r) => Boolean(r.misconception))));
+    };
+    diagnose("user_a");
+    s.beginRepair("user_a");
+    await s.continueRepair("user_a");
+    diagnose("user_b");
+    const reused = s.beginRepair("user_b");
+    assert.equal(reused.write, false, "nothing to write");
+    assert.equal(reused.state.repair!.status, "ready");
+    assert.equal(reused.state.repair!.shared, true);
+    assert.equal(writes, 1);
+    diagnose("user_c", "I mix up the notches");
+    const own = s.beginRepair("user_c");
+    assert.equal(own.write, true, "their own words get a lesson of their own");
+  });
+
   it("keeps each learner's coach to themselves, and refuses out-of-order calls", async () => {
     const s = await published();
     const lesson = s.snapshot().lessons[0]!;

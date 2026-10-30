@@ -52,7 +52,7 @@ export function createAuthorNode(store: ReleaseStore, model: AuthorModel = creat
           misconception,
           ...(evidence && { evidence }),
           templates,
-          history: store.all(),
+          history: store.summaries(),
         }),
       ),
     ];

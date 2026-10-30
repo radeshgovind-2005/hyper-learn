@@ -5,6 +5,7 @@ import { interventionTracker, useLessonTimer } from "../tracking.js";
 import type { Block, Call, Certainty, CheckResult, CitedSource, CourseSnapshot, Exam, Intervention, QuizItem, QuizResult, Response } from "../types.js";
 import { InterventionView } from "./Interventions.js";
 import { QuizFlow } from "./Quiz.js";
+import { plainPreview, type RailItem, SectionRail } from "./SectionRail.js";
 
 // Lesson Markdown is authored course content (agents can't write Markdown blocks, only templated
 // interventions, which render as plain text), so it is rendered as HTML.
@@ -310,8 +311,20 @@ export function LessonView(props: {
     }
   }
 
+  // The margin map: each section with a preview of its first text, then the exam.
+  const railItems: RailItem[] = [
+    ...lesson.sections
+      .filter((s) => (!s.archived || viewingHistory) && s.title)
+      .map((s) => {
+        const first = s.blocks.find((b) => !b.archived && "markdown" in b);
+        return { id: s.id, title: s.title, preview: first && "markdown" in first ? plainPreview(first.markdown) : "" };
+      }),
+    ...(learning ? [{ id: "lesson-quiz", title: "Check your understanding", preview: lesson.exam ? "The exam: questions drawn per objective. Pass at 75%." : "The quiz for this lesson." }] : []),
+  ];
+
   return (
     <article className="lesson">
+      {mode !== "preview" && <SectionRail items={railItems} />}
       {props.approvalWaiting && (
         <div className="notice approval">
           <span className="grow">
@@ -396,7 +409,7 @@ export function LessonView(props: {
       )}
 
       {learning && (
-        <section className="quiz" aria-label="Quiz">
+        <section className="quiz" id="lesson-quiz" aria-label="Quiz">
           <div className="quiz-top">
             <h2>Check your understanding</h2>
             <span className="small muted">{drawn ? "Pass at 75%, with every objective shown" : "Pass at 75%"}</span>

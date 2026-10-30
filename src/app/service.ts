@@ -17,7 +17,7 @@ import { createApprover, createApproverModel } from "../nodes/approver.js";
 import { type ApprovalMode, type ApprovalRequest, type ApprovalResponse, type Harness, settleTrial } from "../nodes/release.js";
 import { nextSteps, type PathStep } from "../path/route.js";
 import { applyChanges, type Change, describeChange, invertChanges, maxBump, maxTier, riskTier, semverBump } from "../releases/changes.js";
-import { type Release, revert } from "../releases/release.js";
+import { type Release, type ReleaseInfo, revert } from "../releases/release.js";
 import { releasePerformance, scenarioSnapshot } from "../simulation/index.js";
 import type { Scenario } from "../simulation/scenarios.js";
 import { NoExemplar } from "../interventions/reference.js";
@@ -27,7 +27,7 @@ import { MAX_PAGE_CHARS, SOURCE_ROLES, type Source, type SourceRole, SourceSchem
 import type { State } from "../state.js";
 import { PersistentMemorySaver } from "../storage/checkpointer.js";
 import { type LearnerEvent, type Sql, SqlEventLog, SqlMeta, SqlProfiles, SqlReleaseStore, SqlThreadStore } from "../storage/sql.js";
-import { type Member, SqlMembers, SqlSources, type SourceSummary } from "../storage/studio.js";
+import { type Member, SqlMembers, SqlSharedRepairs, SqlSources, type SourceSummary } from "../storage/studio.js";
 import type { Identity as Person } from "../auth/identity.js";
 import { COURSE_ROLES, type CourseRole } from "./access.js";
 import { builtInCourse, type CoachRepairer, type CourseBuilder, type CourseDefinition, type CourseEditor, FEATURED_COURSE, isStudioId } from "./courses.js";
@@ -324,6 +324,8 @@ export interface CoachState {
     started_at: string;
     finished_at?: string;
     lesson?: PersonalSection;
+    /** Reused from another learner with the same target (written without anyone's own words). */
+    shared?: boolean;
     /** Without a model (the featured course, or no key): the course's own help instead of a new lesson. */
     fallback?: { kind: "intervention"; block_id: string } | { kind: "review"; lesson: string; section_id: string };
     problems?: string[];
@@ -335,6 +337,9 @@ export interface CoachState {
   seen: string[];
   repairs_today: { date: string; count: number };
 }
+
+/** Lesson-time reports are kept one by one for this long, then merged per learner, lesson and day. */
+export const RETAIN_DETAIL_DAYS = 30;
 
 /** Personal repair lessons one learner may ask for in a day: each costs the owner a few model calls. */
 export const MAX_REPAIRS_PER_DAY = 8;
@@ -371,6 +376,19 @@ const EditRequestSchema = z.discriminatedUnion("kind", [
   z.strictObject({ kind: z.literal("add_source"), source_id: z.string().min(1).max(20), instruction: z.string().trim().max(2_000).optional() }),
 ]);
 
+/** Any paged list: a page size (50 by default, at most 200) and the cursor the last page returned. */
+const PageQuerySchema = z.strictObject({
+  cursor: z.string().max(300).optional(),
+  limit: z.number().int().min(1).max(200).default(50),
+});
+
+/** The instructors' list: a page size (50 by default, at most 200), a cursor, and a filter. */
+const LearnersQuerySchema = z.strictObject({
+  cursor: z.string().max(300).optional(),
+  limit: z.number().int().min(1).max(200).default(50),
+  needs_help: z.boolean().default(false),
+});
+
 /** One line for the release history: what the owner asked for. */
 function describeRequest(request: EditRequest, sourceName?: string): string {
   if (request.kind === "ask") return `Owner request: ${request.instruction}`;
@@ -405,7 +423,7 @@ export interface ServiceOptions {
   embedder?: Embedder;
 }
 
-const summarize = (r: Release): ReleaseSummary => ({
+const summarize = (r: ReleaseInfo): ReleaseSummary => ({
   version: r.version,
   parent: r.parent,
   status: r.status,
@@ -437,6 +455,7 @@ export class CourseService {
   /** A studio course's members and their roles. Built-in courses use global roles instead. */
   readonly members: SqlMembers;
   private readonly sources: SqlSources;
+  private readonly sharedRepairs: SqlSharedRepairs;
   private readonly meta: SqlMeta;
   private readonly saver: PersistentMemorySaver;
   private readonly now: () => string;
@@ -459,6 +478,7 @@ export class CourseService {
     this.profiles = new SqlProfiles(sql);
     this.members = new SqlMembers(sql);
     this.sources = new SqlSources(sql);
+    this.sharedRepairs = new SqlSharedRepairs(sql);
     this.saver = new PersistentMemorySaver(new SqlThreadStore(sql));
     // Builds and runs live in this instance's memory, so one still marked running at start was cut off by a restart.
     if (this.record()?.status === "building") this.endBuild("failed", { problems: ["The build was interrupted (the server restarted); build again"] });
@@ -487,7 +507,7 @@ export class CourseService {
         at,
       });
     } else {
-      for (const release of this.releases.all()) {
+      for (const release of this.releases.summaries()) {
         if (release.status !== "trial" || release.trial_source === "real") continue;
         revert(this.releases, release.version);
         this.releases.update(release.version, { decision: { verdict: "revert", reasons: ["The server restarted before this trial was measured."] } });
@@ -561,7 +581,7 @@ export class CourseService {
       scenario: this.scenario(),
       scenarios: this.scenarios().map((s) => ({ id: s.id, title: s.title, description: s.description })),
       live: this.published() ? this.releases.live().version : null,
-      releases: this.releases.all().map(summarize),
+      releases: this.releases.summaries().map(summarize),
       run: this.run(),
       trial: this.trial(),
       agentsAvailable: this.agentsAvailable(),
@@ -602,6 +622,8 @@ export class CourseService {
     this.meta.set("run", null);
     this.releases.reset(this.startingSnapshot(scenario), this.now);
     this.events.clear();
+    this.profiles.clearStates();
+    this.sharedRepairs.clear();
   }
 
   // ─── Learners ─────────────────────────────────────────────────────
@@ -678,6 +700,7 @@ export class CourseService {
     const at = this.now();
     this.events.append({ learner, kind: "answer", lesson: lessonId, release: live.version, data: { item_ids: expected, responses, certainty, items, passed, score, attempt, session }, at });
     this.events.append({ learner, kind: "path", lesson: lessonId, release: live.version, data: { steps, session }, at });
+    this.refreshLearner(learner, at);
 
     return {
       release: live.version,
@@ -801,6 +824,7 @@ export class CourseService {
     if (event.kind === "lesson") {
       if (!live.snapshot.lessons.some((l) => l.id === event.lesson && !l.archived)) throw new Error(`No lesson "${event.lesson}"`);
       this.events.append({ learner, kind: "lesson", lesson: event.lesson, release: live.version, data: { active_ms: event.active_ms, session }, at: this.now() });
+      this.compactOldEvents();
       return;
     }
     const block = liveInterventions(live.snapshot).find((i) => i.block_id === event.block_id);
@@ -855,6 +879,14 @@ export class CourseService {
     this.profiles.delete(learner);
     this.meta.set(`coach:${learner}`, null);
     return { deleted: this.events.deleteLearner(learner) };
+  }
+
+  /** At most once a day, on a write that already happens: old lesson-time rows merged per day (see compactLessonTime). */
+  private compactOldEvents() {
+    const today = this.now().slice(0, 10);
+    if (this.meta.get<string>("compacted_on") === today) return;
+    this.meta.set("compacted_on", today);
+    this.events.compactLessonTime(new Date(Date.parse(this.now()) - RETAIN_DETAIL_DAYS * 86_400_000).toISOString());
   }
 
   /** Remembers who signed in (name and email as their verified token carries them), for instructors' views. */
@@ -970,6 +1002,13 @@ export class CourseService {
     const base = { id: this.newId(), target, approach: approachFor(target, attempt), attempt, release: release.version, started_at: this.now() };
 
     const write = Boolean(this.options.repairer && this.record() && this.agentsAvailable());
+    // Without the learner's own words the lesson is the same for everyone with this target: reuse it.
+    const shared = write && !d.note ? this.sharedRepairs.take<PersonalSection>(this.sharedKey(base.release, target, base.approach)) : undefined;
+    if (shared) {
+      state.repair = { ...base, status: "ready", lesson: shared, shared: true, finished_at: this.now(), recheck: this.recheckFor(state, release.snapshot, target) };
+      this.saveCoach(learner, state);
+      return { state: this.coachState(learner), write: false };
+    }
     if (write) {
       const today = this.now().slice(0, 10);
       const used = state.repairs_today.date === today ? state.repairs_today.count : 0;
@@ -987,6 +1026,10 @@ export class CourseService {
     }
     this.saveCoach(learner, state);
     return { state: this.coachState(learner), write };
+  }
+
+  private sharedKey(release: string, target: Target, approach: Approach) {
+    return `${release}|${targetKey(target)}|${approach}`;
   }
 
   private recheckFor(state: CoachState, snapshot: CourseSnapshot, target: Target): CoachQuestion[] {
@@ -1008,7 +1051,9 @@ export class CourseService {
       const record = this.studio();
       const provider = await this.ownerProvider();
       const snapshot = this.releases.get(repair.release)!.snapshot;
-      const wrong = (state.diagnosis?.result?.wrong ?? []).filter((w) => w.lesson === repair.target.lesson);
+      // A learner who said what confuses them gets a lesson of their own; otherwise it is written to be shared.
+      const note = state.diagnosis?.note;
+      const wrong = note ? (state.diagnosis?.result?.wrong ?? []).filter((w) => w.lesson === repair.target.lesson) : [];
       const result = await this.options.repairer!(
         {
           course: { course_id: record.id, title: record.title, ...(record.language && { language: record.language }) },
@@ -1016,12 +1061,18 @@ export class CourseService {
           sources: this.sources.all(),
           target: repair.target,
           approach: repair.approach,
-          ...(state.diagnosis?.note && { note: state.diagnosis.note }),
+          ...(note && { note }),
           wrong,
         },
         provider.structured,
       );
-      if (result.ok) finish({ status: "ready", lesson: result.repair, recheck: this.recheckFor(state, snapshot, repair.target) });
+      if (result.ok) {
+        if (!note) {
+          const served = [this.releases.live().version, ...(this.openTrial() ? [this.openTrial()!.version] : [])];
+          this.sharedRepairs.put(this.sharedKey(repair.release, repair.target, repair.approach), repair.release, result.repair, this.now(), served);
+        }
+        finish({ status: "ready", lesson: result.repair, recheck: this.recheckFor(state, snapshot, repair.target) });
+      }
       else finish({ status: "failed", problems: result.problems.map((p) => this.redact(p)) });
     } catch (error) {
       finish({ status: "failed", problems: [this.redact(error instanceof Error ? error.message : String(error))] });
@@ -1064,23 +1115,22 @@ export class CourseService {
   coachInsights() {
     this.requirePublished();
     const byKey = new Map<string, { target: Target; learners: Set<string>; repaired: number; fixed: number; approaches: Record<string, { tried: number; fixed: number }> }>();
-    for (const { learner } of this.events.learners()) {
-      for (const e of this.events.forLearner(learner)) {
-        if (e.kind !== "coach") continue;
-        const d = e.data as { type: string; priority?: string; target?: Target; target_key?: string; approach?: string; fixed?: boolean };
-        const key = d.type === "diagnosis" ? d.priority : d.target_key;
-        if (!key || !d.target || d.target.kind === "ready") continue;
-        const row = byKey.get(key) ?? { target: d.target, learners: new Set<string>(), repaired: 0, fixed: 0, approaches: {} };
-        row.learners.add(learner);
-        if (d.type === "recheck") {
-          row.repaired++;
-          if (d.fixed) row.fixed++;
-          const a = (row.approaches[d.approach ?? "?"] ??= { tried: 0, fixed: 0 });
-          a.tried++;
-          if (d.fixed) a.fixed++;
-        }
-        byKey.set(key, row);
+    // Only coach events, by index: this grows with coach use, not with the whole event log.
+    for (const e of this.events.ofKind("coach")) {
+      const learner = e.learner;
+      const d = e.data as { type: string; priority?: string; target?: Target; target_key?: string; approach?: string; fixed?: boolean };
+      const key = d.type === "diagnosis" ? d.priority : d.target_key;
+      if (!key || !d.target || d.target.kind === "ready") continue;
+      const row = byKey.get(key) ?? { target: d.target, learners: new Set<string>(), repaired: 0, fixed: 0, approaches: {} };
+      row.learners.add(learner);
+      if (d.type === "recheck") {
+        row.repaired++;
+        if (d.fixed) row.fixed++;
+        const a = (row.approaches[d.approach ?? "?"] ??= { tried: 0, fixed: 0 });
+        a.tried++;
+        if (d.fixed) a.fixed++;
       }
+      byKey.set(key, row);
     }
     const live = this.releases.live().snapshot;
     return [...byKey]
@@ -1098,54 +1148,70 @@ export class CourseService {
 
   // ─── Instructors ──────────────────────────────────────────────────
 
-  /** Every learner with a summary an instructor can scan: activity, mastery, and beliefs still showing. */
-  learners() {
-    const profiles = new Map(this.profiles.all().map((p) => [p.user_id, p] as const));
-    const lastEvent = new Map(this.events.learners().map((l) => [l.learner, l.last_at] as const));
-    const ids = [...new Set([...profiles.keys(), ...lastEvent.keys()])];
-    const now = Date.parse(this.now());
+  /**
+   * A learner's row in the instructors' list, recomputed from their own events when they submit a quiz
+   * (the one thing that changes it), so the list reads one row per learner instead of every event.
+   */
+  private refreshLearner(learner: string, at: string) {
+    this.profiles.touch(learner, at);
+    const p = this.myProgress(learner);
+    const open = p.beliefs.filter((b) => !b.cleared);
+    const lastQuiz = p.quizzes[0];
+    this.profiles.setState(learner, { needs_help: open.length > 0 || (lastQuiz !== undefined && !lastQuiz.passed), open_beliefs: open.map((b) => ({ id: b.id, belief: b.belief, lesson: b.lesson })) }, at);
+  }
 
-    const rows = ids.map((id) => {
-      const p = this.myProgress(id);
-      const profile = profiles.get(id);
-      const open = p.beliefs.filter((b) => !b.cleared);
-      const lastQuiz = p.quizzes[0];
-      const last_active = [profile?.last_seen, lastEvent.get(id)].filter((x): x is string => Boolean(x)).sort().at(-1) ?? null;
+  /** Courses from before the list kept rows: fill them once from the event log. */
+  private backfillLearners() {
+    if (this.meta.get<boolean>("learner_state_v1")) return;
+    for (const { learner, last_at } of this.events.learners()) {
+      this.profiles.touch(learner, last_at);
+      this.refreshLearner(learner, last_at);
+    }
+    this.meta.set("learner_state_v1", true);
+  }
+
+  /**
+   * One page of learners for instructors, most recently active first (keyset cursor), with headline
+   * numbers and the most widespread beliefs counted in SQL. Each row's progress is computed for that
+   * page only, so the cost grows with the page size, not with the number of learners.
+   */
+  learners(input: unknown = {}) {
+    const parsed = LearnersQuerySchema.safeParse(input ?? {});
+    if (!parsed.success) throw new Error(firstIssue(parsed.error));
+    const { cursor, limit, needs_help } = parsed.data;
+    this.backfillLearners();
+    let after: { last_seen: string; user_id: string } | undefined;
+    if (cursor) {
+      const [last_seen, user_id] = cursor.split("|");
+      if (!last_seen || !user_id) throw new Error("Bad cursor");
+      after = { last_seen, user_id };
+    }
+    const page = this.profiles.page({ ...(after && { after }), limit: limit + 1, needsHelp: needs_help });
+    const rows = page.slice(0, limit).map((profile) => {
+      const p = this.myProgress(profile.user_id);
       return {
-        user_id: id,
-        name: profile?.name ?? null,
-        email: profile?.email ?? null,
-        role: profile?.role ?? "learner",
-        last_active,
+        user_id: profile.user_id,
+        name: profile.name ?? null,
+        email: profile.email ?? null,
+        role: profile.role ?? "learner",
+        last_active: profile.last_seen,
         sessions: p.totals.sessions,
         active_ms: p.totals.active_ms,
         quizzes: p.totals.quizzes,
         mastered: p.totals.mastered,
         lessons: p.totals.lessons,
-        open_beliefs: open.map((b) => ({ id: b.id, belief: b.belief, lesson: b.lesson })),
+        open_beliefs: profile.open_beliefs ?? [],
         /** Still showing a belief, or failed their latest quiz. */
-        needs_help: open.length > 0 || (lastQuiz !== undefined && !lastQuiz.passed),
+        needs_help: profile.needs_help ?? false,
       };
     });
-    rows.sort((a, b) => (b.last_active ?? "").localeCompare(a.last_active ?? ""));
-
-    const holders = new Map<string, { id: string; belief: string; learners: number }>();
-    for (const row of rows) {
-      for (const b of row.open_beliefs) {
-        const entry = holders.get(b.id) ?? { id: b.id, belief: b.belief, learners: 0 };
-        entry.learners++;
-        holders.set(b.id, entry);
-      }
-    }
-    const week = 7 * 24 * 3_600_000;
+    const last = rows.at(-1);
+    const week = new Date(Date.parse(this.now()) - 7 * 24 * 3_600_000).toISOString();
+    const totals = this.profiles.totals(week);
     return {
-      summary: {
-        learners: rows.length,
-        active_this_week: rows.filter((r) => r.last_active && now - Date.parse(r.last_active) < week).length,
-        needs_help: rows.filter((r) => r.needs_help).length,
-        common_beliefs: [...holders.values()].sort((a, b) => b.learners - a.learners).slice(0, 5),
-      },
+      summary: { learners: totals.learners, active_this_week: totals.active, needs_help: totals.needs_help, common_beliefs: totals.common_beliefs },
       learners: rows,
+      next_cursor: page.length > limit && last ? `${last.last_active}|${last.user_id}` : null,
     };
   }
 
@@ -1311,7 +1377,8 @@ export class CourseService {
   // ─── Trials on real learners ──────────────────────────────────────
 
   private openTrial(): Release | undefined {
-    return this.releases.all().find((r) => r.status === "trial" && r.trial_source === "real");
+    const info = this.releases.summaries().find((r) => r.status === "trial" && r.trial_source === "real");
+    return info && this.releases.get(info.version);
   }
 
   trial(): TrialStatus | null {
@@ -1444,6 +1511,20 @@ export class CourseService {
   memberRole(userId: string): CourseRole | null {
     if (this.fixed) return null;
     return this.members.get(userId)?.role ?? null;
+  }
+
+  /** One page of members in joining order (50 by default, at most 200): a course can be shared with a whole class. */
+  memberPage(input: unknown = {}) {
+    this.studio();
+    const parsed = PageQuerySchema.safeParse(input ?? {});
+    if (!parsed.success) throw new Error(firstIssue(parsed.error));
+    const { cursor, limit } = parsed.data;
+    const [joined_at, user_id] = cursor ? cursor.split("|") : [];
+    if (cursor && (!joined_at || !user_id)) throw new Error("Bad cursor");
+    const page = this.members.page({ ...(joined_at && user_id && { after: { joined_at, user_id } }), limit: limit + 1 });
+    const members = page.slice(0, limit);
+    const last = members.at(-1);
+    return { members, total: this.members.count(), next_cursor: page.length > limit && last ? `${last.joined_at}|${last.user_id}` : null };
   }
 
   memberList(): Member[] {

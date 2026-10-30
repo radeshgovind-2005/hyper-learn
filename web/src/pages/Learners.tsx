@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import type { Call } from "../types.js";
 import { minutes, pct, type Progress, ProgressSections, when } from "./MyProgress.js";
 
@@ -19,6 +19,8 @@ interface LearnerRow {
 interface LearnersData {
   summary: { learners: number; active_this_week: number; needs_help: number; common_beliefs: { id: string; belief: string; learners: number }[] };
   learners: LearnerRow[];
+  /** Pass back for the next page; null on the last one. */
+  next_cursor: string | null;
 }
 interface Detail {
   profile: { user_id: string; name: string | null; email: string | null; role: string };
@@ -43,8 +45,21 @@ export function Learners({ call, onOpen }: { call: Call; onOpen: (userId: string
   const [data, setData] = useState<LearnersData | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [onlyHelp, setOnlyHelp] = useState(false);
-  useEffect(() => void call<LearnersData>("learners").then(setData, (e: unknown) => setError(e instanceof Error ? e.message : String(e))), [call]);
-  const rows = useMemo(() => (data ? data.learners.filter((l) => !onlyHelp || l.needs_help) : []), [data, onlyHelp]);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const fail = useCallback((e: unknown) => setError(e instanceof Error ? e.message : String(e)), []);
+  // The server pages and filters: a course can have thousands of learners.
+  useEffect(() => {
+    setData(null);
+    void call<LearnersData>("learners", [{ needs_help: onlyHelp }]).then(setData, fail);
+  }, [call, onlyHelp, fail]);
+  const loadMore = () => {
+    if (!data?.next_cursor) return;
+    setLoadingMore(true);
+    void call<LearnersData>("learners", [{ needs_help: onlyHelp, cursor: data.next_cursor }])
+      .then((next) => setData((d) => (d ? { ...next, learners: [...d.learners, ...next.learners] } : next)), fail)
+      .finally(() => setLoadingMore(false));
+  };
+  const rows = data?.learners ?? [];
 
   if (error) return <div className="lesson"><div className="notice">{error}</div></div>;
   if (!data) return <div className="empty">Loading learners…</div>;
@@ -111,6 +126,16 @@ export function Learners({ call, onOpen }: { call: Call; onOpen: (userId: string
               </li>
             ))}
           </ul>
+        )}
+        {data.next_cursor && (
+          <div className="row" style={{ marginTop: "var(--s4)" }}>
+            <button className="btn secondary sm" disabled={loadingMore} onClick={loadMore}>
+              {loadingMore ? "Loading…" : "Load more"}
+            </button>
+            <span className="small muted">
+              Showing {rows.length} of {onlyHelp ? data.summary.needs_help : data.summary.learners}
+            </span>
+          </div>
         )}
       </section>
     </article>

@@ -22,6 +22,58 @@ Architecture and setup are in README.md.
 - Learner events are append-only and pinned to the release the learner was *served* (`servedRelease`).
   During a real trial, that may be the trial and not the live release.
 
+## Engineering: how things grow (apply without being asked)
+For everything you add, work out three things before you write it. Keep the fix simple, with no
+infrastructure "for later", but make sure the cost stays bounded. Known gaps are in
+`docs/engineering/scaling-audit.md`. Fix them when you touch that code, and don't add new ones.
+
+1. **What does it grow with?** Every table, list, cache, broadcast or model call grows with something:
+   - per course, per learner, per release, per event, per member, per file;
+   - or "with time": an append-only log.
+
+   Name it, and know whether that dimension stays small (sources: capped at 30) or doesn't (learners,
+   events, releases, members).
+2. **When does the work happen, and who pays?** Choose the moment deliberately:
+   - **On write, once:** keep a summary row current when the thing that changes it happens. Example:
+     `hl_learner_state` is refreshed when a quiz is submitted.
+   - **On read, many times:** cheap only if bounded by a page or an index.
+   - **In the background:** for slow work (builds, edits, coach lessons).
+
+   Don't recompute over everything on every request, and don't write more often than anyone reads.
+   Lesson time is reported every 5 minutes, not every minute.
+3. **Can it be shared?** If many users get the same result, compute it once and reuse it, keyed by what
+   it depends on:
+   - the parsed live release, cached per instance until a write;
+   - coach lessons per release, target and approach, when the learner gave no words of their own;
+   - course existence, cached in the Worker for a minute.
+
+   Personal work only where it is actually personal.
+
+The rules that follow from that:
+- **Lists that grow are paged on the server** with a keyset cursor (`WHERE (col, id) > (?, ?) ORDER BY
+  col, id LIMIT n+1`), returning `{ items, next_cursor }`. Default page 50, clamped to 200. The UI shows
+  "Load more". Never return or load all of a set that grows: learners, members, events, releases.
+- **SQLite does the filtering, sorting and counting.** Don't load rows and use `.filter` in JS. Every
+  `WHERE`/`ORDER BY` column on a growing table is indexed. No query or RPC inside a loop over a growing set.
+- **Don't parse big blobs to read one field.** Queryable fields get their own columns (releases keep
+  `status` and `info` beside the snapshot). Schema changes are additive and fill old rows once.
+- **Durable Object limits** ([docs](https://developers.cloudflare.com/durable-objects/platform/limits/)):
+  - One object is single-threaded (about 1,000 requests per second), with 128 MB of memory and 10 GB
+    of SQLite.
+  - A row is at most 2 MB, and an incoming WebSocket message at most 1 MiB.
+  - So no single global object on the per-request path, small rows, and chunked uploads.
+- **State broadcast to every connection holds summaries only**, never per-learner data or growing lists.
+- **Every expensive or user-triggered operation is bounded:**
+  - input sizes are checked on the server;
+  - model calls have a per-user quota and a per-run budget;
+  - network calls have a timeout and bounded retries;
+  - polling stops.
+- **Append-only logs need a retention plan.** Re-read state after every `await`. Long work is
+  idempotent and recovers after a restart.
+- **Each role gets only what it needs.** Learners never get answer keys or other learners' data.
+- **Test at volume.** Anything that touches a growing set gets a test with realistic volume that checks
+  page size and time (`src/app/scale.test.ts`).
+
 ## Security rules
 - Never commit or print secrets: `.dev.vars`, `.env`, `.admin-token`.
 - `AUTH_DEV_BYPASS` is for local smoke tests only. Never set it on the deployed Worker. Remove it from
@@ -33,6 +85,9 @@ Architecture and setup are in README.md.
 2. Back up `.wrangler/state` and `.dev.vars` to the scratchpad.
 3. Add `AUTH_DEV_BYPASS=true`, then connect with `AgentClient` and `?devUser=&devRole=`.
 4. Afterwards, restore both backups and restart. Check that a socket without a token gets 401.
+
+Alternatively, leave `.dev.vars` alone: run `wrangler dev --port 8799 --persist-to <scratch dir> --var AUTH_DEV_BYPASS:true
+--var KEY_ENCRYPTION_SECRET:<random>` on a spare port, and delete the scratch state afterwards.
 
 `wrangler.jsonc` has `dev.host: "localhost"` because otherwise the custom-domain route rewrites dev URLs.
 

@@ -1,11 +1,15 @@
 import { useEffect, useRef } from "react";
 import type { Call } from "./types.js";
 
-/** How often to report time on a lesson while it stays open. */
-const FLUSH_MS = 60_000;
+/**
+ * How often to report time on a lesson while it stays open and visible. Leaving the lesson, hiding the
+ * tab and closing the page report at once, so this only bounds what a crash could lose; every report is
+ * a row in the course's event log, so it is every 5 minutes, not every minute (the server accepts up to 10).
+ */
+const FLUSH_MS = 5 * 60_000;
 
 /**
- * Reports time spent on a lesson while its tab is visible: every minute, when the tab is hidden, and when
+ * Reports time spent on a lesson while its tab is visible: every 5 minutes, when the tab is hidden, and when
  * the learner moves to another lesson. Best effort: a report that fails is dropped, never retried in a loop.
  */
 export function useLessonTimer(lessonId: string, call: Call, enabled: boolean) {
