@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import { stampRetryable } from "@langchain/core/errors";
 import { type CourseSnapshot, courseFromSnapshot, isTextBlock } from "../course/compile.js";
 import { mergeDrafts, problemsByPart } from "./assess.js";
 import { buildCourse, MAX_FIX_ROUNDS } from "./build.js";
+import { CallBudgetExceeded, isRetryable, ModelCalls } from "./models.js";
 import { assessmentSentences, copiedSentence, routeValidationError, studioChecks } from "./checks.js";
 import { EXAM, INPUT, NOTES, spiedModels, totalCalls } from "./fixtures.test-helpers.js";
 import type { PlannedSection } from "./plan.js";
@@ -442,5 +444,63 @@ describe("budgets on a large input", () => {
     }
     assert.ok(models.digester.prompts.length > 2, "the material is read in several chunks");
     assert.ok(result.report.warnings.some((w) => /sample of the material's key ideas/.test(w)));
+  });
+});
+
+describe("model call retries", () => {
+  const failing = (errors: unknown[]) => {
+    let calls = 0;
+    return {
+      get calls() {
+        return calls;
+      },
+      invoke: async () => {
+        const error = errors[calls++];
+        if (error) throw error;
+        return "ok";
+      },
+    };
+  };
+  const httpError = (status: number) => Object.assign(new Error(`${status} error`), { status });
+  const setup = (maxCalls = 10) => {
+    const waits: number[] = [];
+    const calls = new ModelCalls(24_000, maxCalls, { sleep: async (ms) => void waits.push(ms) });
+    return { calls, waits };
+  };
+
+  it("retries a server error after growing waits", async () => {
+    const { calls, waits } = setup();
+    const model = failing([httpError(500), httpError(503), new Error("socket hang up")]);
+    assert.equal(await calls.invoke(model, "writer", "x"), "ok");
+    assert.deepEqual(waits, [2_000, 8_000, 30_000]);
+    assert.equal(calls.count, 4, "every attempt counts toward the build's limit");
+  });
+
+  it("gives up after the last wait", async () => {
+    const { calls, waits } = setup();
+    const model = failing([httpError(500), httpError(500), httpError(500), httpError(502)]);
+    await assert.rejects(calls.invoke(model, "writer", "x"), /502 error/);
+    assert.equal(waits.length, 3);
+  });
+
+  it("doesn't retry an error that would fail the same way", async () => {
+    const { calls, waits } = setup();
+    await assert.rejects(calls.invoke(failing([httpError(401)]), "writer", "x"), /401/);
+    assert.deepEqual(waits, []);
+    assert.equal(isRetryable(httpError(400)), false);
+    assert.equal(isRetryable(httpError(429)), true);
+    assert.equal(isRetryable(new Error("no status")), true);
+  });
+
+  it("follows LangChain's own mark", () => {
+    assert.equal(isRetryable(stampRetryable(httpError(429), false)), false, "an exhausted quota");
+    assert.equal(isRetryable(stampRetryable(new Error("context window"), false)), false);
+    assert.equal(isRetryable(stampRetryable(httpError(400), true)), true);
+  });
+
+  it("stops retrying at the build's call limit", async () => {
+    const { calls } = setup(2);
+    await assert.rejects(calls.invoke(failing([httpError(500), httpError(500)]), "writer", "x"), CallBudgetExceeded);
+    assert.equal(calls.count, 2);
   });
 });

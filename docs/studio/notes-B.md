@@ -36,9 +36,10 @@ unchanged. `ok: true` carries a v1.0.0 snapshot that `courseFromSnapshot` accept
 | 8 Stress | `stress.ts`: removes one real edge, `simulate` → `computePerformance` → `referenceCurator`; miss = warning | 0 |
 
 Every call goes through `ModelCalls` (`models.ts`): it refuses a prompt over `maxChars` (system prompt
-included), stops the build at `maxCalls` (`CallBudgetExceeded` → `ok: false`), retries a failed call once
-and counts calls for `report.model_calls`. A per-section or per-lesson call that still fails becomes a
-problem for the next fix round instead of ending the build. Calls run up to `concurrency` at a time.
+included), stops the build at `maxCalls` (`CallBudgetExceeded` → `ok: false`), retries a failed call up to
+3 times (after 2 s, 8 s and 30 s; not on a 4xx that would fail again) and counts calls for
+`report.model_calls`. A per-section or per-lesson call that still fails becomes a problem for the next fix
+round instead of ending the build. Calls run up to `concurrency` at a time.
 
 Typical cost: digest chunks + 1 plan + S sections + O objectives + S fact checks, e.g. ~55 calls for 5 lessons,
 15 sections, 15 objectives and 6 chunks of material, before fixes.
