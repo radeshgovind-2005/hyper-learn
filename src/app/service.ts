@@ -371,6 +371,12 @@ const EditRequestSchema = z.discriminatedUnion("kind", [
   z.strictObject({ kind: z.literal("add_source"), source_id: z.string().min(1).max(20), instruction: z.string().trim().max(2_000).optional() }),
 ]);
 
+/** Any paged list: a page size (50 by default, at most 200) and the cursor the last page returned. */
+const PageQuerySchema = z.strictObject({
+  cursor: z.string().max(300).optional(),
+  limit: z.number().int().min(1).max(200).default(50),
+});
+
 /** The instructors' list: a page size (50 by default, at most 200), a cursor, and a filter. */
 const LearnersQuerySchema = z.strictObject({
   cursor: z.string().max(300).optional(),
@@ -1469,6 +1475,20 @@ export class CourseService {
   memberRole(userId: string): CourseRole | null {
     if (this.fixed) return null;
     return this.members.get(userId)?.role ?? null;
+  }
+
+  /** One page of members in joining order (50 by default, at most 200): a course can be shared with a whole class. */
+  memberPage(input: unknown = {}) {
+    this.studio();
+    const parsed = PageQuerySchema.safeParse(input ?? {});
+    if (!parsed.success) throw new Error(firstIssue(parsed.error));
+    const { cursor, limit } = parsed.data;
+    const [joined_at, user_id] = cursor ? cursor.split("|") : [];
+    if (cursor && (!joined_at || !user_id)) throw new Error("Bad cursor");
+    const page = this.members.page({ ...(joined_at && user_id && { after: { joined_at, user_id } }), limit: limit + 1 });
+    const members = page.slice(0, limit);
+    const last = members.at(-1);
+    return { members, total: this.members.count(), next_cursor: page.length > limit && last ? `${last.joined_at}|${last.user_id}` : null };
   }
 
   memberList(): Member[] {

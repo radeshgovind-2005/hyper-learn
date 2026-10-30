@@ -34,12 +34,24 @@ export interface Member {
 export class SqlMembers {
   constructor(private readonly sql: Sql) {
     createStudioTables(sql);
+    sql`CREATE INDEX IF NOT EXISTS hl_members_joined ON hl_members (joined_at, user_id)`;
   }
   get(userId: string): Member | undefined {
     return this.sql<Member>`SELECT * FROM hl_members WHERE user_id = ${userId}`[0];
   }
   all(): Member[] {
     return this.sql<Member>`SELECT * FROM hl_members ORDER BY joined_at, user_id`;
+  }
+  /** Members in joining order from a keyset cursor (the last row's joined_at and user_id). */
+  page({ after, limit }: { after?: { joined_at: string; user_id: string }; limit: number }): Member[] {
+    const at = after?.joined_at ?? "";
+    const id = after?.user_id ?? "";
+    return this.sql<Member>`SELECT * FROM hl_members
+      WHERE joined_at > ${at} OR (joined_at = ${at} AND user_id > ${id})
+      ORDER BY joined_at, user_id LIMIT ${limit}`;
+  }
+  count(): number {
+    return (this.sql<{ n: number }>`SELECT COUNT(*) AS n FROM hl_members`[0] as { n: number }).n;
   }
   /** Adds someone or changes their role; name and email are refreshed when given. */
   set(member: { user_id: string; role: CourseRole; name?: string | undefined; email?: string | undefined }, at: string) {

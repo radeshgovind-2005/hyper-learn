@@ -103,6 +103,19 @@ describe("studio course objects", () => {
 describe("studio members and invites", () => {
   const bob = { userId: "user_bob", role: "learner" as const, email: "bob@example.com" };
 
+  it("pages members in joining order", () => {
+    const { s } = initialisedStudio();
+    const { token } = s.rotateInvite();
+    for (let i = 0; i < 5; i++) s.join({ userId: `user_${i}`, role: "learner" }, token!);
+    const first = s.memberPage({ limit: 4 });
+    assert.equal(first.members.length, 4);
+    assert.equal(first.total, 6);
+    const second = s.memberPage({ limit: 4, cursor: first.next_cursor! });
+    assert.deepEqual([...first.members, ...second.members].map((m) => m.user_id), s.memberList().map((m) => m.user_id));
+    assert.equal(second.next_cursor, null);
+    assert.throws(() => s.memberPage({ limit: 500 }));
+  });
+
   it("starts with the owner as the only member", () => {
     const { s } = initialisedStudio();
     assert.equal(s.memberRole("user_ada"), "owner");

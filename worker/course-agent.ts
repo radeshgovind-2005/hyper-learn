@@ -193,9 +193,9 @@ export class CourseAgent extends Agent<Env, CourseAgentState> {
   // ─── Members and invites (studio courses; owner, or an admin) ────────
 
   @callable()
-  members() {
+  members(query?: unknown) {
     this.actor("manage_course");
-    return this.app.memberList();
+    return this.app.memberPage(query);
   }
 
   /** Makes a member an editor or a learner. */
