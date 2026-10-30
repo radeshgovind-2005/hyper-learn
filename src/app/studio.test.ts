@@ -278,6 +278,18 @@ describe("studio lifecycle", () => {
     assert.throws(() => empty.publish(), /Build the course/);
   });
 
+  it("says what the server lacks when a saved key can't be used", async () => {
+    const { builder } = fakeBuilder();
+    const noEndpoint = initialisedStudio({ ownerModels: { ...ownerModels(), config: { ...ownerModels().config, baseURL: "" } }, builder }).s;
+    noEndpoint.addSource({ name: "a", pages: ["x"] });
+    await noEndpoint.setModelKey(KEY, "muse-spark-1.3");
+    assert.throws(() => noEndpoint.beginBuild(), /MODEL_BASE_URL/);
+
+    const noSecret = initialisedStudio({ ownerModels: ownerModels(""), builder }).s;
+    noSecret.addSource({ name: "a", pages: ["x"] });
+    assert.throws(() => noSecret.beginBuild(), /KEY_ENCRYPTION_SECRET/);
+  });
+
   it("builds in the background with the owner's key, then publishes v1.0.0 for learners", async () => {
     const { s, seen, directory } = await ready();
     const updates: (string | undefined)[] = [];

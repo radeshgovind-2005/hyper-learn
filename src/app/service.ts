@@ -1283,6 +1283,14 @@ export class CourseService {
     return Boolean(owner && keysAvailable(owner.secret) && owner.config.baseURL && this.meta.get<StoredModelKey>("model_key"));
   }
 
+  /** What stops builds from using a model, so the owner isn't told to add a key that is already there. */
+  private whyNoModels(): string {
+    const owner = this.options.ownerModels;
+    if (!owner?.config.baseURL) return "No model endpoint is configured on the Worker (MODEL_BASE_URL)";
+    if (!keysAvailable(owner.secret)) return "Model keys can't be used: KEY_ENCRYPTION_SECRET isn't set on the Worker";
+    return "Set a model API key first";
+  }
+
   /** Models with the owner's key, opened just for this use. */
   private async ownerProvider(): Promise<ModelProvider> {
     const record = this.studio();
@@ -1336,7 +1344,7 @@ export class CourseService {
     if (record.status === "published") throw new Error("This course is published; it changes through releases now, not rebuilds");
     if (this.sources.count() === 0) throw new Error("Add at least one source first");
     if (!this.options.builder) throw new Error("Course generation isn't available on this server yet");
-    if (!this.agentsAvailable()) throw new Error("Set a model API key first");
+    if (!this.agentsAvailable()) throw new Error(this.whyNoModels());
     const build: BuildState = { status: "running", steps: [], started_at: this.now() };
     this.meta.set("build", build);
     this.setStatus("building");
