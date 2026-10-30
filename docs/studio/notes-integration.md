@@ -67,3 +67,49 @@ Branch `studio/integration`, off `studio/base`. Merged in order: `studio/assessm
 - `exam()` and `snapshot()` send answer keys to the browser (as on `main`).
 - Short answers are still stored `needs_review` (known issue 3); generated pools have none.
 - Activity rate limit per connection (known issue 5) and the Assistant's `getCourse()` tools (issue 6).
+
+## Sources, delete, audience
+
+Branch `studio/sources`, off `main` after the Studio UI (PR #12).
+
+**Learners open the pages lessons cite.** `citedSources(learner)` lists the files cited by a live block
+(live lesson, section and block) of the release the learner is served, so during a real trial the two arms
+can differ. It leaves out files the owner hid, and never lists a file whose role is `assessment` or `brief`,
+even if a block cites one: they show what is assessed and may hold the answers. A file whose role was left
+to the build is shown if cited (the planner only cites teaching material). `sourcePage(learner, id, page)`
+opens any page of a listed file, not only the cited ones, and refuses anything else with "This file isn't
+shared with learners". Built-in courses have no sources: `[]`, and `sourcePage` refuses. The owner's
+`ownerSourcePage` opens any page of any file, draft or published. `setSourceShared(id, shared)` keeps the
+hidden ids in meta (`hidden_sources`), not a new column, and works after publishing (it changes who may read
+a file, not what lessons say). `sourceList` (and the summaries addSource, appendPages and setSourceRole
+return) carry `shared`. Callables: `citedSources`, `sourcePage` [learn]; `ownerSourcePage`,
+`setSourceShared` [manage_course]. `setSourceShared` doesn't push state: sources aren't in the overview, and
+learners fetch `citedSources` when they open the course (or their served release changes).
+
+UI: chips "Lecture-01 · p.3" after each cited text block, only for files the reader may open; the owner's
+draft preview shows chips for every file. A chip opens the "source" drawer: "Page N of M", Previous/Next,
+and the passage that best matches the block highlighted. The match (`web/src/passage.ts`) is a word-overlap
+heuristic: pieces are lines (long lines are cut into sentences), scored by shared lowercase words of 4+
+letters; the best piece needs 2 shared words, and grows to at most 3 pieces with neighbours scoring at least
+half as well. It finds the right lines on clean text; on PDF text with broken lines it may highlight a
+neighbour. The studio's file list has "View" and a "Learners can open" switch (none for exams and briefs).
+
+**Owners delete a course.** `DirectoryAgent.deleteCourse(id)`: the owner as the directory's memberships
+record it, or a global admin; built-in courses can't be. The course object's `wipe()` (RPC, not callable)
+closes every connection with 4004 "This course was deleted", then calls the Agents SDK's `destroy()`: it
+cancels the SDK's schedules and alarm, deletes all storage (`ctx.storage.deleteAll`) and resets the object.
+Calling `deleteAll` ourselves would leave the hourly trial check scheduled. `destroy()` aborts the isolate
+right after returning, so the directory may see the RPC fail although the wipe worked; it then keeps the
+course listed and says "try again", and a second wipe of the now empty object is harmless. Only after a
+successful wipe does the directory forget the course and every membership, after which the Worker refuses
+to route to it (404), so it isn't recreated. Not smoke-tested in workerd (that needs `.dev.vars` changes);
+worth one run before the demo. The 20-course limit message now points at the delete card.
+
+**Audience.** `StudioRecord.audience` (`beginner | intermediate | advanced`; `record()` reads old records
+without it as beginner). Set at creation (`CourseDetailsSchema`, default beginner; the directory hands it to
+`initialise` and doesn't store it), changed with `updateDetails`, returned by `details()`. Builds always pass
+it in `BuildInput.audience`. `audienceLine()` in `src/generate/prompt.ts` adds one line to the planner,
+writer and examiner prompts; without an audience (the CLI has no flag yet) it is empty and the prompts are as
+before. The line is fixed text of under 200 characters, so `fitParts` keeps every call within budget; the
+canned models needed no change. Whether it changes what a real model writes is untested: it needs a real build
+at each level.
