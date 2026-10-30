@@ -12,6 +12,7 @@ import { Shell } from "./components/Shell.js";
 import { TuneButton } from "./components/TuneButton.js";
 import { type SourceTarget, SourceViewer } from "./components/SourceViewer.js";
 import { coursePath, type Directory, FEATURED_COURSE, useDirectory, useSessionQuery } from "./directory.js";
+import { Coach } from "./pages/Coach.js";
 import { CreateCourse } from "./pages/CreateCourse.js";
 import { JoinCourse } from "./pages/JoinCourse.js";
 import { LearnerDetail, Learners } from "./pages/Learners.js";
@@ -64,6 +65,7 @@ function CourseApp({ courseId, base, rest, directory }: { courseId: string; base
   const go = useCallback((path: string) => navigate(`${base}${path}` || "/"), [navigate, base]);
   const onProgressPage = rest === "/me";
   const onStudioPage = rest === "/studio";
+  const onCoachPage = rest === "/coach";
   const learnerMatch = /^\/learners(?:\/([^/]+))?$/.exec(rest);
   const [me, setMe] = useState<Me | null>(null);
   const [overview, setOverview] = useState<Overview | null>(null);
@@ -194,6 +196,11 @@ function CourseApp({ courseId, base, rest, directory }: { courseId: string; base
         </button>
       )}
       {published && (
+        <button className={`btn sm ${onCoachPage ? "primary" : "quiet"}`} onClick={() => go(onCoachPage ? "" : "/coach")} aria-current={onCoachPage ? "page" : undefined}>
+          Study coach
+        </button>
+      )}
+      {published && (
         <button className={`btn sm ${onProgressPage ? "primary" : "quiet"}`} onClick={() => go(onProgressPage ? "" : "/me")} aria-current={onProgressPage ? "page" : undefined}>
           My progress
         </button>
@@ -253,6 +260,8 @@ function CourseApp({ courseId, base, rest, directory }: { courseId: string; base
     ) : (
       <div className="empty">Loading the course…</div>
     );
+  } else if (onCoachPage && snapshot) {
+    page = <Coach key={courseId} call={call} snapshot={snapshot} lessonId={lessonId} citations={citations} onOpenLesson={openLesson} onOpenSection={openSection} />;
   } else if (onProgressPage) {
     page = <MyProgress key={progress.length} call={call} onOpenLesson={openLesson} />;
   } else if (learnerMatch && mayViewLearners) {
@@ -282,6 +291,10 @@ function CourseApp({ courseId, base, rest, directory }: { courseId: string; base
         onAnswered={refreshProgress}
         onOpenLesson={openLesson}
         onOpenSection={openSection}
+        onCoach={(id) => {
+          setChosenLesson(id);
+          go("/coach");
+        }}
         {...(editable && { sectionTools: (section) => <TuneButton call={call} sectionId={section.id} busy={editBusy} onRequested={() => setDrawer("repair")} /> })}
         citations={citations}
       />

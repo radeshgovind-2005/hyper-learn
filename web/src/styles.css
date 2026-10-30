@@ -619,3 +619,18 @@ select.input { padding: 7px 10px; }
 
 .studio-card.danger { border-color: #f0b8b5; }
 .studio-card.danger .studio-card-head h2 { color: var(--red); }
+
+/* ─── Study coach ─────────────────────────────────────── */
+
+.coach-link { display: block; width: 100%; text-align: left; border: 1px dashed var(--violet); background: var(--violet-soft); color: var(--ink); border-radius: var(--radius-sm); padding: var(--s2) var(--s3); margin: 0 0 var(--s5); font-size: var(--t-sm); }
+.coach-link strong { color: var(--violet); }
+.coach-link:hover { border-style: solid; }
+.coach .studio-card h2 { margin: 0; font-size: var(--t-lg); }
+.coach-focus { border-color: var(--violet); box-shadow: 0 0 0 3px var(--violet-soft); }
+.coach-map, .coach-next, .coach-insights { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--s2); }
+.coach-map li, .coach-next li, .coach-insights li { display: flex; align-items: center; gap: var(--s3); padding: var(--s2) var(--s3); border-radius: var(--radius-sm); background: var(--surface-2); }
+.coach-map .grow, .coach-next .grow, .coach-insights .grow { flex: 1; min-width: 0; }
+.coach-map .chip { min-width: 64px; justify-content: center; }
+.coach-quiz { margin-top: 0; padding-top: 0; border-top: none; }
+.personal { padding: var(--s4); border-radius: var(--radius); background: var(--canvas); border: 1px solid var(--line); }
+.studio-sub { margin: var(--s2) 0 0; font-size: var(--t-md); }

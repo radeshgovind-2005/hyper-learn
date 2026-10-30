@@ -194,4 +194,16 @@ describe("study coach: through the service", () => {
     s.deleteMyData("user_bob");
     assert.equal(s.coachState("user_bob").diagnosis, undefined);
   });
+
+  it("works on the featured course too, with its own help instead of a written lesson", () => {
+    const s = new CourseService(sqlite());
+    const lesson = s.snapshot().lessons.find((l) => l.prerequisites.length > 0)!;
+    let state = s.startDiagnosis("user_bob", lesson.id);
+    assert.ok(state.diagnosis!.questions.length >= 2);
+    state = s.submitDiagnosis("user_bob", state.diagnosis!.id, state.diagnosis!.questions.map((q) => wrongly(q, (r) => Boolean(r.misconception))));
+    assert.notEqual(state.diagnosis!.result!.priority.kind, "ready");
+    const { write, state: after } = s.beginRepair("user_bob");
+    assert.equal(write, false);
+    assert.ok(after.repair!.fallback);
+  });
 });

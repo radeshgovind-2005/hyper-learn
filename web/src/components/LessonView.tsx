@@ -144,6 +144,7 @@ function Result({
   onRetake,
   onOpenLesson,
   onOpenSection,
+  onCoach,
   nextLesson,
   call,
 }: {
@@ -154,6 +155,7 @@ function Result({
   onRetake: () => void;
   onOpenLesson: (id: string) => void;
   onOpenSection: (lesson: string, section: string) => void;
+  onCoach?: (() => void) | undefined;
   nextLesson: { id: string; title: string } | null;
 }) {
   const scored = result.items.filter((i) => !i.pilot && !i.grade.needs_review);
@@ -181,6 +183,11 @@ function Result({
           <button className={`btn ${result.passed ? "quiet" : help.length > 0 ? "secondary" : "primary"}`} onClick={onRetake}>
             Retake the quiz
           </button>
+          {!result.passed && onCoach && (
+            <button className="btn primary" onClick={onCoach}>
+              Find out why with the study coach
+            </button>
+          )}
         </div>
       </div>
 
@@ -248,6 +255,8 @@ export function LessonView(props: {
   onAnswered: () => void;
   onOpenLesson: (id: string) => void;
   onOpenSection?: (lesson: string, section: string) => void;
+  /** Opens the study coach on this lesson. */
+  onCoach?: (lessonId: string) => void;
   /** Controls shown under each section's title (e.g. "Tune" for people who may edit the course). */
   sectionTools?: (section: { id: string; title: string }) => ReactNode;
   /** Chips that open the source pages text blocks cite; absent: none (the featured course cites nothing). */
@@ -334,6 +343,11 @@ export function LessonView(props: {
       </div>
       <h1>{lesson.title}</h1>
       <p className="lede">{lesson.summary}</p>
+      {learning && props.onCoach && (
+        <button className="coach-link" onClick={() => props.onCoach!(lesson.id)}>
+          Stuck on this lesson? <strong>Let the study coach find out why →</strong>
+        </button>
+      )}
       {lesson.prerequisites.length > 0 && (
         <div className="row small prereqs">
           <span className="muted">Builds on</span>
@@ -397,6 +411,7 @@ export function LessonView(props: {
               nextLesson={next ? { id: next.id, title: next.title } : null}
               onOpenLesson={props.onOpenLesson}
               onOpenSection={props.onOpenSection ?? ((lessonId) => props.onOpenLesson(lessonId))}
+              onCoach={props.onCoach && (() => props.onCoach!(lesson.id))}
               onRetake={() => {
                 setResult(null);
                 setAttempt((a) => a + 1);

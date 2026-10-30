@@ -1,4 +1,5 @@
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { CoachInsights } from "../components/CoachInsights.js";
 import { AskForm, EditStatus } from "../components/EditPanel.js";
 import { type Citations, LessonView } from "../components/LessonView.js";
 import type { SourceTarget } from "../components/SourceViewer.js";
@@ -802,6 +803,13 @@ export function Studio({
             Change it without rebuilding: ask in your own words, tune one section from the preview above (✎ Tune), or add a file and choose "Add to the course".
             {status === "published" ? " Applied changes become a new release; the old one stays in the history and can be restored." : ""}
           </p>
+          {status === "published" && (
+            <>
+              <h3 className="studio-sub">What learners struggle with</h3>
+              <CoachInsights call={call} busy={editBusy} />
+              <h3 className="studio-sub">Ask for a change</h3>
+            </>
+          )}
           <AskForm call={call} busy={editBusy} />
           <EditStatus call={call} edit={edit} published={status === "published"} sourceName={(id) => sources.find((s) => s.id === id)?.name} />
         </Card>
