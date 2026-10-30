@@ -1,7 +1,8 @@
-import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
-import { LessonView } from "../components/LessonView.js";
+import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { type Citations, LessonView } from "../components/LessonView.js";
+import type { SourceTarget } from "../components/SourceViewer.js";
 import { ACCEPTED, chunkPages, readFile } from "../files.js";
-import type { BuildState, BuildStep, Call, CourseDetails, CourseSnapshot, Member, ModelSettings, Overview, SourceRole, SourceSummary } from "../types.js";
+import type { BuildState, BuildStep, Call, CourseDetails, CourseSnapshot, Member, ModelSettings, Overview, OwnerSourceSummary, SourceRole, SourceSummary } from "../types.js";
 
 // The owner's page for one course: what it is, the files it is built from, the model key, the build, a
 // preview, publishing and sharing. Every call is checked on the server (manage_course); this page only
@@ -97,7 +98,22 @@ interface Upload {
   error?: string;
 }
 
-function Sources({ call, sources, locked, onChange }: { call: Call; sources: SourceSummary[]; locked: string | null; onChange: () => void }) {
+/** Roles learners never see, whatever the owner's switch says (the server enforces it). */
+const NEVER_SHOWN: ReadonlySet<SourceRole> = new Set(["assessment", "brief"]);
+
+function Sources({
+  call,
+  sources,
+  locked,
+  onChange,
+  onView,
+}: {
+  call: Call;
+  sources: OwnerSourceSummary[];
+  locked: string | null;
+  onChange: () => void;
+  onView: (source: OwnerSourceSummary) => void;
+}) {
   const [uploads, setUploads] = useState<Upload[]>([]);
   const [dragging, setDragging] = useState(false);
   const { error, run } = useAction();
@@ -177,6 +193,22 @@ function Sources({ call, sources, locked, onChange }: { call: Call; sources: Sou
                   · {s.pages} {s.pages === 1 ? "page" : "pages"}
                 </span>
               </span>
+              {s.role && NEVER_SHOWN.has(s.role) ? null : (
+                <label className="share-toggle small" title="Learners can open this file's pages from the lessons that cite it">
+                  <input
+                    type="checkbox"
+                    checked={s.shared}
+                    onChange={(e) => void run(async () => {
+                      await call("setSourceShared", [s.id, e.target.checked]);
+                      onChange();
+                    })}
+                  />
+                  Learners can open
+                </label>
+              )}
+              <button className="btn quiet sm" type="button" onClick={() => onView(s)} aria-label={`View ${s.name}`}>
+                View
+              </button>
               <select
                 className="input sm"
                 value={s.role ?? ""}
@@ -222,6 +254,12 @@ function Sources({ call, sources, locked, onChange }: { call: Call; sources: Sou
             </li>
           ))}
         </ul>
+      )}
+      {sources.length > 0 && (
+        <p className="small muted">
+          Learners see citation chips under the lessons and can open the pages they cite. Past exams and project briefs are never shown to learners, so they have no
+          switch.
+        </p>
       )}
       {error && <div className="notice">{error}</div>}
     </div>
@@ -389,7 +427,7 @@ function Build({ build, canBuild, blocker, onBuild, busy, error }: { build: Buil
   );
 }
 
-function Preview({ call, draft, warnings }: { call: Call; draft: CourseSnapshot; warnings: string[] }) {
+function Preview({ call, draft, warnings, citations }: { call: Call; draft: CourseSnapshot; warnings: string[]; citations: Citations }) {
   const lessons = draft.lessons.filter((l) => !l.archived);
   const [lessonId, setLessonId] = useState<string | null>(null);
   const questions = lessons.reduce((n, l) => n + l.quiz.length, 0);
@@ -437,6 +475,7 @@ function Preview({ call, draft, warnings }: { call: Call; draft: CourseSnapshot;
             call={call}
             onAnswered={() => {}}
             onOpenLesson={setLessonId}
+            citations={citations}
           />
         </div>
       )}
@@ -535,9 +574,22 @@ function Share({ call, courseId }: { call: Call; courseId: string }) {
   );
 }
 
-export function Studio({ call, overview, courseId, onPublished }: { call: Call; overview: Overview | null; courseId: string; onPublished: () => void }) {
+export function Studio({
+  call,
+  overview,
+  courseId,
+  onPublished,
+  onOpenSource,
+}: {
+  call: Call;
+  overview: Overview | null;
+  courseId: string;
+  onPublished: () => void;
+  /** Opens a file's page in the course's source drawer. */
+  onOpenSource: (target: SourceTarget) => void;
+}) {
   const [details, setDetails] = useState<CourseDetails | null>(null);
-  const [sources, setSources] = useState<SourceSummary[]>([]);
+  const [sources, setSources] = useState<OwnerSourceSummary[]>([]);
   const [settings, setSettings] = useState<ModelSettings | null>(null);
   const [draft, setDraft] = useState<CourseSnapshot | null>(null);
   const build = overview?.build ?? null;
@@ -545,7 +597,15 @@ export function Studio({ call, overview, courseId, onPublished }: { call: Call; 
   const building = useAction();
   const publishing = useAction();
 
-  const loadSources = useCallback(() => void call<SourceSummary[]>("sources").then(setSources), [call]);
+  const loadSources = useCallback(() => void call<OwnerSourceSummary[]>("sources").then(setSources), [call]);
+  // The owner's preview shows chips for every cited file, opened with ownerSourcePage.
+  const citations = useMemo<Citations>(
+    () => ({
+      sources: new Map(sources.map((s) => [s.id, { id: s.id, name: s.name, pages: s.pages }])),
+      open: (source, page, passage) => onOpenSource({ source, page, passage, owner: true }),
+    }),
+    [sources, onOpenSource],
+  );
   useEffect(() => {
     void call<CourseDetails>("details").then(setDetails);
     void call<ModelSettings>("modelSettings").then(setSettings);
@@ -588,7 +648,13 @@ export function Studio({ call, overview, courseId, onPublished }: { call: Call; 
       </Card>
 
       <Card step={2} title="Files" done={sources.length > 0}>
-        <Sources call={call} sources={sources} locked={locked} onChange={loadSources} />
+        <Sources
+          call={call}
+          sources={sources}
+          locked={locked}
+          onChange={loadSources}
+          onView={(s) => onOpenSource({ source: { id: s.id, name: s.name, pages: s.pages }, page: 1, owner: true })}
+        />
       </Card>
 
       <Card step={3} title="Model key" done={settings.hasKey}>
@@ -608,7 +674,7 @@ export function Studio({ call, overview, courseId, onPublished }: { call: Call; 
 
       {draft && (
         <Card step={5} title={status === "published" ? "The course" : "Review and publish"} done={status === "published"}>
-          <Preview call={call} draft={draft} warnings={build?.warnings ?? []} />
+          <Preview call={call} draft={draft} warnings={build?.warnings ?? []} citations={citations} />
           {status === "review" && (
             <div className="row" style={{ marginTop: "var(--s4)" }}>
               <button

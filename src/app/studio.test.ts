@@ -145,7 +145,7 @@ describe("studio sources", () => {
   it("adds files as pages with ids that are never reused", () => {
     const { s } = initialisedStudio();
     const lecture = s.addSource({ name: "Lecture 1.pdf", pages: ["Amdahl's law.", "Speedup."] });
-    assert.deepEqual(lecture, { id: "s1", name: "Lecture 1.pdf", role: null, pages: 2, chars: 21 });
+    assert.deepEqual(lecture, { id: "s1", name: "Lecture 1.pdf", role: null, pages: 2, chars: 21, shared: true });
     assert.equal(s.addSource({ name: "exam.pdf", role: "assessment", pages: ["Q1"] }).id, "s2");
     s.removeSource("s2");
     assert.equal(s.addSource({ name: "brief.md", pages: ["Build a parallel sort"] }).id, "s3");

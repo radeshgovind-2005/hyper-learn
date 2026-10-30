@@ -1,7 +1,8 @@
 import { marked } from "marked";
 import { useEffect, useMemo, useState } from "react";
+import { shortName } from "../passage.js";
 import { interventionTracker, useLessonTimer } from "../tracking.js";
-import type { Block, Call, Certainty, CheckResult, CourseSnapshot, Exam, Intervention, QuizItem, QuizResult, Response } from "../types.js";
+import type { Block, Call, Certainty, CheckResult, CitedSource, CourseSnapshot, Exam, Intervention, QuizItem, QuizResult, Response } from "../types.js";
 import { InterventionView } from "./Interventions.js";
 import { QuizFlow } from "./Quiz.js";
 
@@ -12,6 +13,32 @@ const html = (markdown: string) => ({ __html: marked.parse(markdown, { async: fa
 const TEMPLATE_NAME = { contrast: "Contrast card", practice: "Practice set", step_through: "Step-through player" } as const;
 
 type CheckBlock = Extract<Block, { kind: "check" }>;
+type TextBlock = Extract<Block, { markdown: string }>;
+
+/** The files a reader can open from citation chips, and how to open one. */
+export interface Citations {
+  /** Learners: the files citedSources lists. The owner's preview: every file. */
+  sources: ReadonlyMap<string, CitedSource>;
+  open: (source: CitedSource, page: number, passage: string) => void;
+}
+
+/** "Lecture-01 · p.3" chips after a text block, for the cited files the reader may open. */
+function CiteChips({ block, citations }: { block: TextBlock; citations: Citations }) {
+  const chips = (block.cites ?? []).flatMap((c) => {
+    const source = citations.sources.get(c.source);
+    return source && c.page <= source.pages ? [{ source, page: c.page }] : [];
+  });
+  if (chips.length === 0) return null;
+  return (
+    <div className="cites">
+      {chips.map(({ source, page }) => (
+        <button key={`${source.id}:${page}`} className="chip cite" title={`Open ${source.name}, page ${page}`} onClick={() => citations.open(source, page, block.markdown)}>
+          {shortName(source.name)} · p.{page}
+        </button>
+      ))}
+    </div>
+  );
+}
 
 /**
  * A practice question inside a section. A learner's answer goes to the server, which records it and
@@ -55,12 +82,35 @@ function CheckView({ block, call, live }: { block: CheckBlock; call: Call; live:
   );
 }
 
-function BlockView({ block, isNew, belief, preview, live, call }: { block: Block; isNew: boolean; belief: string; preview: boolean; live: boolean; call: Call }) {
+function BlockView({
+  block,
+  isNew,
+  belief,
+  preview,
+  live,
+  call,
+  citations,
+}: {
+  block: Block;
+  isNew: boolean;
+  belief: string;
+  preview: boolean;
+  live: boolean;
+  call: Call;
+  citations: Citations | undefined;
+}) {
   const [open, setOpen] = useState(preview);
   const track = useMemo(() => interventionTracker(call, block.id, "preview"), [call, block.id]);
   if (block.kind === "check") return <CheckView block={block} call={call} live={live} />;
   if (block.kind !== "intervention") {
-    return <div className={`block prose ${isNew ? "new" : ""} ${block.archived ? "archived" : ""}`} dangerouslySetInnerHTML={html(block.markdown)} />;
+    const text = <div className={`block prose ${isNew ? "new" : ""} ${block.archived ? "archived" : ""}`} dangerouslySetInnerHTML={html(block.markdown)} />;
+    if (!citations || !block.cites?.length) return text;
+    return (
+      <>
+        {text}
+        <CiteChips block={block} citations={citations} />
+      </>
+    );
   }
   return (
     <div className={`block ${isNew ? "new" : ""} ${block.archived ? "archived" : ""}`}>
@@ -198,6 +248,8 @@ export function LessonView(props: {
   onAnswered: () => void;
   onOpenLesson: (id: string) => void;
   onOpenSection?: (lesson: string, section: string) => void;
+  /** Chips that open the source pages text blocks cite; absent: none (the featured course cites nothing). */
+  citations?: Citations;
 }) {
   const { snapshot, parent, lessonId, mode, call } = props;
   const viewingHistory = mode === "history";
@@ -307,6 +359,7 @@ export function LessonView(props: {
                   preview={!learning}
                   live={learning}
                   call={call}
+                  citations={props.citations}
                 />
               ))}
           </section>

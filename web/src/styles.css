@@ -569,3 +569,17 @@ select.input { padding: 7px 10px; }
 .check-feedback { margin-top: var(--s3); padding: var(--s3) var(--s4); border-radius: var(--radius-sm); font-size: var(--t-sm); }
 .check-feedback.right { background: var(--green-soft); color: var(--green); }
 .check-feedback.wrong { background: var(--red-soft); color: var(--red); }
+
+/* ─── Source pages (citation chips and the viewer) ──── */
+
+.cites { display: flex; flex-wrap: wrap; gap: 6px; margin: calc(-1 * var(--s2)) 0 var(--s4); }
+.chip.cite { background: var(--canvas); border: 1px solid var(--line-strong); color: var(--ink-2); font-weight: 500; }
+.chip.cite:hover { border-color: var(--blue); color: var(--blue); filter: none; }
+.source-page {
+  white-space: pre-wrap; overflow-wrap: anywhere; font-size: var(--t-sm); line-height: 1.65;
+  background: var(--surface-2); border-radius: var(--radius-sm); padding: var(--s4);
+}
+.source-mark { background: var(--amber-soft); color: inherit; border-radius: 4px; box-shadow: 0 0 0 3px var(--amber-soft); scroll-margin: var(--s7); }
+.share-toggle { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; color: var(--ink-2); cursor: pointer; }
+.share-toggle input { margin: 0; accent-color: var(--blue); }
+@media (max-width: 720px) { .file-row { flex-wrap: wrap; } }

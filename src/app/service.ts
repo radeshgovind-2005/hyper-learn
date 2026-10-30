@@ -7,7 +7,7 @@ import { gradeAttempt } from "../analytics/performance.js";
 import { type Grade, gradeItem } from "../assessment/grade.js";
 import { drawExam, examSeed } from "../assessment/exam.js";
 import type { Certainty, QuizItem, Response } from "../assessment/items.js";
-import { type CheckBlock, type CourseSnapshot, courseFromSnapshot, type LiveIntervention, liveInterventions, liveObjectives } from "../course/compile.js";
+import { type CheckBlock, type CourseSnapshot, courseFromSnapshot, isTextBlock, type LiveIntervention, liveInterventions, liveObjectives } from "../course/compile.js";
 import type { Course } from "../course/schema.js";
 import { buildGraph, graphModels } from "../graph.js";
 import type { Embedder, Guard } from "../guards/guards.js";
@@ -23,7 +23,7 @@ import type { Scenario } from "../simulation/scenarios.js";
 import { NoExemplar } from "../interventions/reference.js";
 import { defaultModels, type ModelConfig, ModelProvider } from "../models.js";
 import { keysAvailable, openSecret, sealSecret } from "../crypto/keys.js";
-import { MAX_PAGE_CHARS, SOURCE_ROLES, type Source, SourceSchema } from "../course/sources.js";
+import { MAX_PAGE_CHARS, SOURCE_ROLES, type Source, type SourceRole, SourceSchema } from "../course/sources.js";
 import type { State } from "../state.js";
 import { PersistentMemorySaver } from "../storage/checkpointer.js";
 import { type LearnerEvent, type Sql, SqlEventLog, SqlMeta, SqlProfiles, SqlReleaseStore, SqlThreadStore } from "../storage/sql.js";
@@ -163,6 +163,30 @@ export interface StudioRecord {
   owner: string;
   created_at: string;
 }
+
+/** A source as the owner's list shows it. */
+export interface OwnerSourceSummary extends SourceSummary {
+  /** Whether learners may open it from the lessons that cite it (past exams and briefs never, whatever this says). */
+  shared: boolean;
+}
+
+/** A file a learner may open from the lessons that cite it. */
+export interface CitedSource {
+  id: string;
+  name: string;
+  pages: number;
+}
+
+/** One page of a source, as the viewer shows it. */
+export interface SourcePage {
+  source: CitedSource;
+  /** 1-based. */
+  page: number;
+  text: string;
+}
+
+/** Files learners never see: they show what is assessed, and may hold the answers. */
+const NEVER_SHOWN: ReadonlySet<SourceRole> = new Set(["assessment", "brief"]);
 
 /** How a course object tells the directory what changed, so course lists stay current. */
 export interface DirectoryLink {
@@ -1182,9 +1206,20 @@ export class CourseService {
     if (record.status === "published") throw new Error("A published course keeps its sources: lessons cite them");
   }
 
-  sourceList(): SourceSummary[] {
+  /** Sources the owner has hidden from learners, by id (kept in meta: existing objects already have the sources table). */
+  private hiddenSources(): Set<string> {
+    return new Set(this.meta.get<string[]>("hidden_sources") ?? []);
+  }
+
+  private summaryOf(id: string): OwnerSourceSummary {
+    return this.sourceList().find((s) => s.id === id)!;
+  }
+
+  /** The files, without their text; `shared` is the owner's "learners can open" switch. */
+  sourceList(): OwnerSourceSummary[] {
     this.studio();
-    return this.sources.summaries();
+    const hidden = this.hiddenSources();
+    return this.sources.summaries().map((s) => ({ ...s, shared: !hidden.has(s.id) }));
   }
 
   /** The full sources, for a build. */
@@ -1214,7 +1249,7 @@ export class CourseService {
     const source = SourceSchema.parse({ id: `s${seq}`, name: parsed.data.name, ...(parsed.data.role && { role: parsed.data.role }), pages });
     this.sources.put(source, seq);
     this.meta.set("source_seq", seq);
-    return this.sources.summaries().find((s) => s.id === source.id)!;
+    return this.summaryOf(source.id);
   }
 
   /** Adds more pages to a source: how a file too big for one message arrives. */
@@ -1226,7 +1261,7 @@ export class CourseService {
     if (!parsed.success) throw new Error(firstIssue(parsed.error));
     const added = this.pagesWithinLimits(parsed.data, { pages: source.pages.length, chars: 0 });
     this.sources.put(SourceSchema.parse({ ...source, pages: [...source.pages, ...added] }), this.sources.seq(source.id)!);
-    return this.sources.summaries().find((s) => s.id === source.id)!;
+    return this.summaryOf(source.id);
   }
 
   removeSource(id: unknown) {
@@ -1243,7 +1278,70 @@ export class CourseService {
     if (role !== null && !(SOURCE_ROLES as readonly unknown[]).includes(role)) throw new Error(`Unknown role "${String(role)}"`);
     const { role: _old, ...rest } = source;
     this.sources.put(SourceSchema.parse(role === null ? rest : { ...rest, role }), this.sources.seq(source.id)!);
-    return this.sources.summaries().find((s) => s.id === source.id)!;
+    return this.summaryOf(source.id);
+  }
+
+  /**
+   * The owner lets learners open a file from the lessons that cite it, or stops them. Allowed after
+   * publishing too: it changes who may read a file, not what the lessons say.
+   */
+  setSourceShared(id: unknown, shared: unknown): OwnerSourceSummary {
+    this.studio();
+    if (typeof id !== "string" || !this.sources.get(id)) throw new Error(`No source "${String(id)}"`);
+    if (typeof shared !== "boolean") throw new Error("shared is true or false");
+    const hidden = this.hiddenSources();
+    if (shared) hidden.delete(id);
+    else hidden.add(id);
+    this.meta.set("hidden_sources", [...hidden]);
+    return this.summaryOf(id);
+  }
+
+  /** One page of a source, checked; `page` is 1-based. */
+  private pageOf(source: Source, page: unknown): SourcePage {
+    if (typeof page !== "number" || !Number.isInteger(page) || page < 1 || page > source.pages.length) {
+      throw new Error(`"${source.name}" has pages 1 to ${source.pages.length}`);
+    }
+    return { source: { id: source.id, name: source.name, pages: source.pages.length }, page, text: source.pages[page - 1]! };
+  }
+
+  /** Any page of any of this course's sources, for the owner (draft or published). */
+  ownerSourcePage(id: unknown, page: unknown): SourcePage {
+    this.studio();
+    const source = typeof id === "string" ? this.sources.get(id) : undefined;
+    if (!source) throw new Error(`No source "${String(id)}"`);
+    return this.pageOf(source, page);
+  }
+
+  // ─── Sources learners can open (published studio courses) ─────────
+
+  /**
+   * The files a learner may open from their lessons: those cited by a live block of the release they are
+   * served, minus the ones the owner hid. Past exams and briefs never, even if a block somehow cites one:
+   * they show what is assessed and may hold the answers.
+   */
+  citedSources(learner: string): CitedSource[] {
+    if (this.fixed) return []; // built-in courses are written by hand, not from uploaded files
+    const snapshot = this.servedRelease(learner).snapshot;
+    const cited = new Set<string>();
+    for (const lesson of snapshot.lessons.filter((l) => !l.archived)) {
+      for (const section of lesson.sections.filter((s) => !s.archived)) {
+        for (const block of section.blocks) {
+          if (!block.archived && isTextBlock(block)) for (const c of block.cites ?? []) cited.add(c.source);
+        }
+      }
+    }
+    const hidden = this.hiddenSources();
+    return this.sources
+      .summaries()
+      .filter((s) => cited.has(s.id) && !hidden.has(s.id) && !(s.role && NEVER_SHOWN.has(s.role)))
+      .map((s) => ({ id: s.id, name: s.name, pages: s.pages }));
+  }
+
+  /** A page of a file the learner may open (see citedSources): any page of it, not only the cited ones. */
+  sourcePage(learner: string, id: unknown, page: unknown): SourcePage {
+    if (this.fixed) throw new Error("This course has no source files");
+    if (typeof id !== "string" || !this.citedSources(learner).some((s) => s.id === id)) throw new Error("This file isn't shared with learners");
+    return this.pageOf(this.sources.get(id)!, page);
   }
 
   // ─── The owner's model key (studio courses) ───────────────────────

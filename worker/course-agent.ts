@@ -273,6 +273,21 @@ export class CourseAgent extends Agent<Env, CourseAgentState> {
     return this.app.setSourceRole(id, role);
   }
 
+  /** Any page (1-based) of any of the course's files, for the owner's viewer. */
+  @callable()
+  ownerSourcePage(id: string, page: number) {
+    this.actor("manage_course");
+    return this.app.ownerSourcePage(id, page);
+  }
+
+  /** Whether learners may open a file from the lessons that cite it (past exams and briefs never). */
+  @callable()
+  setSourceShared(id: string, shared: boolean) {
+    this.actor("manage_course");
+    // Not in the shared state: learners' pages ask for citedSources when they open the course.
+    return this.app.setSourceShared(id, shared);
+  }
+
   /** Whether a key is set and which model is used. The key itself is never returned. */
   @callable()
   modelSettings() {
@@ -385,6 +400,20 @@ export class CourseAgent extends Agent<Env, CourseAgentState> {
   answerCheck(blockId: string, option: number) {
     const { userId } = this.actor("learn");
     return this.app.answerCheck(userId, String(blockId), option, this.connectionId());
+  }
+
+  /** The files the caller may open from the lessons that cite them, on the release they are served. */
+  @callable()
+  citedSources() {
+    const { userId } = this.actor("learn");
+    return this.app.citedSources(userId);
+  }
+
+  /** A page (1-based) of a file citedSources lists. */
+  @callable()
+  sourcePage(id: string, page: number) {
+    const { userId } = this.actor("learn");
+    return this.app.sourcePage(userId, id, page);
   }
 
   /** Time on a lesson, or an intervention shown or completed, reported by the learner's own browser. */
