@@ -17,7 +17,7 @@ import { createApprover, createApproverModel } from "../nodes/approver.js";
 import { type ApprovalMode, type ApprovalRequest, type ApprovalResponse, type Harness, settleTrial } from "../nodes/release.js";
 import { nextSteps, type PathStep } from "../path/route.js";
 import { applyChanges, type Change, describeChange, invertChanges, maxBump, maxTier, riskTier, semverBump } from "../releases/changes.js";
-import { type Release, revert } from "../releases/release.js";
+import { type Release, type ReleaseInfo, revert } from "../releases/release.js";
 import { releasePerformance, scenarioSnapshot } from "../simulation/index.js";
 import type { Scenario } from "../simulation/scenarios.js";
 import { NoExemplar } from "../interventions/reference.js";
@@ -405,7 +405,7 @@ export interface ServiceOptions {
   embedder?: Embedder;
 }
 
-const summarize = (r: Release): ReleaseSummary => ({
+const summarize = (r: ReleaseInfo): ReleaseSummary => ({
   version: r.version,
   parent: r.parent,
   status: r.status,
@@ -487,7 +487,7 @@ export class CourseService {
         at,
       });
     } else {
-      for (const release of this.releases.all()) {
+      for (const release of this.releases.summaries()) {
         if (release.status !== "trial" || release.trial_source === "real") continue;
         revert(this.releases, release.version);
         this.releases.update(release.version, { decision: { verdict: "revert", reasons: ["The server restarted before this trial was measured."] } });
@@ -561,7 +561,7 @@ export class CourseService {
       scenario: this.scenario(),
       scenarios: this.scenarios().map((s) => ({ id: s.id, title: s.title, description: s.description })),
       live: this.published() ? this.releases.live().version : null,
-      releases: this.releases.all().map(summarize),
+      releases: this.releases.summaries().map(summarize),
       run: this.run(),
       trial: this.trial(),
       agentsAvailable: this.agentsAvailable(),
@@ -1064,23 +1064,22 @@ export class CourseService {
   coachInsights() {
     this.requirePublished();
     const byKey = new Map<string, { target: Target; learners: Set<string>; repaired: number; fixed: number; approaches: Record<string, { tried: number; fixed: number }> }>();
-    for (const { learner } of this.events.learners()) {
-      for (const e of this.events.forLearner(learner)) {
-        if (e.kind !== "coach") continue;
-        const d = e.data as { type: string; priority?: string; target?: Target; target_key?: string; approach?: string; fixed?: boolean };
-        const key = d.type === "diagnosis" ? d.priority : d.target_key;
-        if (!key || !d.target || d.target.kind === "ready") continue;
-        const row = byKey.get(key) ?? { target: d.target, learners: new Set<string>(), repaired: 0, fixed: 0, approaches: {} };
-        row.learners.add(learner);
-        if (d.type === "recheck") {
-          row.repaired++;
-          if (d.fixed) row.fixed++;
-          const a = (row.approaches[d.approach ?? "?"] ??= { tried: 0, fixed: 0 });
-          a.tried++;
-          if (d.fixed) a.fixed++;
-        }
-        byKey.set(key, row);
+    // Only coach events, by index: this grows with coach use, not with the whole event log.
+    for (const e of this.events.ofKind("coach")) {
+      const learner = e.learner;
+      const d = e.data as { type: string; priority?: string; target?: Target; target_key?: string; approach?: string; fixed?: boolean };
+      const key = d.type === "diagnosis" ? d.priority : d.target_key;
+      if (!key || !d.target || d.target.kind === "ready") continue;
+      const row = byKey.get(key) ?? { target: d.target, learners: new Set<string>(), repaired: 0, fixed: 0, approaches: {} };
+      row.learners.add(learner);
+      if (d.type === "recheck") {
+        row.repaired++;
+        if (d.fixed) row.fixed++;
+        const a = (row.approaches[d.approach ?? "?"] ??= { tried: 0, fixed: 0 });
+        a.tried++;
+        if (d.fixed) a.fixed++;
       }
+      byKey.set(key, row);
     }
     const live = this.releases.live().snapshot;
     return [...byKey]
@@ -1311,7 +1310,8 @@ export class CourseService {
   // ─── Trials on real learners ──────────────────────────────────────
 
   private openTrial(): Release | undefined {
-    return this.releases.all().find((r) => r.status === "trial" && r.trial_source === "real");
+    const info = this.releases.summaries().find((r) => r.status === "trial" && r.trial_source === "real");
+    return info && this.releases.get(info.version);
   }
 
   trial(): TrialStatus | null {

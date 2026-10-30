@@ -82,10 +82,17 @@ export function trialVersion(base: string, existing: readonly string[]): string 
 // ─── Store ─────────────────────────────────────────────────────────
 
 /** Where releases live. In memory for the CLI and tests; Durable Object storage in the Worker. */
+/** A release without its content: what lists, history and decisions need. Cheap to read in bulk. */
+export type ReleaseInfo = Omit<Release, "snapshot">;
+export const infoOf = ({ snapshot: _snapshot, ...info }: Release): ReleaseInfo => info;
+
 export interface ReleaseStore {
   live(): Release;
   get(version: string): Release | undefined;
+  /** Every release with its content: rarely needed (each snapshot is hundreds of KB). */
   all(): Release[];
+  /** Every release without its content, in creation order. */
+  summaries(): ReleaseInfo[];
   add(release: Release): void;
   update(version: string, patch: Partial<Release>): Release;
 }
@@ -121,6 +128,9 @@ export class MemoryReleaseStore implements ReleaseStore {
   }
   all() {
     return [...this.releases.values()];
+  }
+  summaries() {
+    return this.all().map(infoOf);
   }
   add(release: Release) {
     if (this.releases.has(release.version)) throw new Error(`Release ${release.version} already exists`);
@@ -164,7 +174,7 @@ export function planRelease(store: ReleaseStore, changes: Change[], rationale: s
   const bump = maxBump(changes.map((c) => semverBump(live.snapshot, c)));
   const version = trialVersion(
     bumpVersion(live.version, bump),
-    store.all().map((r) => r.version),
+    store.summaries().map((r) => r.version),
   );
   return {
     ok: true,

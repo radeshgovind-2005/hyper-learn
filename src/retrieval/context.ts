@@ -5,7 +5,7 @@ import { quizTexts } from "../interventions/checks.js";
 import { EXEMPLARS } from "../interventions/exemplars.js";
 import type { Template } from "../interventions/templates.js";
 import { describeIntervention } from "../releases/changes.js";
-import type { Release } from "../releases/release.js";
+import type { ReleaseInfo } from "../releases/release.js";
 import type { NamedMisconception } from "../state.js";
 
 // Graph retrieval: an agent's context is assembled by walking the course graph, not by vector search.
@@ -35,7 +35,7 @@ export interface AuthorContextInput {
   evidence?: NamedMisconception;
   templates: readonly Template[];
   /** Every release so far: past trials of interventions for the same misconception are shown with their outcome. */
-  history: readonly Release[];
+  history: readonly ReleaseInfo[];
 }
 
 /** Everything the Author needs to write one intervention, and nothing else. */
