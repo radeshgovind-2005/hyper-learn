@@ -2,6 +2,7 @@ import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } fro
 import { type Citations, LessonView } from "../components/LessonView.js";
 import type { SourceTarget } from "../components/SourceViewer.js";
 import { ACCEPTED, chunkPages, readFile } from "../files.js";
+import { AudienceField } from "./CreateCourse.js";
 import type { BuildState, BuildStep, Call, CourseDetails, CourseSnapshot, Member, ModelSettings, Overview, OwnerSourceSummary, SourceRole, SourceSummary } from "../types.js";
 
 // The owner's page for one course: what it is, the files it is built from, the model key, the build, a
@@ -61,7 +62,7 @@ function Card({
 function Details({ call, details, onSaved }: { call: Call; details: CourseDetails; onSaved: (d: CourseDetails) => void }) {
   const [form, setForm] = useState(details);
   const { busy, error, run } = useAction();
-  const changed = (["title", "description", "goal", "language"] as const).some((k) => form[k] !== details[k]);
+  const changed = (["title", "description", "goal", "language", "audience"] as const).some((k) => form[k] !== details[k]);
   const set = (key: "title" | "description" | "goal" | "language") => (e: { target: { value: string } }) => setForm((f) => ({ ...f, [key]: e.target.value }));
   return (
     <form
@@ -69,8 +70,8 @@ function Details({ call, details, onSaved }: { call: Call; details: CourseDetail
       onSubmit={(e) => {
         e.preventDefault();
         void run(async () => {
-          const { title, description, goal, language } = form;
-          await call("updateDetails", [{ title, description, goal, language }]);
+          const { title, description, goal, language, audience } = form;
+          await call("updateDetails", [{ title, description, goal, language, audience }]);
           onSaved(form);
         });
       }}
@@ -91,6 +92,7 @@ function Details({ call, details, onSaved }: { call: Call; details: CourseDetail
         <span>Language (optional)</span>
         <input className="input" value={form.language} onChange={set("language")} maxLength={40} placeholder="The material's language" />
       </label>
+      <AudienceField value={form.audience} onChange={(audience) => setForm((f) => ({ ...f, audience }))} />
       {error && <div className="notice">{error}</div>}
       <div className="row">
         <button className="btn secondary sm" type="submit" disabled={busy || !changed || !form.title.trim()}>

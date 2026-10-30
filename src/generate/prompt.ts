@@ -1,5 +1,6 @@
 import { slugify } from "../course/compile.js";
 import type { Citation } from "../course/schema.js";
+import type { Audience } from "./types.js";
 
 // Prompt assembly for generation calls: fixed parts are kept whole, elastic parts (page text, long
 // lists) are shortened so that every call fits its character budget whatever the input size.
@@ -72,6 +73,18 @@ export function uniqueSlug(text: string, fallback: string, taken: Set<string>, m
 /** Language instruction shared by the writing agents. */
 export const languageLine = (language: string | undefined) =>
   language ? `Write in ${language}.` : "Write in the language of the source pages.";
+
+const AUDIENCE_LINES: Record<Audience, string> = {
+  beginner:
+    "Audience: new to the topic. Define every term the first time it is used, go in small steps, and give a worked example wherever a procedure is taught. Questions check the core ideas, not tricks.",
+  intermediate:
+    "Audience: some background. Recap basics in a sentence at most and spend the words on reasoning: why things work, when to use which, and the trade-offs.",
+  advanced:
+    "Audience: advanced. Be concise and start from problems; skip the basics and spend the words on subtle points, edge cases and trade-offs.",
+};
+
+/** Audience instruction shared by the planner, writer and examiner; empty when the owner gave none. */
+export const audienceLine = (audience: Audience | undefined) => (audience ? AUDIENCE_LINES[audience] : "");
 
 /** Runs `fn` over `items` with at most `limit` calls in flight, keeping results in input order. */
 export async function mapLimit<T, R>(items: readonly T[], limit: number, fn: (item: T, index: number) => Promise<R>): Promise<R[]> {

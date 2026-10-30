@@ -5,6 +5,10 @@ import type { Source } from "../course/sources.js";
 // course's Durable Object). Generation is a pure function of its input and its models: it reads no
 // storage and keeps no state between calls, so the app decides where sources, keys and drafts live.
 
+/** Who a course is written for: how much it explains and how fast it goes. */
+export const AUDIENCES = ["beginner", "intermediate", "advanced"] as const;
+export type Audience = (typeof AUDIENCES)[number];
+
 export interface BuildInput {
   course_id: string;
   title: string;
@@ -13,6 +17,8 @@ export interface BuildInput {
   description?: string;
   /** Language to write in; default: the language of the material. */
   language?: string;
+  /** Who it is for; absent: no guidance, the agents judge from the material. */
+  audience?: Audience;
   sources: Source[];
 }
 

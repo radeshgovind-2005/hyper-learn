@@ -9,7 +9,7 @@ import { assessmentSentences, copiedSentence, routeValidationError, studioChecks
 import { EXAM, INPUT, NOTES, spiedModels, totalCalls } from "./fixtures.test-helpers.js";
 import type { PlannedSection } from "./plan.js";
 import type { AssessmentDraft, ItemDraft } from "./schemas.js";
-import { fitParts, thinLines } from "./prompt.js";
+import { audienceLine, fitParts, thinLines } from "./prompt.js";
 import { roleFromName } from "./sources.js";
 import { stressTest } from "./stress.js";
 import type { BuildResult } from "./types.js";
@@ -439,6 +439,26 @@ describe("small inputs", () => {
     assert.match(models.planner.prompts[0]!, /Plan 2 to 8 lessons/);
     assert.equal(snapshot.lessons.length, 2);
     assert.ok(result.report.warnings.some((w) => /only 2 page\(s\)/.test(w)));
+  });
+});
+
+describe("audience", () => {
+  it("tells the planner, writer and examiner who the course is for", async () => {
+    const models = spiedModels();
+    built(await buildCourse({ ...INPUT, audience: "beginner" }, models, { review: false, stress: false }));
+    for (const agent of ["planner", "writer", "examiner"] as const) {
+      assert.ok(models[agent].prompts.length > 0);
+      for (const prompt of models[agent].prompts) assert.ok(prompt.includes(audienceLine("beginner")), `${agent} hears the audience`);
+    }
+    assert.match(audienceLine("beginner"), /worked example/);
+    assert.match(audienceLine("advanced"), /skip the basics/);
+  });
+
+  it("says nothing about the audience when the owner gave none", async () => {
+    const models = spiedModels();
+    built(await buildCourse(INPUT, models, { review: false, stress: false }));
+    assert.equal(audienceLine(undefined), "");
+    for (const prompt of [...models.planner.prompts, ...models.writer.prompts, ...models.examiner.prompts]) assert.ok(!prompt.includes("Audience:"));
   });
 });
 

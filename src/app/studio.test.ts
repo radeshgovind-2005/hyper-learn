@@ -78,10 +78,25 @@ describe("studio course objects", () => {
     const { s, directory } = initialisedStudio();
     await s.updateDetails({ title: "Parallel programming", goal: "Write correct MPI programs" });
     assert.equal(s.record()?.goal, "Write correct MPI programs");
-    assert.deepEqual(s.details(), { title: "Parallel programming", description: "", goal: "Write correct MPI programs", language: "", status: "draft" });
+    assert.deepEqual(s.details(), { title: "Parallel programming", description: "", goal: "Write correct MPI programs", language: "", audience: "beginner", status: "draft" });
     assert.deepEqual(directory.calls, [["course", ID, { title: "Parallel programming", description: "" }]]);
     await assert.rejects(s.updateDetails({ owner: "user_eve" }));
     await assert.rejects(s.updateDetails({ title: "" }), /title/);
+  });
+
+  it("keeps who the course is for: set when created, changed by the owner, beginner on old records", async () => {
+    const { s, sql } = studioService();
+    s.initialise({ id: ID, title: "Parallel computing", description: "", audience: "advanced", owner: ada });
+    assert.equal(s.details().audience, "advanced");
+    await s.updateDetails({ audience: "intermediate" });
+    assert.equal(s.details().audience, "intermediate");
+    await assert.rejects(s.updateDetails({ audience: "expert" }), /beginner, intermediate or advanced/);
+    assert.throws(() => studioService().s.initialise({ id: ID, title: "x", description: "", audience: "expert" as never, owner: ada }), /beginner, intermediate or advanced/);
+
+    // A record stored before audiences existed.
+    const { audience: _audience, ...old } = s.record()!;
+    sql`UPDATE hl_meta SET value = ${JSON.stringify(old)} WHERE key = 'course'`;
+    assert.equal(studioService({}, sql).s.details().audience, "beginner");
   });
 });
 
@@ -308,6 +323,7 @@ describe("studio lifecycle", () => {
     assert.equal(s.record()?.status, "review");
     assert.equal(seen.input?.course_id, ID);
     assert.equal(seen.input?.goal, "Reason about speedup");
+    assert.equal(seen.input?.audience, "beginner", "the build is told who the course is for");
     assert.deepEqual(seen.input?.sources.map((x) => x.id), ["s1"]);
     assert.equal(typeof seen.structured, "function");
 

@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type { Identity } from "../auth/identity.js";
+import { type Audience, AUDIENCES } from "../generate/types.js";
 import type { Sql } from "../storage/sql.js";
 import { COURSE_ROLES, type CourseRole } from "./access.js";
 import { BUILT_IN_COURSES, builtInCourse, isBuiltIn, newCourseId } from "./courses.js";
@@ -32,8 +33,12 @@ export interface CourseCard extends Omit<CourseRecord, "owner"> {
 export const CourseDetailsSchema = z.strictObject({
   title: z.string().trim().min(1, "Give the course a title").max(120),
   description: z.string().trim().max(2_000).default(""),
+  /** Who the course is for; the build writes for them. Kept by the course object, not in the directory. */
+  audience: z.enum(AUDIENCES, { error: "Pick who the course is for: beginner, intermediate or advanced" }).default("beginner"),
 });
 export type CourseDetails = z.infer<typeof CourseDetailsSchema>;
+/** Details as a caller sends them: description and audience may be left out. */
+export type CourseDetailsInput = z.input<typeof CourseDetailsSchema>;
 
 /** The first readable problem in a Zod error. */
 export const firstIssue = (error: z.ZodError) => error.issues[0]?.message ?? "Invalid input";
@@ -77,19 +82,23 @@ export class DirectoryService {
     createDirectoryTables(sql);
   }
 
-  /** Records a new course owned by `owner`. The caller then initialises its course object (and calls remove if that fails). */
-  createCourse(owner: string, input: unknown): CourseRecord {
+  /**
+   * Records a new course owned by `owner`. The caller then initialises its course object with the record
+   * and the audience (and calls remove if that fails).
+   */
+  createCourse(owner: string, input: unknown): CourseRecord & { audience: Audience } {
     const parsed = CourseDetailsSchema.safeParse(input);
     if (!parsed.success) throw new Error(firstIssue(parsed.error));
     const [{ n }] = this.sql<{ n: number }>`SELECT COUNT(*) AS n FROM dir_courses WHERE owner = ${owner}` as [{ n: number }];
     if (n >= MAX_COURSES_PER_OWNER) throw new Error(`You already own ${MAX_COURSES_PER_OWNER} courses; delete one (at the end of its studio page) first`);
     let id = this.newId();
     while (this.exists(id)) id = this.newId();
-    const record: CourseRecord = { id, ...parsed.data, owner, status: "draft", created_at: this.now() };
+    const { audience, ...details } = parsed.data;
+    const record: CourseRecord = { id, ...details, owner, status: "draft", created_at: this.now() };
     this.sql`INSERT INTO dir_courses (id, title, description, owner, status, created_at)
       VALUES (${record.id}, ${record.title}, ${record.description}, ${owner}, ${record.status}, ${record.created_at})`;
     this.sql`INSERT INTO dir_members (course_id, user_id, role) VALUES (${id}, ${owner}, 'owner')`;
-    return record;
+    return { ...record, audience };
   }
 
   /**

@@ -21,6 +21,7 @@ export type {
   TrialStatus,
 } from "../../src/app/service.js";
 export type { Citation } from "../../src/course/schema.js";
+export type { Audience } from "../../src/generate/types.js";
 export type { CourseRole } from "../../src/app/access.js";
 export type { CourseCard, CourseStatus } from "../../src/app/directory.js";
 export type { BuildStep } from "../../src/generate/types.js";

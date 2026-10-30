@@ -31,9 +31,9 @@ import { type Member, SqlMembers, SqlSources, type SourceSummary } from "../stor
 import type { Identity as Person } from "../auth/identity.js";
 import { COURSE_ROLES, type CourseRole } from "./access.js";
 import { builtInCourse, type CourseBuilder, type CourseDefinition, FEATURED_COURSE, isStudioId } from "./courses.js";
-import type { BuildStep } from "../generate/types.js";
+import type { Audience, BuildStep } from "../generate/types.js";
 import { initialRelease } from "../releases/release.js";
-import { type CourseDetails, CourseDetailsSchema, type CourseRecord, type CourseStatus, firstIssue } from "./directory.js";
+import { type CourseDetailsInput, CourseDetailsSchema, type CourseRecord, type CourseStatus, firstIssue } from "./directory.js";
 import { approveWithinCeiling, referenceModels } from "./reference.js";
 import { flushTraces, traceConfig } from "../observability.js";
 import { type RunStep, stepFor } from "./timeline.js";
@@ -159,6 +159,8 @@ export interface StudioRecord {
   goal: string;
   /** Language to write in; empty: the material's. */
   language: string;
+  /** Who it is for. Missing on records stored before audiences existed: read as "beginner" (see record()). */
+  audience: Audience;
   status: CourseStatus;
   owner: string;
   created_at: string;
@@ -218,6 +220,7 @@ const DetailsUpdateSchema = z.strictObject({
   description: CourseDetailsSchema.shape.description.optional(),
   goal: z.string().trim().max(2_000).optional(),
   language: z.string().trim().max(40).optional(),
+  audience: CourseDetailsSchema.shape.audience.unwrap().optional(),
 });
 
 /** Compares secrets in time that doesn't depend on where they differ. */
@@ -1066,7 +1069,9 @@ export class CourseService {
 
   /** A studio course's record; undefined for a built-in course or one not initialised yet. */
   record(): StudioRecord | undefined {
-    return this.fixed ? undefined : this.meta.get<StudioRecord>("course");
+    if (this.fixed) return undefined;
+    const stored = this.meta.get<Omit<StudioRecord, "audience"> & { audience?: Audience }>("course");
+    return stored && { ...stored, audience: stored.audience ?? "beginner" };
   }
 
   /** Whether this object holds a course: built in, or a studio course the directory initialised. */
@@ -1088,11 +1093,11 @@ export class CourseService {
   }
 
   /** Sets up a new studio course: called once, by the directory, right after it recorded the course. */
-  initialise(input: { id: string; owner: Person } & CourseDetails) {
+  initialise(input: { id: string; owner: Person } & CourseDetailsInput) {
     if (this.fixed) throw new Error("Built-in courses can't be initialised");
     if (this.record()) throw new Error("This course already exists");
     if (!isStudioId(input.id)) throw new Error("Not a studio course id");
-    const parsed = CourseDetailsSchema.safeParse({ title: input.title, description: input.description });
+    const parsed = CourseDetailsSchema.safeParse({ title: input.title, description: input.description, audience: input.audience });
     if (!parsed.success) throw new Error(firstIssue(parsed.error));
     const record: StudioRecord = { id: input.id, ...parsed.data, goal: "", language: "", status: "draft", owner: input.owner.userId, created_at: this.now() };
     this.meta.set("course", record);
@@ -1178,13 +1183,13 @@ export class CourseService {
     return { role };
   }
 
-  /** What the owner's details form shows: title, description, goal and language. */
-  details(): Pick<StudioRecord, "title" | "description" | "goal" | "language" | "status"> {
-    const { title, description, goal, language, status } = this.studio();
-    return { title, description, goal, language, status };
+  /** What the owner's details form shows: title, description, goal, language and audience. */
+  details(): Pick<StudioRecord, "title" | "description" | "goal" | "language" | "audience" | "status"> {
+    const { title, description, goal, language, audience, status } = this.studio();
+    return { title, description, goal, language, audience, status };
   }
 
-  /** The owner changes the title, description, goal or language. */
+  /** The owner changes the title, description, goal, language or audience (the next build writes for it). */
   async updateDetails(input: unknown) {
     const record = this.studio();
     const parsed = DetailsUpdateSchema.safeParse(input);
@@ -1467,6 +1472,7 @@ export class CourseService {
         ...(record.goal && { goal: record.goal }),
         ...(record.description && { description: record.description }),
         ...(record.language && { language: record.language }),
+        audience: record.audience,
         sources: this.sources.all(),
       };
       const result = await this.options.builder!(input, provider.structured, (step) => {

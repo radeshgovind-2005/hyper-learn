@@ -24,6 +24,15 @@ describe("DirectoryService", () => {
     assert.ok(!("owner" in mine.owned[0]!), "cards don't carry the owner's user id");
   });
 
+  it("takes who the course is for and hands it on, without keeping it in the directory", () => {
+    const d = directory();
+    assert.equal(d.createCourse("user_ada", { title: "Course" }).audience, "beginner");
+    const course = d.createCourse("user_ada", { title: "Course", audience: "advanced" });
+    assert.equal(course.audience, "advanced");
+    assert.ok(!("audience" in d.get(course.id)!));
+    assert.throws(() => d.createCourse("user_ada", { title: "Course", audience: "expert" }), /beginner, intermediate or advanced/);
+  });
+
   it("refuses bad details, unknown fields and too many courses", () => {
     const d = directory();
     assert.throws(() => d.createCourse("user_ada", { title: "  " }), /title/);

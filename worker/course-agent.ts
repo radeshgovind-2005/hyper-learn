@@ -1,6 +1,7 @@
 import { Agent, type Connection, type ConnectionContext, callable, getAgentByName, getCurrentAgent } from "agents";
 import { coursePermissions, mayEnter, type Permission, requireCoursePermission } from "../src/app/access.js";
 import { builtInCourse, DIRECTORY_NAME, isBuiltIn, isStudioId } from "../src/app/courses.js";
+import type { CourseDetailsInput } from "../src/app/directory.js";
 import { CourseService, type DataSource, type DirectoryLink, parseApproval, type QuizResult } from "../src/app/service.js";
 import type { Certainty, Response } from "../src/assessment/items.js";
 import { type Identity, identityFrom } from "../src/auth/identity.js";
@@ -88,7 +89,7 @@ export class CourseAgent extends Agent<Env, CourseAgentState> {
   // ─── RPC only (not @callable): the directory ─────────────────────────
 
   /** Sets up a new studio course. The directory calls this once, right after recording the course. */
-  async initialise(input: { id: string; title: string; description: string; owner: Identity }) {
+  async initialise(input: { id: string; owner: Identity } & CourseDetailsInput) {
     if (input?.id !== this.name) throw new Error("Course id doesn't match this object");
     const record = this.app.initialise(input);
     this.pushState();
@@ -242,14 +243,14 @@ export class CourseAgent extends Agent<Env, CourseAgentState> {
 
   // ─── Course details, sources and model key (owner, or an admin) ───────
 
-  /** Title, description, goal (guides the build), language and status, for the owner's form. */
+  /** Title, description, goal (guides the build), language, audience and status, for the owner's form. */
   @callable()
   details() {
     this.actor("manage_course");
     return this.app.details();
   }
 
-  /** Title, description, goal (guides the build) and language. */
+  /** Title, description, goal (guides the build), language and audience. */
   @callable()
   async updateDetails(input: unknown) {
     this.actor("manage_course");

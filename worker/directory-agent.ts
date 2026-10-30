@@ -53,14 +53,14 @@ export class DirectoryAgent extends Agent<Env, Record<string, never>> {
     return this.app.myCourses(this.actor().userId);
   }
 
-  /** Creates a draft course owned by the caller and sets up its course object. Returns its id. */
+  /** Creates a draft course owned by the caller ({ title, description?, audience? }) and sets up its course object. Returns its id. */
   @callable()
   async createCourse(input: unknown) {
     const owner = this.actor();
     const record = this.app.createCourse(owner.userId, input);
     try {
       const course = await getAgentByName(this.env.CourseAgent, record.id);
-      await course.initialise({ id: record.id, title: record.title, description: record.description, owner });
+      await course.initialise({ id: record.id, title: record.title, description: record.description, audience: record.audience, owner });
     } catch (error) {
       console.error(`Couldn't initialise course ${record.id}:`, error);
       this.app.remove(record.id);
