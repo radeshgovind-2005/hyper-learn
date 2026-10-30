@@ -46,6 +46,7 @@ export interface CoachView {
     approach: "refute" | "worked_example" | "smaller_steps";
     attempt: number;
     status: "running" | "ready" | "failed" | "fixed" | "not_yet";
+    shared?: boolean;
     lesson?: { title: string; section: { blocks: { markdown: string; cites: { source: string; page: number }[] }[]; check: { prompt: string; options: { text: string; correct: boolean; feedback: string }[] } }; doubts: string[] };
     fallback?: { kind: "intervention"; block_id: string } | { kind: "review"; lesson: string; section_id: string };
     problems?: string[];
@@ -310,6 +311,7 @@ export function Coach({
                       <span className="chip violet">For you</span>
                       <span className="muted">
                         {repair.lesson ? APPROACH[repair.approach] : "From the course"}
+                        {repair.shared ? " · the lesson that helps with this" : ""}
                         {repair.attempt > 0 ? ` · try ${repair.attempt + 1}` : ""}
                       </span>
                     </div>

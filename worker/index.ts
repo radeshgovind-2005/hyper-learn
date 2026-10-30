@@ -51,10 +51,29 @@ async function authenticate(request: Request, env: AuthEnv): Promise<Request | R
   return withIdentity(new Request(url, request), identity);
 }
 
+/**
+ * Courses known to exist, remembered by this isolate for a minute. Without it every connection and call
+ * to any studio course would first go to the one directory object, a single-threaded bottleneck for the
+ * whole platform. Only "yes" is remembered: a course created a second ago must not be refused. A course
+ * deleted within the minute still reaches its (now empty) object, which refuses everyone.
+ */
+const knownCourses = new Map<string, number>();
+const KNOWN_FOR_MS = 60_000;
+const MAX_KNOWN = 5_000;
+
 /** Whether a studio course with this id was created by the directory. */
 async function courseExists(env: Env, id: string): Promise<boolean> {
+  const until = knownCourses.get(id);
+  if (until !== undefined && until > Date.now()) return true;
   const directory = await getAgentByName(env.DirectoryAgent, DIRECTORY_NAME);
-  return directory.courseExists(id);
+  const exists = await directory.courseExists(id);
+  if (exists) {
+    if (knownCourses.size >= MAX_KNOWN) knownCourses.clear();
+    knownCourses.set(id, Date.now() + KNOWN_FOR_MS);
+  } else {
+    knownCourses.delete(id);
+  }
+  return exists;
 }
 
 /**

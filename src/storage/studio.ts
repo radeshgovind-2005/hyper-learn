@@ -112,3 +112,38 @@ export class SqlSources {
     this.sql`DELETE FROM hl_sources WHERE id = ${id}`;
   }
 }
+
+/**
+ * Personal coach lessons written without the learner's own words: the same target and approach on the
+ * same release gives the same lesson, so it is written once and reused for everyone who needs it.
+ * Rows for releases that are no longer served are dropped when a new one is stored.
+ */
+export class SqlSharedRepairs {
+  constructor(private readonly sql: Sql) {
+    sql`CREATE TABLE IF NOT EXISTS hl_shared_repairs (
+      key TEXT PRIMARY KEY,
+      release TEXT NOT NULL,
+      data TEXT NOT NULL,
+      uses INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL
+    )`;
+  }
+  /** The stored lesson for a key, counting the reuse. */
+  take<T>(key: string): T | undefined {
+    const [row] = this.sql<{ data: string }>`SELECT data FROM hl_shared_repairs WHERE key = ${key}`;
+    if (!row) return undefined;
+    this.sql`UPDATE hl_shared_repairs SET uses = uses + 1 WHERE key = ${key}`;
+    return JSON.parse(row.data) as T;
+  }
+  put(key: string, release: string, data: unknown, at: string, served: readonly string[]) {
+    if (served.length > 0) {
+      const keep = JSON.stringify(served);
+      this.sql`DELETE FROM hl_shared_repairs WHERE release NOT IN (SELECT value FROM json_each(${keep}))`;
+    }
+    this.sql`INSERT INTO hl_shared_repairs (key, release, data, created_at) VALUES (${key}, ${release}, ${JSON.stringify(data)}, ${at})
+      ON CONFLICT (key) DO UPDATE SET data = excluded.data`;
+  }
+  clear() {
+    this.sql`DELETE FROM hl_shared_repairs`;
+  }
+}

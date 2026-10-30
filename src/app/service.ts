@@ -27,7 +27,7 @@ import { MAX_PAGE_CHARS, SOURCE_ROLES, type Source, type SourceRole, SourceSchem
 import type { State } from "../state.js";
 import { PersistentMemorySaver } from "../storage/checkpointer.js";
 import { type LearnerEvent, type Sql, SqlEventLog, SqlMeta, SqlProfiles, SqlReleaseStore, SqlThreadStore } from "../storage/sql.js";
-import { type Member, SqlMembers, SqlSources, type SourceSummary } from "../storage/studio.js";
+import { type Member, SqlMembers, SqlSharedRepairs, SqlSources, type SourceSummary } from "../storage/studio.js";
 import type { Identity as Person } from "../auth/identity.js";
 import { COURSE_ROLES, type CourseRole } from "./access.js";
 import { builtInCourse, type CoachRepairer, type CourseBuilder, type CourseDefinition, type CourseEditor, FEATURED_COURSE, isStudioId } from "./courses.js";
@@ -324,6 +324,8 @@ export interface CoachState {
     started_at: string;
     finished_at?: string;
     lesson?: PersonalSection;
+    /** Reused from another learner with the same target (written without anyone's own words). */
+    shared?: boolean;
     /** Without a model (the featured course, or no key): the course's own help instead of a new lesson. */
     fallback?: { kind: "intervention"; block_id: string } | { kind: "review"; lesson: string; section_id: string };
     problems?: string[];
@@ -450,6 +452,7 @@ export class CourseService {
   /** A studio course's members and their roles. Built-in courses use global roles instead. */
   readonly members: SqlMembers;
   private readonly sources: SqlSources;
+  private readonly sharedRepairs: SqlSharedRepairs;
   private readonly meta: SqlMeta;
   private readonly saver: PersistentMemorySaver;
   private readonly now: () => string;
@@ -472,6 +475,7 @@ export class CourseService {
     this.profiles = new SqlProfiles(sql);
     this.members = new SqlMembers(sql);
     this.sources = new SqlSources(sql);
+    this.sharedRepairs = new SqlSharedRepairs(sql);
     this.saver = new PersistentMemorySaver(new SqlThreadStore(sql));
     // Builds and runs live in this instance's memory, so one still marked running at start was cut off by a restart.
     if (this.record()?.status === "building") this.endBuild("failed", { problems: ["The build was interrupted (the server restarted); build again"] });
@@ -616,6 +620,7 @@ export class CourseService {
     this.releases.reset(this.startingSnapshot(scenario), this.now);
     this.events.clear();
     this.profiles.clearStates();
+    this.sharedRepairs.clear();
   }
 
   // ─── Learners ─────────────────────────────────────────────────────
@@ -985,6 +990,13 @@ export class CourseService {
     const base = { id: this.newId(), target, approach: approachFor(target, attempt), attempt, release: release.version, started_at: this.now() };
 
     const write = Boolean(this.options.repairer && this.record() && this.agentsAvailable());
+    // Without the learner's own words the lesson is the same for everyone with this target: reuse it.
+    const shared = write && !d.note ? this.sharedRepairs.take<PersonalSection>(this.sharedKey(base.release, target, base.approach)) : undefined;
+    if (shared) {
+      state.repair = { ...base, status: "ready", lesson: shared, shared: true, finished_at: this.now(), recheck: this.recheckFor(state, release.snapshot, target) };
+      this.saveCoach(learner, state);
+      return { state: this.coachState(learner), write: false };
+    }
     if (write) {
       const today = this.now().slice(0, 10);
       const used = state.repairs_today.date === today ? state.repairs_today.count : 0;
@@ -1002,6 +1014,10 @@ export class CourseService {
     }
     this.saveCoach(learner, state);
     return { state: this.coachState(learner), write };
+  }
+
+  private sharedKey(release: string, target: Target, approach: Approach) {
+    return `${release}|${targetKey(target)}|${approach}`;
   }
 
   private recheckFor(state: CoachState, snapshot: CourseSnapshot, target: Target): CoachQuestion[] {
@@ -1023,7 +1039,9 @@ export class CourseService {
       const record = this.studio();
       const provider = await this.ownerProvider();
       const snapshot = this.releases.get(repair.release)!.snapshot;
-      const wrong = (state.diagnosis?.result?.wrong ?? []).filter((w) => w.lesson === repair.target.lesson);
+      // A learner who said what confuses them gets a lesson of their own; otherwise it is written to be shared.
+      const note = state.diagnosis?.note;
+      const wrong = note ? (state.diagnosis?.result?.wrong ?? []).filter((w) => w.lesson === repair.target.lesson) : [];
       const result = await this.options.repairer!(
         {
           course: { course_id: record.id, title: record.title, ...(record.language && { language: record.language }) },
@@ -1031,12 +1049,18 @@ export class CourseService {
           sources: this.sources.all(),
           target: repair.target,
           approach: repair.approach,
-          ...(state.diagnosis?.note && { note: state.diagnosis.note }),
+          ...(note && { note }),
           wrong,
         },
         provider.structured,
       );
-      if (result.ok) finish({ status: "ready", lesson: result.repair, recheck: this.recheckFor(state, snapshot, repair.target) });
+      if (result.ok) {
+        if (!note) {
+          const served = [this.releases.live().version, ...(this.openTrial() ? [this.openTrial()!.version] : [])];
+          this.sharedRepairs.put(this.sharedKey(repair.release, repair.target, repair.approach), repair.release, result.repair, this.now(), served);
+        }
+        finish({ status: "ready", lesson: result.repair, recheck: this.recheckFor(state, snapshot, repair.target) });
+      }
       else finish({ status: "failed", problems: result.problems.map((p) => this.redact(p)) });
     } catch (error) {
       finish({ status: "failed", problems: [this.redact(error instanceof Error ? error.message : String(error))] });
