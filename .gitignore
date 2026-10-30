@@ -25,3 +25,6 @@ web/dist/
 .dev.vars
 worker/worker-configuration.d.ts
 .admin-token
+
+# Courses built by `npm run generate`
+generated/

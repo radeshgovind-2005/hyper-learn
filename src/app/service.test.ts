@@ -56,6 +56,66 @@ describe("CourseService", () => {
     assert.equal(restarted.overview().releases.find((r) => r.version === "1.1.0-trial.1")?.status, "rejected");
   });
 
+  describe("a run cut off by a restart", () => {
+    it("ends in an error instead of blocking new runs and reset", async () => {
+      const sql = sqlite();
+      service(sql).beginRun({ mode: "autopilot", agents: false });
+      const restarted = service(sql);
+      assert.equal(restarted.run()?.status, "error");
+      assert.match(restarted.run()?.error ?? "", /restarted/);
+      restarted.reset("control");
+      const again = await restarted.startRun({ mode: "autopilot", agents: false });
+      assert.equal(again.status, "done");
+    });
+
+    it("asks again for an approval whose answer never took effect", async () => {
+      const sql = sqlite();
+      const first = service(sql);
+      await first.startRun({ mode: "hitl", agents: false });
+      first.beginApproval();
+      const restarted = service(sql);
+      const run = restarted.run();
+      assert.equal(run?.status, "awaiting_approval");
+      assert.equal(run?.steps.filter((s) => s.status === "waiting").length, 1);
+      const done = await restarted.approve({ approved: true });
+      assert.equal(done.status, "done");
+      assert.equal(restarted.overview().live, "1.1.0");
+    });
+
+    it("reverts a simulated trial that was never measured", () => {
+      const sql = sqlite();
+      const first = service(sql);
+      first.beginRun({ mode: "autopilot", agents: false });
+      const live = first.releases.live();
+      first.releases.add({ ...structuredClone(live), version: "1.1.0-trial.1", parent: live.version, status: "trial", trial_source: "simulated" });
+      const restarted = service(sql);
+      assert.equal(restarted.run()?.status, "error");
+      const trial = restarted.releases.get("1.1.0-trial.1");
+      assert.equal(trial?.status, "reverted");
+      assert.equal(trial?.decision?.verdict, "revert");
+      assert.equal(restarted.overview().live, "1.0.0");
+    });
+
+    it("leaves a trial on real learners collecting answers", () => {
+      const sql = sqlite();
+      const first = service(sql);
+      first.beginRun({ mode: "autopilot", agents: false, source: "real" });
+      const live = first.releases.live();
+      first.releases.add({ ...structuredClone(live), version: "1.1.0-trial.1", parent: live.version, status: "trial", trial_source: "real" });
+      const restarted = service(sql);
+      assert.equal(restarted.run()?.status, "trial_running");
+      assert.equal(restarted.trial()?.version, "1.1.0-trial.1");
+      restarted.stopTrial("ada");
+      assert.equal(restarted.run()?.status, "done");
+    });
+
+    it("leaves a run in progress alone in the same instance", () => {
+      const s = service();
+      s.beginRun({ mode: "autopilot", agents: false });
+      assert.equal(s.run()?.status, "running");
+    });
+  });
+
   for (const scenario of ["dominant-misconception", "missing-prereq"]) {
     it(`diagnoses the live release: once ${scenario}'s fix is kept, the next run finds nothing to repair`, async () => {
       const s = service();
@@ -85,6 +145,20 @@ describe("CourseService", () => {
     assert.throws(() => s.reset("control"), /run is in progress/);
     const done = await s.continueApproval(claimed, { approved: true });
     assert.equal(done.status, "done");
+  });
+
+  it("checks arguments that arrive untyped from browsers", async () => {
+    const s = service();
+    assert.throws(() => s.beginRun({ mode: "yolo", agents: false } as never), /Invalid run options/);
+    assert.throws(() => s.beginRun({ mode: "hitl", agents: "false" } as never), /Invalid run options/);
+    assert.throws(() => s.beginRun({ mode: "hitl", agents: false, source: "everyone" } as never), /Invalid run options/);
+    await s.startRun({ mode: "hitl", agents: false });
+    await assert.rejects(s.approve({ approved: "false" } as never), /Invalid approval/);
+    assert.equal(s.run()?.status, "awaiting_approval", "a refused answer doesn't claim the approval");
+    const { answers, certainty } = believerAnswers();
+    assert.throws(() => s.submitQuiz("ada", "agent-loop", answers, certainty.map(() => 5) as never), /Certainty is 1, 2 or 3/);
+    assert.throws(() => s.submitQuiz("ada", "agent-loop", answers, certainty, undefined, "q1" as never), /item_ids must be a list/);
+    assert.throws(() => s.submitQuiz("ada", "agent-loop", "all right" as never, certainty), /as lists/);
   });
 
   it("refuses a run with agents when no model is configured", async () => {

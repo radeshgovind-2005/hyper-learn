@@ -7,5 +7,5 @@ import { type Intervention, InterventionSchema, type Template } from "./template
  */
 export const EXEMPLARS: readonly Intervention[] = InterventionSchema.array().parse(exemplarsFile);
 
-export const exemplarFor = (misconception: string, templates: readonly Template[]) =>
-  EXEMPLARS.find((e) => e.targets === misconception && templates.includes(e.template));
+export const exemplarFor = (misconception: string, templates: readonly Template[], exemplars: readonly Intervention[] = EXEMPLARS) =>
+  exemplars.find((e) => e.targets === misconception && templates.includes(e.template));

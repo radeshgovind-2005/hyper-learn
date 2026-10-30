@@ -17,6 +17,37 @@ export const MisconceptionDefSchema = z.strictObject({
 });
 export type MisconceptionDef = z.infer<typeof MisconceptionDefSchema>;
 
+/**
+ * What mastering a lesson means, one testable statement at a time ("explain why an Exchange appears
+ * in the plan"). Exam items name the objective they test; a wrong answer then points the learner at
+ * the sections that teach it. Optional: a course without objectives works as before.
+ */
+export const ObjectiveSchema = z.strictObject({
+  id: Slug,
+  /** The lesson whose exam tests it. */
+  lesson: LessonId,
+  statement: z.string().min(1),
+  /** Ids of the sections that teach it (`<lesson>/<slug>`), in reading order. May be empty. */
+  sections: z.array(z.string().min(1)).default([]),
+});
+export type Objective = z.infer<typeof ObjectiveSchema>;
+
+/**
+ * How a lesson's exam is drawn from its question pool. Absent: every quiz item, every time (as before).
+ * Present: `per_objective` scored items per objective, preferring items the learner hasn't seen.
+ */
+export const ExamConfigSchema = z.strictObject({
+  per_objective: z.number().int().min(1).max(3),
+});
+export type ExamConfig = z.infer<typeof ExamConfigSchema>;
+
+/** Where a piece of generated content comes from: a source document and a 1-based page. */
+export const CitationSchema = z.strictObject({
+  source: z.string().min(1),
+  page: z.number().int().min(1),
+});
+export type Citation = z.infer<typeof CitationSchema>;
+
 export const LessonMetaSchema = z.strictObject({
   id: LessonId,
   title: z.string().min(1),
@@ -39,7 +70,10 @@ export type CourseManifest = z.infer<typeof CourseManifestSchema>;
 export interface Lesson extends LessonMeta {
   /** Lesson text in Markdown, without the quiz block. */
   body: string;
+  /** The exam pool: every item when `exam` is absent. */
   quiz: QuizItem[];
+  /** How each attempt's exam is drawn from `quiz` (src/assessment/exam.ts); absent = every item, in order. */
+  exam?: ExamConfig;
 }
 
 /** Lesson id → ids of its direct prerequisites. */
@@ -52,6 +86,8 @@ export interface Course {
   /** The course's intended (correct) prerequisite structure. */
   graph: PrereqGraph;
   misconceptions: MisconceptionDef[];
+  /** Learning objectives; empty for courses that don't define them. */
+  objectives: Objective[];
   getLesson(id: string): Lesson | undefined;
   getMisconception(id: string): MisconceptionDef | undefined;
 }

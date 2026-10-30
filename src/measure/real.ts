@@ -25,13 +25,21 @@ export function armOf(userId: string, trialVersion: string): Arm {
 }
 
 interface AnswerEventData {
+  /** Absent on answers recorded before exams were drawn: the whole quiz, in order. */
+  item_ids?: string[];
   responses: QuizAttempt["answers"];
   certainty: QuizAttempt["certainty"];
   attempt?: number;
 }
 
-/** Quiz answers from the event log as attempts, numbered per learner and lesson in the order they happened. */
-export function attemptsFrom(events: readonly LearnerEvent[]): (QuizAttempt & { learner: string; release: string; at: string })[] {
+/**
+ * Quiz answers from the event log as attempts, numbered per learner and lesson in the order they happened.
+ * By default the number recorded at the time wins (over all time); `renumber` counts within `events` only.
+ */
+export function attemptsFrom(
+  events: readonly LearnerEvent[],
+  { renumber = false }: { renumber?: boolean } = {},
+): (QuizAttempt & { learner: string; release: string; at: string })[] {
   const ids = new Map<string, number>();
   const counts = new Map<string, number>();
   return events
@@ -40,12 +48,13 @@ export function attemptsFrom(events: readonly LearnerEvent[]): (QuizAttempt & { 
       const d = e.data as AnswerEventData;
       if (!ids.has(e.learner)) ids.set(e.learner, ids.size);
       const key = `${e.learner}:${e.lesson}`;
-      const attempt = d.attempt ?? (counts.get(key) ?? 0) + 1;
+      const attempt = (!renumber && d.attempt) || (counts.get(key) ?? 0) + 1;
       counts.set(key, attempt);
       return {
         learner_id: ids.get(e.learner)!,
         learner: e.learner,
         lesson_id: e.lesson!,
+        ...(d.item_ids && { item_ids: d.item_ids }),
         answers: d.responses,
         certainty: d.certainty,
         attempt,
@@ -90,7 +99,9 @@ export function measureReal(live: Release, trial: Release, events: readonly Lear
   const change = trial.changes[0];
   if (!change) throw new Error(`Release ${trial.version} has no changes to measure`);
   const target = trialTarget(live.snapshot, change);
-  const all = attemptsFrom(events.filter((e) => e.at >= since));
+  // Numbered within the trial: someone who took the quiz before it started still has a first try and a
+  // retake on their arm's release, which is what persistence compares.
+  const all = attemptsFrom(events.filter((e) => e.at >= since), { renumber: true });
   const arm = (release: Release): { course: Course; attempts: QuizAttempt[] } => ({
     course: courseFromSnapshot(release.snapshot),
     attempts: all.filter((a) => a.release === release.version),

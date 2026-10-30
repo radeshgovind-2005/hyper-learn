@@ -184,7 +184,7 @@ export interface TimelineEntry {
   kind: LearnerEvent["kind"];
   lesson: string | null;
   text: string;
-  /** For quizzes: passed or not. Lets the UI colour the entry. */
+  /** For quizzes and checks: passed (right) or not. Lets the UI colour the entry. */
   outcome?: "pass" | "fail";
 }
 
@@ -225,6 +225,12 @@ export function timelineOf(
         const d = e.data as { event: "shown" | "completed"; misconception?: string; context: string };
         const belief = d.misconception ? `“${beliefOf(d.misconception)}”` : "a misconception";
         entries.push({ at: e.at, kind: e.kind, lesson: e.lesson, text: `${d.event === "shown" ? "Was shown" : "Completed"} help for ${belief}${d.context === "preview" ? " (opened it)" : ""}` });
+        break;
+      }
+      case "check": {
+        const d = e.data as { correct: boolean; misconception: string | null };
+        const belief = d.misconception ? `, showing “${beliefOf(d.misconception)}”` : "";
+        entries.push({ at: e.at, kind: e.kind, lesson: e.lesson, text: `Practice check in ${lesson}: ${d.correct ? "right" : `wrong${belief}`}`, outcome: d.correct ? "pass" : "fail" });
         break;
       }
       case "path":

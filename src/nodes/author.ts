@@ -1,12 +1,12 @@
 import { END } from "@langchain/langgraph";
 import { HumanMessage, SystemMessage } from "@langchain/core/messages";
 import { getAgent, getSystemPrompt, renderTemplate } from "../agents.js";
-import { courseFromSnapshot, liveInterventions } from "../course/compile.js";
+import { courseFromSnapshot, isTextBlock, liveInterventions } from "../course/compile.js";
 import type { Course } from "../course/schema.js";
 import { paraphraseLeaks } from "../guards/guards.js";
 import { checkIntervention } from "../interventions/checks.js";
 import { allowedTemplates, interventionQuestions, interventionTexts } from "../interventions/templates.js";
-import { getStructuredModel, type Invokable } from "../models.js";
+import { defaultModels, type Invokable, type ModelProvider } from "../models.js";
 import type { ReleaseStore } from "../releases/release.js";
 import type { Harness } from "./release.js";
 import { authorContext } from "../retrieval/context.js";
@@ -20,9 +20,10 @@ import { logNode } from "../utils/logger.js";
 export type AuthorModel = Invokable<Draft>;
 export type ContentReviewerModel = Invokable<ReflectionVerdict>;
 
-export const createAuthorModel = (): AuthorModel => getStructuredModel(DraftSchema, "write_intervention", getAgent("author").model);
-export const createContentReviewerModel = (): ContentReviewerModel =>
-  getStructuredModel(ReflectionVerdictSchema, "review_intervention", getAgent("reviewer").model);
+export const createAuthorModel = (provider: ModelProvider = defaultModels()): AuthorModel =>
+  provider.structured(DraftSchema, "write_intervention", getAgent("author").model);
+export const createContentReviewerModel = (provider: ModelProvider = defaultModels()): ContentReviewerModel =>
+  provider.structured(ReflectionVerdictSchema, "review_intervention", getAgent("reviewer").model);
 
 /** The proposal being authored, and which templates code allows for it. */
 function target(state: State) {
@@ -126,7 +127,7 @@ export function createReviewContentNode(harness: Harness, model: ContentReviewer
       const { lessonId } = target(state);
       const lesson = store.live().snapshot.lessons.find((l) => l.id === lessonId)!;
       const lessonText = lesson.sections
-        .flatMap((s) => s.blocks.flatMap((b) => (b.kind !== "intervention" && !b.archived ? [b.markdown] : [])))
+        .flatMap((s) => s.blocks.flatMap((b) => (isTextBlock(b) && !b.archived ? [b.markdown] : [])))
         .join("\n");
       logNode("reviewer", "Code checks passed. Reviewing the content...");
       verdict = await model.invoke([

@@ -17,7 +17,7 @@ const FeedbackOptionSchema = z.strictObject({
   feedback: text(300).describe("Shown after the learner picks this option"),
 });
 
-const CheckQuestionSchema = z.strictObject({
+export const CheckQuestionSchema = z.strictObject({
   prompt: text(300),
   options: z.array(FeedbackOptionSchema).min(2).max(5),
 });

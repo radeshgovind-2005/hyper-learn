@@ -1,5 +1,6 @@
 import { gradeAttempt } from "../analytics/performance.js";
 import { correctResponse, type WrongOption, wrongOptions } from "../assessment/answers.js";
+import { drawExam } from "../assessment/exam.js";
 import type { Certainty, QuizItem, Response } from "../assessment/items.js";
 import { randomTopologicalOrder } from "../course/graph.js";
 import type { LiveIntervention } from "../course/compile.js";
@@ -46,7 +47,12 @@ export const DEFAULT_LEARNER_MODEL: LearnerModel = {
 export interface QuizAttempt {
   learner_id: number;
   lesson_id: string;
-  /** The response to each item, in quiz order (shape depends on the item type). */
+  /**
+   * The items shown, in order, when the exam was drawn from the lesson's pool. Absent = the whole quiz in
+   * quiz order (every attempt before exams were drawn, and every lesson without an exam config).
+   */
+  item_ids?: string[];
+  /** The response to each item shown, in that order (shape depends on the item type). */
   answers: Response[];
   /** How sure the learner was of each answer. */
   certainty: Certainty[];
@@ -160,7 +166,9 @@ const learnerSeed = (seed: number, learnerId: number) => (Math.imul(seed, 0x9e37
  * With `retakes`, a learner who fails a quiz follows the per-learner router (src/path/route.ts): they
  * are shown the release's interventions for the misconceptions they showed, which clear a belief they
  * hold with the scenario's efficacy, then retake the quiz. Without an intervention, re-reading gives
- * them a small `relearn` chance. Fully deterministic for a given scenario, model and seed.
+ * them a small `relearn` chance. A lesson with an `exam` config shows each attempt a drawn exam
+ * (drawExam, unseen items first) and records its `item_ids`, so a retake asks different questions.
+ * Fully deterministic for a given scenario, model and seed.
  */
 export function simulate(
   course: Course,
@@ -198,6 +206,8 @@ export function simulate(
       mastered.add(id);
       learner.beliefs.set(id, null);
     };
+    // Items this learner was shown per lesson, oldest first: a drawn retake prefers the ones they haven't seen.
+    const seen = new Map<string, string[]>();
 
     for (const lessonId of randomTopologicalOrder(published, random)) {
       const cap = scenario.takers?.[lessonId];
@@ -213,12 +223,20 @@ export function simulate(
             (id) => beliefAbout(id, learner, course, scenario, model, random) ?? [],
           ),
         );
-        const answered = lesson.quiz.map((item) =>
+        // A lesson with an exam config shows a drawn exam; the draw's seed comes from the learner's own
+        // stream, so lessons without one (the featured course) consume exactly the same random numbers as before.
+        const shown = seen.get(lessonId) ?? [];
+        const items = lesson.exam
+          ? drawExam(lesson, course.objectives, { seen: shown, seed: Math.floor(random() * 4_294_967_296) })
+          : lesson.quiz;
+        seen.set(lessonId, [...shown, ...items.map((item) => item.id)]);
+        const answered = items.map((item) =>
           answerItem(lessonId, item, masters, heldBeliefs, gaps, optionsByItem.get(item.id)!, model, random),
         );
         const record: QuizAttempt = {
           learner_id,
           lesson_id: lessonId,
+          ...(lesson.exam && { item_ids: items.map((item) => item.id) }),
           answers: answered.map((a) => a.response),
           certainty: answered.map((a) => a.certainty),
           attempt,

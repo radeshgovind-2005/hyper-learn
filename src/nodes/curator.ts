@@ -1,13 +1,13 @@
 import { HumanMessage, SystemMessage } from "@langchain/core/messages";
 import { getAgent, getSystemPrompt, renderTemplate } from "../agents.js";
-import { getStructuredModel, type Invokable } from "../models.js";
+import { defaultModels, type Invokable, type ModelProvider } from "../models.js";
 import { formatPerformanceData, type Mutation, MutationSchema, type State, type StateUpdate } from "../state.js";
 import { logNode } from "../utils/logger.js";
 
 export type CuratorModel = Invokable<Mutation>;
 
-export const createCuratorModel = (): CuratorModel =>
-  getStructuredModel(MutationSchema, "propose_mutation", getAgent("curator").model);
+export const createCuratorModel = (provider: ModelProvider = defaultModels()): CuratorModel =>
+  provider.structured(MutationSchema, "propose_mutation", getAgent("curator").model);
 
 export function createCuratorNode(model: CuratorModel = createCuratorModel()) {
   return async function curatorNode(state: State): Promise<StateUpdate> {

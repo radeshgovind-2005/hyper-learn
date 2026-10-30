@@ -1,5 +1,5 @@
 import { wrongOptions } from "../assessment/answers.js";
-import { type CourseSnapshot, liveInterventions } from "../course/compile.js";
+import { type CourseSnapshot, isTextBlock, liveInterventions } from "../course/compile.js";
 import type { Course } from "../course/schema.js";
 import { quizTexts } from "../interventions/checks.js";
 import { EXEMPLARS } from "../interventions/exemplars.js";
@@ -56,7 +56,7 @@ export function authorContext({ snapshot, course, lessonId, misconception, evide
   const sections = lesson.sections
     .filter((s) => !s.archived)
     .map((s) => {
-      const body = s.blocks.flatMap((b) => (b.kind !== "intervention" && !b.archived ? [b.markdown] : [])).join("\n");
+      const body = s.blocks.flatMap((b) => (isTextBlock(b) && !b.archived ? [b.markdown] : [])).join("\n");
       return `[${s.id}] ${s.title || "(intro)"}\n${body}`;
     })
     .join("\n\n");

@@ -1,14 +1,16 @@
-import { Agent, type Connection, type ConnectionContext, callable, getCurrentAgent } from "agents";
-import { type Permission, permissionsOf, requirePermission } from "../src/app/access.js";
-import { CourseService, type DataSource, type QuizResult } from "../src/app/service.js";
+import { Agent, type Connection, type ConnectionContext, callable, getAgentByName, getCurrentAgent } from "agents";
+import { coursePermissions, mayEnter, type Permission, requireCoursePermission } from "../src/app/access.js";
+import { builtInCourse, DIRECTORY_NAME, isBuiltIn, isStudioId } from "../src/app/courses.js";
+import { CourseService, type DataSource, type DirectoryLink, parseApproval, type QuizResult } from "../src/app/service.js";
 import type { Certainty, Response } from "../src/assessment/items.js";
 import { type Identity, identityFrom } from "../src/auth/identity.js";
 import { checkRoleChange, setClerkRole } from "../src/auth/roles.js";
-import { configureModels, modelConfigFromEnv } from "../src/models.js";
+import { ModelProvider, modelChoicesFromEnv, modelConfigFromEnv } from "../src/models.js";
 import { LANGSMITH_SETTINGS } from "../src/observability.js";
-import type { ApprovalMode, ApprovalResponse } from "../src/nodes/release.js";
+import type { ApprovalMode } from "../src/nodes/release.js";
 import type { Sql } from "../src/storage/sql.js";
 import { workersAiEmbedder, workersAiGuard } from "./ai.js";
+import { courseBuilder } from "./builder.js";
 
 /** What every connected browser sees, kept in sync by the Agents SDK. */
 export interface CourseAgentState {
@@ -22,24 +24,42 @@ interface ConnectionState {
 }
 
 /**
- * One course, as a Durable Object: its releases, learner history, and repair runs live in the
- * object's SQLite. A thin wrapper; the logic is CourseService (src/app/service.ts), which tests run on Node.
+ * One course, as a Durable Object named by the course id: its releases, learner history, and repair runs
+ * live in the object's SQLite. A thin wrapper; the logic is CourseService (src/app/service.ts), which tests run on Node.
  * Every method acts as the signed-in person on the calling connection, within their role.
  */
 export class CourseAgent extends Agent<Env, CourseAgentState> {
   initialState: CourseAgentState = { overview: null };
   private service?: CourseService;
 
+  /** Whether this object holds a course. The Worker refuses unknown names; this is the second check. */
+  private known(): boolean {
+    return isBuiltIn(this.name) || (isStudioId(this.name) && this.app.initialised());
+  }
+
   private get app(): CourseService {
     if (!this.service) {
+      const course = builtInCourse(this.name) ?? (isStudioId(this.name) ? "studio" : undefined);
+      if (!course) throw new Error("No such course");
       const env = this.env as unknown as Record<string, string | undefined> & { AI?: Ai };
       // LangChain reads LangSmith settings from process.env; Worker vars and secrets arrive on env.
       for (const key of LANGSMITH_SETTINGS) if (env[key] && !process.env[key]) process.env[key] = env[key];
-      const settings = modelConfigFromEnv(env);
-      configureModels(settings);
-      const agentsAvailable = Boolean(env.MODEL_API_KEY && env.MODEL_BASE_URL);
+      // The Worker's own model key is for built-in courses only; a studio course uses its owner's.
+      const builtIn = course !== "studio";
       this.service = new CourseService(this.sql.bind(this) as unknown as Sql, {
-        agentsAvailable,
+        course,
+        directory: this.directoryLink(),
+        ...(builtIn
+          ? { agentsAvailable: Boolean(env.MODEL_API_KEY && env.MODEL_BASE_URL), models: new ModelProvider(modelConfigFromEnv(env)) }
+          : {
+              ...(courseBuilder && { builder: courseBuilder }),
+              ownerModels: {
+                secret: env.KEY_ENCRYPTION_SECRET,
+                // The Worker's endpoint and limits; the key comes from the owner, opened only when used.
+                config: { ...modelConfigFromEnv(env), apiKey: "" },
+                choices: modelChoicesFromEnv(env),
+              },
+            }),
         ...(env.AI && { guard: workersAiGuard(env.AI), embedder: workersAiEmbedder(env.AI) }),
       });
     }
@@ -50,22 +70,59 @@ export class CourseAgent extends Agent<Env, CourseAgentState> {
   static readonly TRIAL_CHECK_INTERVAL = 3600;
 
   override async onStart() {
-    this.publish();
+    if (!this.known()) return;
+    this.pushState();
     // Idempotent: one schedule however often the object wakes.
     await this.scheduleEvery(CourseAgent.TRIAL_CHECK_INTERVAL, "checkTrial");
   }
 
+  /** The directory, over Durable Object RPC. */
+  private directoryLink(): DirectoryLink {
+    const directory = () => getAgentByName(this.env.DirectoryAgent, DIRECTORY_NAME);
+    return {
+      courseUpdated: async (id, patch) => (await directory()).courseUpdated(id, patch),
+      membershipChanged: async (id, userId, role) => (await directory()).membershipChanged(id, userId, role),
+    };
+  }
+
+  // ─── RPC only (not @callable): the directory ─────────────────────────
+
+  /** Sets up a new studio course. The directory calls this once, right after recording the course. */
+  async initialise(input: { id: string; title: string; description: string; owner: Identity }) {
+    if (input?.id !== this.name) throw new Error("Course id doesn't match this object");
+    const record = this.app.initialise(input);
+    this.pushState();
+    await this.scheduleEvery(CourseAgent.TRIAL_CHECK_INTERVAL, "checkTrial");
+    return { id: record.id };
+  }
+
+  /** Joins with an invite token, for the directory's join(). Returns the caller's role in the course. */
+  redeemInvite(person: Identity, token: unknown) {
+    if (!this.known() || isBuiltIn(this.name)) throw new Error("This invite link is no longer valid");
+    if (typeof person?.userId !== "string" || !person.userId) throw new Error("Sign in to continue");
+    return this.app.join(person, token);
+  }
+
   /** Scheduled, not callable by clients: decides an open real trial once both arms have enough learners. */
   async checkTrial() {
-    const result = this.app.evaluateTrial(() => this.publish());
-    if (result.status !== "none") this.publish();
+    const result = this.app.evaluateTrial(() => this.pushState());
+    if (result.status !== "none") this.pushState();
   }
 
   /** Binds the connection to the person the Worker verified. A connection without one is closed. */
   override onConnect(connection: Connection<ConnectionState>, ctx: ConnectionContext) {
+    if (!this.known()) {
+      connection.close(4004, "No such course");
+      return;
+    }
     const identity = identityFrom(ctx.request);
     if (!identity) {
       connection.close(4001, "Unauthorized");
+      return;
+    }
+    // A studio course is for its members (and admins): others never see its state.
+    if (!mayEnter(this.access(identity))) {
+      connection.close(4003, "Not a member of this course");
       return;
     }
     connection.setState({ identity, connectedAt: new Date().toISOString() });
@@ -78,14 +135,28 @@ export class CourseAgent extends Agent<Env, CourseAgentState> {
     if (identity) this.app.endSession(identity.userId, connection.id);
   }
 
-  private publish() {
+  /** State is the server's view; a browser can't overwrite what other people see. */
+  override validateStateChange(_next: CourseAgentState, source: Connection | "server") {
+    if (source !== "server") throw new Error("State is read-only");
+  }
+
+  private pushState() {
     this.setState({ overview: this.app.overview() });
   }
 
-  /** The person calling, if their role allows `permission`; otherwise the call fails with a readable message. */
+  /** Someone's standing in this course: global roles on the featured course, course roles elsewhere. */
+  private access(identity: Identity) {
+    return { featured: isBuiltIn(this.name), global: identity.role, course: this.app.memberRole(identity.userId) };
+  }
+
+  /**
+   * The person calling, if their role allows `permission`; otherwise the call fails with a readable message.
+   * Course roles are read on every call, so a change applies at once.
+   */
   private actor(permission: Permission): Identity {
-    const connection = getCurrentAgent().connection as Connection<ConnectionState> | undefined;
-    return requirePermission(connection?.state?.identity, permission);
+    const identity = (getCurrentAgent().connection as Connection<ConnectionState> | undefined)?.state?.identity;
+    const courseRole = identity ? this.app.memberRole(identity.userId) : null;
+    return requireCoursePermission(identity, { featured: isBuiltIn(this.name), courseRole }, permission);
   }
 
   /** Who I am and what I may do, for the UI to show or hide controls. */
@@ -94,7 +165,166 @@ export class CourseAgent extends Agent<Env, CourseAgentState> {
     const identity = this.actor("learn");
     // Role changes need Clerk's secret key; without it, admins see roles but can't change them here.
     const rolesConfigured = Boolean((this.env as unknown as { CLERK_SECRET_KEY?: string }).CLERK_SECRET_KEY);
-    return { ...identity, permissions: permissionsOf(identity.role), rolesConfigured };
+    const access = this.access(identity);
+    return { ...identity, courseRole: access.course, permissions: coursePermissions(access), rolesConfigured };
+  }
+
+  // ─── Members and invites (studio courses; owner, or an admin) ────────
+
+  @callable()
+  members() {
+    this.actor("manage_course");
+    return this.app.memberList();
+  }
+
+  /** Makes a member an editor or a learner. */
+  @callable()
+  async setMemberRole(userId: string, role: string) {
+    const { userId: by } = this.actor("manage_course");
+    const member = await this.app.setMemberRole(String(userId), role);
+    console.log(`Course ${this.name}: ${member.user_id} is now ${member.role} (by ${by})`);
+    return member;
+  }
+
+  /** Removes a member; their open connections are closed. */
+  @callable()
+  async removeMember(userId: string) {
+    this.actor("manage_course");
+    await this.app.removeMember(String(userId));
+    this.disconnect(String(userId), "Removed from this course");
+  }
+
+  /** Leaves this course. */
+  @callable()
+  async leave() {
+    const { userId } = this.actor("learn");
+    await this.app.leave(userId);
+    this.disconnect(userId, "Left this course");
+  }
+
+  /** The current invite link's token (null when there is none). */
+  @callable()
+  invite() {
+    this.actor("manage_course");
+    return this.app.invite();
+  }
+
+  /** A new invite token; the previous link stops working. */
+  @callable()
+  rotateInvite() {
+    this.actor("manage_course");
+    return this.app.rotateInvite();
+  }
+
+  @callable()
+  revokeInvite() {
+    this.actor("manage_course");
+    this.app.revokeInvite();
+  }
+
+  // ─── Course details, sources and model key (owner, or an admin) ───────
+
+  /** Title, description, goal (guides the build) and language. */
+  @callable()
+  async updateDetails(input: unknown) {
+    this.actor("manage_course");
+    const info = await this.app.updateDetails(input);
+    this.pushState();
+    return info;
+  }
+
+  /** The uploaded files, without their text. */
+  @callable()
+  sources() {
+    this.actor("manage_course");
+    return this.app.sourceList();
+  }
+
+  /** Adds a file as page texts ({ name, pages, role? }); a big file continues with appendPages. */
+  @callable()
+  addSource(input: unknown) {
+    this.actor("manage_course");
+    return this.app.addSource(input);
+  }
+
+  @callable()
+  appendPages(id: string, pages: unknown) {
+    this.actor("manage_course");
+    return this.app.appendPages(id, pages);
+  }
+
+  @callable()
+  removeSource(id: string) {
+    this.actor("manage_course");
+    this.app.removeSource(id);
+  }
+
+  /** material | assessment | brief, or null to let the build decide. */
+  @callable()
+  setSourceRole(id: string, role: string | null) {
+    this.actor("manage_course");
+    return this.app.setSourceRole(id, role);
+  }
+
+  /** Whether a key is set and which model is used. The key itself is never returned. */
+  @callable()
+  modelSettings() {
+    this.actor("manage_course");
+    return this.app.modelSettings();
+  }
+
+  /** Stores the owner's model API key, encrypted, and the model (one of MODEL_CHOICES). */
+  @callable()
+  async setModelKey(key: string, model: string) {
+    const { userId } = this.actor("manage_course");
+    const settings = await this.app.setModelKey(key, model);
+    console.log(`Course ${this.name}: model key set by ${userId} (model ${settings.model})`);
+    this.pushState();
+    return settings;
+  }
+
+  @callable()
+  clearModelKey() {
+    this.actor("manage_course");
+    const settings = this.app.clearModelKey();
+    this.pushState();
+    return settings;
+  }
+
+  // ─── Lifecycle (owner, or an admin) ──────────────────────────────────
+
+  /**
+   * Builds the course from its sources with the owner's key. Checks happen before returning; the build
+   * continues in the background and its steps reach the UI through state (overview.build).
+   */
+  @callable()
+  build() {
+    this.actor("manage_course");
+    const build = this.app.beginBuild(() => this.pushState());
+    this.background(() => this.app.continueBuild(build, () => this.pushState()));
+  }
+
+  /** The built course, to review before publishing. */
+  @callable()
+  draft() {
+    this.actor("manage_course");
+    return this.app.draft();
+  }
+
+  /** Makes the built course release 1.0.0, live for learners. */
+  @callable()
+  publish() {
+    const { userId } = this.actor("manage_course");
+    const result = this.app.publish();
+    console.log(`Course ${this.name} published by ${userId}`);
+    this.pushState();
+    return result;
+  }
+
+  private disconnect(userId: string, reason: string) {
+    for (const connection of this.getConnections<ConnectionState>()) {
+      if (connection.state?.identity.userId === userId) connection.close(4003, reason);
+    }
   }
 
   /** Admins: changes someone else's role in Clerk. It applies when their browser next connects. */
@@ -129,10 +359,25 @@ export class CourseAgent extends Agent<Env, CourseAgentState> {
     return this.app.myRelease(userId);
   }
 
+  /** The questions the caller's next attempt at a lesson shows (drawn per attempt for lessons with an exam). */
   @callable()
-  submitQuiz(lesson: string, answers: Response[], certainty: Certainty[]): QuizResult {
+  exam(lesson: string) {
     const { userId } = this.actor("learn");
-    return this.app.submitQuiz(userId, lesson, answers, certainty, this.connectionId());
+    return this.app.exam(userId, String(lesson));
+  }
+
+  /** `item_ids`: the questions exam() returned, in the order answered. */
+  @callable()
+  submitQuiz(lesson: string, answers: Response[], certainty: Certainty[], item_ids?: string[]): QuizResult {
+    const { userId } = this.actor("learn");
+    return this.app.submitQuiz(userId, String(lesson), answers, certainty, this.connectionId(), item_ids);
+  }
+
+  /** An answer to a practice check after a section: its feedback, recorded as evidence. */
+  @callable()
+  answerCheck(blockId: string, option: number) {
+    const { userId } = this.actor("learn");
+    return this.app.answerCheck(userId, String(blockId), option, this.connectionId());
   }
 
   /** Time on a lesson, or an intervention shown or completed, reported by the learner's own browser. */
@@ -183,7 +428,7 @@ export class CourseAgent extends Agent<Env, CourseAgentState> {
   reset(scenario: string) {
     this.actor("reset");
     this.app.reset(scenario);
-    this.publish();
+    this.pushState();
   }
 
   /**
@@ -193,25 +438,25 @@ export class CourseAgent extends Agent<Env, CourseAgentState> {
   @callable()
   startRun(mode: ApprovalMode, agents: boolean, source: DataSource = "simulated") {
     this.actor("repair");
-    if (source !== "simulated" && source !== "real") throw new Error(`Unknown data source "${String(source)}"`);
-    const run = this.app.beginRun({ mode, agents, source }, () => this.publish());
-    this.background(() => this.app.continueRun(run, () => this.publish()));
+    const run = this.app.beginRun({ mode, agents, source }, () => this.pushState());
+    this.background(() => this.app.continueRun(run, () => this.pushState()));
   }
 
   /** Answers the pending approval. A second answer to the same approval is refused here, not lost. */
   @callable()
-  approve(response: ApprovalResponse) {
+  approve(response: unknown) {
     const { userId } = this.actor("repair");
-    const run = this.app.beginApproval(() => this.publish());
-    this.background(() => this.app.continueApproval(run, { ...response, note: response.note ?? `approved by ${userId}` }, () => this.publish()));
+    const answer = parseApproval(response);
+    const run = this.app.beginApproval(() => this.pushState());
+    this.background(() => this.app.continueApproval(run, { ...answer, note: answer.note ?? `${answer.approved ? "approved" : "rejected"} by ${userId}` }, () => this.pushState()));
   }
 
   /** Measures the open real trial now instead of waiting for the hourly check. */
   @callable()
   evaluateTrial() {
     this.actor("repair");
-    const result = this.app.evaluateTrial(() => this.publish());
-    this.publish();
+    const result = this.app.evaluateTrial(() => this.pushState());
+    this.pushState();
     return result;
   }
 
@@ -219,13 +464,13 @@ export class CourseAgent extends Agent<Env, CourseAgentState> {
   @callable()
   stopTrial() {
     const { userId } = this.actor("repair");
-    this.app.stopTrial(userId, () => this.publish());
-    this.publish();
+    this.app.stopTrial(userId, () => this.pushState());
+    this.pushState();
   }
 
   private background(work: () => Promise<unknown>) {
     void this.keepAliveWhile(work)
       .catch((error: unknown) => console.error("Background run failed:", error))
-      .finally(() => this.publish());
+      .finally(() => this.pushState());
   }
 }

@@ -38,6 +38,17 @@ export const NodePerformanceSchema = z.object({
   misconceptions: z.array(NamedMisconceptionSchema).describe("Named beliefs behind wrong answers, largest share first"),
   mastery_rate: z.number().min(0).max(1).describe("Fraction of attempts ending with BKT mastery ≥ 0.95"),
   excluded_items: z.array(z.string()).describe("Questions left out of this data because their statistics show they are broken"),
+  /** Only for lessons with learning objectives (absent otherwise, so courses without them read as before). */
+  objectives: z
+    .array(
+      z.object({
+        id: z.string(),
+        miss_rate: z.number().min(0).max(1).describe("Fraction of answers to this objective's questions that were wrong"),
+        responses: z.number().int().nonnegative(),
+      }),
+    )
+    .optional()
+    .describe("Per learning objective of the lesson: how often its questions were answered wrongly"),
 });
 export type NodePerformance = z.infer<typeof NodePerformanceSchema>;
 
@@ -47,7 +58,9 @@ export function formatPerformanceData(data: readonly NodePerformance[]): string 
     "Performance data, one entry per lesson. fail_rate_ci = 95% confidence interval; " +
     "low_sample = too few attempts to trust; gaps = where wrong answers point " +
     "(the lesson's own id = a gap inside that lesson); misconceptions = named beliefs behind wrong answers " +
-    "(share = of failed attempts; confident = share answered with high certainty; covered = an intervention for it is already live).\n" +
+    "(share = of failed attempts; confident = share answered with high certainty; covered = an intervention for it is already live)" +
+    (data.some((node) => node.objectives) ? "; objectives = per learning objective, the share of its answers that were wrong" : "") +
+    ".\n" +
     JSON.stringify(data)
   );
 }

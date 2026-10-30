@@ -1,7 +1,7 @@
 import type { QuizItem } from "../assessment/items.js";
-import { type Intervention, InterventionSchema } from "../interventions/templates.js";
+import { type CheckQuestion, CheckQuestionSchema, type Intervention, InterventionSchema } from "../interventions/templates.js";
 import { buildCourse } from "./validate.js";
-import type { Course, MisconceptionDef } from "./schema.js";
+import { type Citation, type Course, type ExamConfig, ExamConfigSchema, type MisconceptionDef, type Objective, ObjectiveSchema } from "./schema.js";
 
 // The course as a content graph: lessons contain sections, sections contain blocks. Compiled once
 // from the Markdown lessons into release v1.0.0; after that, releases (not the Markdown) are the
@@ -9,7 +9,7 @@ import type { Course, MisconceptionDef } from "./schema.js";
 // its id across releases, so diffs, measurements and learner paths can refer to it.
 
 export type TextKind = "paragraph" | "list" | "code";
-export type BlockKind = TextKind | "intervention";
+export type BlockKind = TextKind | "intervention" | "check";
 
 interface BlockBase {
   /** `<lesson>/<section>/<p|l|c|i><n>`, e.g. `agent-loop/stopping/p1`. */
@@ -21,6 +21,8 @@ export interface TextBlock extends BlockBase {
   kind: TextKind;
   /** The block's Markdown, exactly as it appears in the lesson. */
   markdown: string;
+  /** For generated content: the source pages this block is based on. */
+  cites?: Citation[];
 }
 
 /** A templated intervention aimed at one misconception. Shown to the learners who show that belief. */
@@ -29,7 +31,20 @@ export interface InterventionBlock extends BlockBase {
   intervention: Intervention;
 }
 
-export type Block = TextBlock | InterventionBlock;
+/**
+ * A short practice question right after the text it checks, with feedback on every option. Shown to
+ * everyone, never scored: it's for the learner, and its answers are recorded as evidence.
+ */
+export interface CheckBlock extends BlockBase {
+  kind: "check";
+  check: CheckQuestion;
+  /** The objective it practises, if the course defines objectives. */
+  objective?: string;
+}
+
+export type Block = TextBlock | InterventionBlock | CheckBlock;
+
+export const isTextBlock = (block: Block): block is TextBlock => block.kind !== "intervention" && block.kind !== "check";
 
 export interface Section {
   /** `<lesson>/<slug>`; the text before the first heading is the `intro` section. */
@@ -46,7 +61,10 @@ export interface LessonNode {
   summary: string;
   prerequisites: string[];
   sections: Section[];
+  /** The lesson's exam pool (every item when `exam` is absent). */
   quiz: QuizItem[];
+  /** How an exam is drawn from `quiz`; absent = every item, every attempt. */
+  exam?: ExamConfig;
   archived: boolean;
 }
 
@@ -57,6 +75,8 @@ export interface CourseSnapshot {
   version: string;
   lessons: LessonNode[];
   misconceptions: MisconceptionDef[];
+  /** Learning objectives per lesson; absent for courses that don't define them. */
+  objectives?: Objective[];
 }
 
 export const slugify = (text: string) =>
@@ -66,7 +86,7 @@ export const slugify = (text: string) =>
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-|-$/g, "");
 
-export const KIND_PREFIX: Record<BlockKind, string> = { paragraph: "p", list: "l", code: "c", intervention: "i" };
+export const KIND_PREFIX: Record<BlockKind, string> = { paragraph: "p", list: "l", code: "c", intervention: "i", check: "k" };
 
 /** Splits Markdown into blocks at blank lines, keeping fenced code blocks whole. */
 export function splitBlocks(markdown: string): { kind: TextKind; markdown: string }[] {
@@ -158,7 +178,7 @@ export function renderLesson(lesson: LessonNode): string {
   for (const section of lesson.sections) {
     if (section.archived) continue;
     if (section.title) parts.push(`## ${section.title}`);
-    for (const block of section.blocks) if (!block.archived && block.kind !== "intervention") parts.push(block.markdown);
+    for (const block of section.blocks) if (!block.archived && isTextBlock(block)) parts.push(block.markdown);
   }
   return parts.join("\n\n");
 }
@@ -187,6 +207,64 @@ export function liveInterventions(snapshot: CourseSnapshot): LiveIntervention[] 
     );
 }
 
+/** The release's objectives, as the router uses them: in live lessons, listing only live sections. */
+export function liveObjectives(snapshot: CourseSnapshot): Objective[] {
+  return (snapshot.objectives ?? []).flatMap((objective) => {
+    const lesson = snapshot.lessons.find((l) => l.id === objective.lesson && !l.archived);
+    if (!lesson) return [];
+    const live = new Set(lesson.sections.filter((s) => !s.archived).map((s) => s.id));
+    return [{ ...objective, sections: objective.sections.filter((id) => live.has(id)) }];
+  });
+}
+
+/**
+ * Snapshot-level rules for objectives, exam configs and check blocks (the item-level objective rules are
+ * in validateObjectives): well-formed objectives, each in a lesson of the snapshot and listing only that
+ * lesson's sections; a valid exam config; and every check block well-formed, with exactly one correct
+ * option that names no misconception, misconceptions from the catalog, and an objective that exists.
+ */
+function assessmentProblems(snapshot: CourseSnapshot): string[] {
+  const problems: string[] = [];
+  const objectives = snapshot.objectives ?? [];
+  const objectiveIds = new Set(objectives.map((o) => o.id));
+  const catalog = new Set(snapshot.misconceptions.map((m) => m.id));
+
+  for (const o of objectives) {
+    const parsed = ObjectiveSchema.safeParse(o);
+    if (!parsed.success) problems.push(`Objective "${o.id}" is not valid: ${parsed.error.message}`);
+    const lesson = snapshot.lessons.find((l) => l.id === o.lesson);
+    if (!lesson) {
+      // Checked here, not only in validateObjectives: objectives of archived lessons are dropped before it runs.
+      problems.push(`Objective "${o.id}" belongs to unknown lesson "${o.lesson}"`);
+      continue;
+    }
+    for (const id of o.sections) {
+      if (!lesson.sections.some((section) => section.id === id)) problems.push(`Objective "${o.id}" lists "${id}", which is not a section of "${lesson.id}"`);
+    }
+  }
+
+  for (const lesson of snapshot.lessons.filter((l) => !l.archived)) {
+    if (lesson.exam && !ExamConfigSchema.safeParse(lesson.exam).success) problems.push(`Lesson "${lesson.id}" has an invalid exam config`);
+    for (const block of lesson.sections.flatMap((section) => section.blocks)) {
+      if (block.kind !== "check") continue;
+      const where = `Check "${block.id}"`;
+      const parsed = CheckQuestionSchema.safeParse(block.check);
+      if (!parsed.success) {
+        problems.push(`${where} is not a valid check: ${parsed.error.message}`);
+        continue;
+      }
+      const correct = block.check.options.filter((o) => o.correct);
+      if (correct.length !== 1) problems.push(`${where} must have exactly one correct option (has ${correct.length})`);
+      if (correct.some((o) => o.misconception !== null)) problems.push(`${where}: the correct option can't name a misconception`);
+      for (const o of block.check.options) {
+        if (o.misconception !== null && !catalog.has(o.misconception)) problems.push(`${where}: unknown misconception "${o.misconception}"`);
+      }
+      if (block.objective !== undefined && !objectiveIds.has(block.objective)) problems.push(`${where}: unknown objective "${block.objective}"`);
+    }
+  }
+  return problems;
+}
+
 /**
  * The course view the rest of the system works with (analytics, simulation, tools), built from a
  * snapshot and validated with the same rules as the Markdown course. Archived lessons are left out.
@@ -208,9 +286,18 @@ export function courseFromSnapshot(snapshot: CourseSnapshot): Course {
       }
     }
   }
+  problems.push(...assessmentProblems(snapshot));
   if (problems.length > 0) throw new Error(`Course "${snapshot.course_id}" is invalid:\n- ${problems.join("\n- ")}`);
+  // Objectives of an archived lesson leave the course with it, like its quiz.
+  const live = new Set(lessons.map((lesson) => lesson.id));
+  const objectives = snapshot.objectives?.filter((o) => live.has(o.lesson));
   return buildCourse(
-    { id: snapshot.course_id, title: snapshot.title, misconceptions: snapshot.misconceptions },
+    {
+      id: snapshot.course_id,
+      title: snapshot.title,
+      misconceptions: snapshot.misconceptions,
+      ...(objectives && { objectives }),
+    },
     lessons.map((lesson) => ({
       id: lesson.id,
       title: lesson.title,
@@ -219,6 +306,7 @@ export function courseFromSnapshot(snapshot: CourseSnapshot): Course {
       prerequisites: lesson.prerequisites,
       body: renderLesson(lesson),
       quiz: lesson.quiz,
+      ...(lesson.exam && { exam: lesson.exam }),
     })),
   );
 }

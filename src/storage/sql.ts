@@ -34,13 +34,20 @@ export function createTables(sql: Sql) {
 
 /** Releases, one JSON row each, in creation order. */
 export class SqlReleaseStore implements ReleaseStore {
+  /** Without `initial`, an empty store stays empty: a studio course has no release until it's published. */
   constructor(
     private readonly sql: Sql,
-    initial: CourseSnapshot,
+    initial: CourseSnapshot | undefined,
     now = () => new Date().toISOString(),
   ) {
     createTables(sql);
-    if (this.all().length === 0) this.add(initialRelease(initial, now()));
+    if (initial && this.all().length === 0) this.add(initialRelease(initial, now()));
+  }
+
+  /** The first release (v1.0.0), if there is one. */
+  first(): Release | undefined {
+    const [row] = this.sql<{ data: string }>`SELECT data FROM hl_releases ORDER BY seq LIMIT 1`;
+    return row ? (JSON.parse(row.data) as Release) : undefined;
   }
 
   live(): Release {
@@ -96,9 +103,10 @@ export interface LearnerEvent {
   learner: string;
   /**
    * answer: a graded quiz · path: the steps the router gave · session: a connection started or ended ·
-   * lesson: active time on a lesson · intervention: one was shown or completed.
+   * lesson: active time on a lesson · intervention: one was shown or completed · check: an answer to a
+   * section's practice check (never scored).
    */
-  kind: "answer" | "path" | "session" | "lesson" | "intervention";
+  kind: "answer" | "path" | "session" | "lesson" | "intervention" | "check";
   lesson: string | null;
   release: string;
   data: unknown;

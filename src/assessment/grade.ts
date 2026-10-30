@@ -15,6 +15,8 @@ export interface Grade {
   errors: WrongAnswer[];
   /** Set for model-graded answers whose grade isn't trusted: they are left out of scoring. */
   needs_review?: boolean;
+  /** The objective the item tests, when it names one: lets the router send the learner to its sections. */
+  objective?: string;
 }
 
 const wrong = (lessonId: string, tag: WrongAnswerTag = {}): WrongAnswer => ({
@@ -173,6 +175,11 @@ function gradeShortAnswer(item: ItemOf<"short_answer">, response: Response, less
 
 /** Grades one response to one item of lesson `lessonId`. Throws on a malformed response. */
 export function gradeItem(item: QuizItem, response: Response, lessonId: string): Grade {
+  const grade = gradeByType(item, response, lessonId);
+  return item.objective === undefined ? grade : { ...grade, objective: item.objective };
+}
+
+function gradeByType(item: QuizItem, response: Response, lessonId: string): Grade {
   switch (item.type) {
     case "single_choice":
       return gradeSingleChoice(item, response, lessonId);

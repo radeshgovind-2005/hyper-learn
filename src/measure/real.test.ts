@@ -37,6 +37,21 @@ describe("real learners", () => {
     );
   });
 
+  it("can number attempts within a window instead, for a trial that started after earlier tries", () => {
+    const events = [answer("c", "t4", 3), answer("c", "t5", 4), answer("d", "t6")];
+    assert.deepEqual(
+      attemptsFrom(events, { renumber: true }).map((a) => [a.learner, a.attempt]),
+      [["c", 1], ["c", 2], ["d", 1]],
+    );
+  });
+
+  it("keeps the items an attempt showed, and reads older answers without them as the whole quiz", () => {
+    const shown = { ...answer("a", "t1"), data: { item_ids: [lesson.quiz[1]!.id], responses: [right[1]], certainty: [3] } };
+    const [keyed, old] = attemptsFrom([shown, answer("b", "t2")]);
+    assert.deepEqual(keyed!.item_ids, [lesson.quiz[1]!.id]);
+    assert.equal(old!.item_ids, undefined);
+  });
+
   it("diagnoses from first attempts only, and a handful of learners is low_sample", () => {
     const snapshot = compileCourse(getCourse());
     const few = realPerformance(snapshot, "1.0.0", [answer("a", "t1"), answer("a", "t2")]);
