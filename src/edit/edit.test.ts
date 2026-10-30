@@ -104,7 +104,10 @@ describe("owner edits", () => {
       rewrite_sections: [],
       new_sections: [{ lesson: l2!.id, after: l2!.sections[0]!.id, title: "Pruning side shoots", pages: [{ source: "s1", page: 3 }], objectives: [], instruction: "Explain why side shoots are cut." }],
       new_objectives: [{ lesson: l2!.id, statement: "Explain why keepers prune side shoots", sections: ["Pruning side shoots"] }],
-      more_questions: [{ objective: objective.id, instruction: "Ask about dry soil." }],
+      more_questions: [
+        { objective: objective.id, count: 1, instruction: "Ask about dry soil." },
+        { objective: objective.id, count: 1, instruction: "And about watering." },
+      ],
       new_lessons: [
         {
           after: last.id,
@@ -134,7 +137,8 @@ describe("owner edits", () => {
     assert.deepEqual(added.sections, [lesson2.sections[1]!.id]);
     assert.ok(lesson2.quiz.filter((q) => q.objective === added.id).length >= 1);
     const more = next.lessons[0]!.quiz.length - l1!.quiz.length;
-    assert.ok(more >= 1, "more questions for the first lesson");
+    assert.equal(more, 2, "the two entries for one objective are merged, and their counts kept");
+    assert.ok(prompts.examiner!.some((p) => /ASKED FOR 2 MORE QUESTIONS[\s\S]*dry soil[\s\S]*watering/.test(p)));
     assert.equal(new Set(next.lessons[0]!.quiz.map((q) => q.id)).size, next.lessons[0]!.quiz.length, "question ids stay unique");
     const newLesson = next.lessons.at(-1)!;
     assert.equal(newLesson.title, "Replacing old stems");

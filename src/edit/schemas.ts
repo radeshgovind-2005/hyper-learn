@@ -51,6 +51,7 @@ export const EditPlanDraftSchema = z.object({
   more_questions: z.array(
     z.object({
       objective: z.string().describe("Id of an existing objective"),
+      count: z.number().int().describe("How many questions to add, 1 to 5"),
       instruction: z.string(),
     }),
   ),

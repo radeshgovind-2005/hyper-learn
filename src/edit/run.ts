@@ -43,8 +43,8 @@ export interface EditOptions {
 }
 
 export const DEFAULT_EDIT_MAX_CALLS = 80;
-/** Questions asked for when the owner wants more for an existing objective. */
-const MORE_QUESTIONS = 3;
+/** Most questions one request adds to an objective. */
+const MAX_MORE_QUESTIONS = 5;
 
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
 const bullets = (lines: readonly string[]) => lines.map((line) => `- ${line}`).join("\n");
@@ -196,6 +196,7 @@ export async function runEdit(request: EditRequest, ctx: EditContext, models: Ed
       const problems = checkPlan(plan, base, sources);
       if (problems.length > 0) return fail(problems);
     }
+    plan = merged(plan);
     const planned = plan.rewrite_sections.length + plan.new_sections.length + plan.new_lessons.length + plan.new_objectives.length + plan.more_questions.length;
     if (planned === 0) return fail([plan.reply || "The request didn't lead to any change"]);
     step("plan", describePlan(plan), "ok", plan.reply || undefined);
@@ -395,7 +396,9 @@ export async function runEdit(request: EditRequest, ctx: EditContext, models: Ed
     });
     await mapLimit(plan.more_questions, concurrency, async (mq) => {
       const objective = (base.objectives ?? []).find((o) => o.id === mq.objective)!;
-      const result = await questionsFor(objective.lesson, objective, `THE COURSE OWNER ASKED FOR ${MORE_QUESTIONS} MORE QUESTIONS for this objective (write ${MORE_QUESTIONS}, not more). ${mq.instruction}`, false, writtenNew);
+      const count = Math.min(MAX_MORE_QUESTIONS, Math.max(1, mq.count || 3));
+      const result = await questionsFor(objective.lesson, objective, `THE COURSE OWNER ASKED FOR ${count} MORE QUESTIONS for this objective (write ${count}, not more). ${mq.instruction}`, false, writtenNew);
+      if (result.items) result.items = result.items.slice(0, count);
       if (!result.items) {
         warn(`More questions for "${objective.statement}" failed the checks (${result.problems.join("; ")})`);
         step("assess", `Couldn't write questions for "${objective.statement}"`, "rejected", bullets(result.problems));
@@ -530,6 +533,21 @@ function retag(item: QuizItem, ids: ReadonlyMap<string, string>): QuizItem {
   if (copy.reasons) copy.reasons = copy.reasons.map(fix);
   if (copy.patterns) copy.patterns = copy.patterns.map(fix);
   return copy;
+}
+
+/** One entry per rewritten section and per objective getting questions: a model sometimes lists one twice. */
+function merged(plan: EditPlanDraft): EditPlanDraft {
+  const rewrites = new Map<string, EditPlanDraft["rewrite_sections"][number]>();
+  for (const r of plan.rewrite_sections) {
+    const seen = rewrites.get(r.section);
+    rewrites.set(r.section, seen ? { ...seen, instruction: `${seen.instruction} ${r.instruction}` } : r);
+  }
+  const more = new Map<string, EditPlanDraft["more_questions"][number]>();
+  for (const q of plan.more_questions) {
+    const seen = more.get(q.objective);
+    more.set(q.objective, seen ? { ...seen, count: seen.count + q.count, instruction: `${seen.instruction} ${q.instruction}` } : q);
+  }
+  return { ...plan, rewrite_sections: [...rewrites.values()], more_questions: [...more.values()] };
 }
 
 function describePlan(plan: EditPlanDraft): string {
