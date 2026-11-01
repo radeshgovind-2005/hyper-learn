@@ -153,7 +153,7 @@ function answerItem(
 }
 
 /** Default chance that an intervention clears the belief it targets, for a learner who holds it. A scenario parameter, not a finding. */
-export const DEFAULT_EFFICACY: Readonly<Record<Template, number>> = { contrast: 0.6, practice: 0.5, step_through: 0.6 };
+export const DEFAULT_EFFICACY: Readonly<Record<Template, number>> = { contrast: 0.6, practice: 0.5, step_through: 0.6, explorer: 0.5, compare: 0.5 };
 
 /** Each learner gets their own random stream, so changing one learner's path doesn't reshuffle everyone else's. */
 const learnerSeed = (seed: number, learnerId: number) => (Math.imul(seed, 0x9e3779b1) ^ Math.imul(learnerId + 1, 0x85ebca77)) >>> 0;

@@ -1,17 +1,14 @@
-import { marked } from "marked";
 import { type ReactNode, useEffect, useMemo, useState } from "react";
 import { shortName } from "../passage.js";
 import { interventionTracker, useLessonTimer } from "../tracking.js";
 import type { Block, Call, Certainty, CheckResult, CitedSource, CourseSnapshot, Exam, Intervention, QuizItem, QuizResult, Response } from "../types.js";
 import { InterventionView } from "./Interventions.js";
+import { Markdown } from "./Markdown.js";
+import { ProvenanceChip } from "./ProvenanceChip.js";
 import { QuizFlow } from "./Quiz.js";
 import { plainPreview, type RailItem, SectionRail } from "./SectionRail.js";
 
-// Lesson Markdown is authored course content (agents can't write Markdown blocks, only templated
-// interventions, which render as plain text), so it is rendered as HTML.
-const html = (markdown: string) => ({ __html: marked.parse(markdown, { async: false }) as string });
-
-const TEMPLATE_NAME = { contrast: "Contrast card", practice: "Practice set", step_through: "Step-through player" } as const;
+const TEMPLATE_NAME = { contrast: "Contrast card", practice: "Practice set", step_through: "Step-through player", explorer: "Formula explorer", compare: "Side by side" } as const;
 
 type CheckBlock = Extract<Block, { kind: "check" }>;
 type TextBlock = Extract<Block, { markdown: string }>;
@@ -23,6 +20,9 @@ export interface Citations {
   open: (source: CitedSource, page: number, passage: string) => void;
 }
 
+/** What the viewer highlights for a citation: the block's checked quote from that page, else the block's text. */
+const passageFor = (block: TextBlock, source: string, page: number) => block.quotes?.find((q) => q.source === source && q.page === page)?.text ?? block.markdown;
+
 /** "Lecture-01 · p.3" chips after a text block, for the cited files the reader may open. */
 function CiteChips({ block, citations }: { block: TextBlock; citations: Citations }) {
   const chips = (block.cites ?? []).flatMap((c) => {
@@ -33,7 +33,7 @@ function CiteChips({ block, citations }: { block: TextBlock; citations: Citation
   return (
     <div className="cites">
       {chips.map(({ source, page }) => (
-        <button key={`${source.id}:${page}`} className="chip cite" title={`Open ${source.name}, page ${page}`} onClick={() => citations.open(source, page, block.markdown)}>
+        <button key={`${source.id}:${page}`} className="chip cite" title={`Open ${source.name}, page ${page}`} onClick={() => citations.open(source, page, passageFor(block, source.id, page))}>
           {shortName(source.name)} · p.{page}
         </button>
       ))}
@@ -53,7 +53,8 @@ function CheckView({ block, call, live }: { block: CheckBlock; call: Call; live:
     setPicked(i);
     setError(null);
     const option = block.check.options[i]!;
-    if (!live) return setResult({ correct: option.correct, feedback: option.feedback });
+    // Learners' copies carry no key (src/assessment/view.ts): an earlier release's check can't be answered here.
+    if (!live) return setResult(option.correct === undefined ? null : { correct: option.correct, feedback: option.feedback });
     try {
       setResult(await call<CheckResult>("answerCheck", [block.id, i]));
     } catch (e) {
@@ -104,12 +105,18 @@ function BlockView({
   const track = useMemo(() => interventionTracker(call, block.id, "preview"), [call, block.id]);
   if (block.kind === "check") return <CheckView block={block} call={call} live={live} />;
   if (block.kind !== "intervention") {
-    const text = <div className={`block prose ${isNew ? "new" : ""} ${block.archived ? "archived" : ""}`} dangerouslySetInnerHTML={html(block.markdown)} />;
+    // Markdown with tables, formulas and figures (Markdown.tsx); generated text is sanitised before it is stored.
+    const text = <Markdown className={`block prose ${isNew ? "new" : ""} ${block.archived ? "archived" : ""}`} markdown={block.markdown} call={call} />;
     if (!citations || !block.cites?.length) return text;
+    // Built blocks say where they come from in one chip; blocks built before provenance was kept keep their page chips.
     return (
       <>
         {text}
-        <CiteChips block={block} citations={citations} />
+        {block.provenance ? (
+          <ProvenanceChip provenance={block.provenance} sources={citations.sources} open={(source, page) => citations.open(source, page, passageFor(block, source.id, page))} />
+        ) : (
+          <CiteChips block={block} citations={citations} />
+        )}
       </>
     );
   }

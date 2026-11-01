@@ -32,6 +32,27 @@ describe("compileSections", () => {
     assert.match(blocks[1]!.markdown, /const a = 1;\n\nconst b = 2;/);
   });
 
+  it("ends a list where a paragraph line follows it (the live Lesson 1 text)", () => {
+    const blocks = splitBlocks("Why now:\n\n- Simulation and modelling\n- Big data, crypto, AI\nSequential programming by itself is not enough anymore.");
+    assert.deepEqual(
+      blocks.map((b) => [b.kind, b.markdown]),
+      [
+        ["paragraph", "Why now:"],
+        ["list", "- Simulation and modelling\n- Big data, crypto, AI"],
+        ["paragraph", "Sequential programming by itself is not enough anymore."],
+      ],
+    );
+    // An indented line still continues its item.
+    assert.deepEqual(splitBlocks("- one\n  more of one\n- two").map((b) => b.kind), ["list"]);
+  });
+
+  it("keeps a table and a display formula each in one block", () => {
+    const blocks = splitBlocks("The levels:\n| Level | Latency |\n|---|---|\n| L1 | <1 ns |\nThat is fast.\n\n$$\nS = \\frac{1}{1-p}\n\n$$");
+    assert.deepEqual(blocks.map((b) => b.kind), ["paragraph", "paragraph", "paragraph", "paragraph"]);
+    assert.equal(blocks[1]!.markdown, "| Level | Latency |\n|---|---|\n| L1 | <1 ns |");
+    assert.equal(blocks[3]!.markdown, "$$\nS = \\frac{1}{1-p}\n\n$$");
+  });
+
   it("disambiguates repeated headings", () => {
     const ids = compileSections("x", "# X\n\n## Notes\n\nA\n\n## Notes\n\nB").map((s) => s.id);
     assert.deepEqual(ids, ["x/notes", "x/notes-2"]);

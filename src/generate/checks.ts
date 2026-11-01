@@ -46,12 +46,47 @@ export interface StudioProblem {
   message: string;
 }
 
+/** Above this share of a lesson's questions, "pick the longest option" would pass them, so they are rejected. */
+export const LONGEST_CORRECT_LIMIT = 0.6;
+
+/** Whether the one correct option is longer than every wrong one: a learner could guess it by length. */
+export const correctIsLongest = (options: readonly { text: string; correct: boolean }[]): boolean => {
+  const right = options.filter((o) => o.correct);
+  const wrong = options.filter((o) => !o.correct);
+  return right.length === 1 && wrong.length > 0 && wrong.every((o) => o.text.trim().length < right[0]!.text.trim().length);
+};
+
+/**
+ * Practice checks and single-answer questions whose right answer can be guessed by its length. Judged per
+ * lesson (a few such questions happen by chance; most of them is a pattern), from two questions up, and
+ * reported per question so the agent that wrote it can fix it. The message has no counts, so an edit
+ * compares it with the course it started from (src/edit/run.ts).
+ */
+function guessableByLength(lesson: CourseSnapshot["lessons"][number]): StudioProblem[] {
+  const fix = "the right answer is the longest option in most of this lesson's questions, which gives it away: make the wrong options as long and specific as the right one";
+  const checks = lesson.sections
+    .filter((s) => !s.archived)
+    .flatMap((section) => section.blocks.filter((b) => !b.archived && b.kind === "check").map((block) => ({ section, block: block as Extract<typeof block, { kind: "check" }> })));
+  const problems: StudioProblem[] = [];
+  const longChecks = checks.filter(({ block }) => correctIsLongest(block.check.options));
+  if (checks.length >= 2 && longChecks.length > LONGEST_CORRECT_LIMIT * checks.length) {
+    for (const { section, block } of longChecks) problems.push({ lesson: lesson.id, section: section.id, message: `Check "${block.id}": ${fix}` });
+  }
+  const single = lesson.quiz.filter((item) => item.type === "single_choice" || item.type === "two_tier");
+  const longItems = single.filter((item) => "options" in item && correctIsLongest(item.options));
+  if (single.length >= 2 && longItems.length > LONGEST_CORRECT_LIMIT * single.length) {
+    for (const item of longItems) problems.push({ lesson: lesson.id, message: `Question "${item.id}" in "${lesson.id}": ${fix}` });
+  }
+  return problems;
+}
+
 export function studioChecks(snapshot: CourseSnapshot, sources: readonly Source[]): StudioProblem[] {
   const problems: StudioProblem[] = [];
   const lessons = snapshot.lessons.filter((l) => !l.archived);
   const sentences = assessmentSentences(sources);
 
   for (const lesson of lessons) {
+    problems.push(...guessableByLength(lesson));
     for (const item of lesson.quiz) {
       if (!(GENERATED_ITEM_TYPES as readonly string[]).includes(item.type)) {
         problems.push({ lesson: lesson.id, message: `Question "${item.id}" in "${lesson.id}" is a ${item.type}; generated pools use ${GENERATED_ITEM_TYPES.join(", ")}` });

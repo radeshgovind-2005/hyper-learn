@@ -210,8 +210,8 @@ describe("grounding", () => {
       {
         blocks: [
           { markdown: "Uncited claim.", cites: [] },
-          { markdown: "Cited elsewhere.", cites: [{ source: "s1", page: 3 }] },
-          { markdown: "Fine.", cites: [{ source: "s1", page: 2 }] },
+          { markdown: "Cited elsewhere.", cites: [{ source: "s1", page: 3, quote: null }] },
+          { markdown: "Fine.", cites: [{ source: "s1", page: 2, quote: null }] },
         ],
         check,
       },
@@ -241,7 +241,7 @@ describe("grounding", () => {
     const models = spiedModels({
       writer: (_, answer) => {
         if (calls++ > 0) return undefined;
-        answer.blocks[0]!.cites = [{ source: "s1", page: 7 }];
+        answer.blocks[0]!.cites = [{ source: "s1", page: 7, quote: null }];
         return answer;
       },
     });
@@ -269,6 +269,24 @@ describe("grounding", () => {
     assert.equal(sanitizeMarkdown("Use `<div>` here"), "Use `<div>` here");
     assert.equal(sanitizeMarkdown("```html\n<b>\n```"), "```html\n<b>\n```");
     assert.equal(sanitizeMarkdown("```\nopen"), "```\nopen\n```");
+  });
+
+  it("keeps formulas as TeX, with no < or > left for an HTML renderer", () => {
+    assert.equal(sanitizeMarkdown("Power $P \\propto C V^2 f$ and $a<b$, costs $5 or $6."), "Power $P \\propto C V^2 f$ and $a\\lt b$, costs $5 or $6.");
+    assert.equal(sanitizeMarkdown("$$\nS(N) = \\frac{1}{(1-p) + p/N} <script>\n$$"), "$$\nS(N) = \\frac{1}{(1-p) + p/N} \\lt script\\gt \n$$");
+    assert.equal(sanitizeMarkdown("$$\n# not a heading"), "$$\n# not a heading\n$$");
+  });
+
+  it("keeps Markdown tables, escaping HTML in their cells", () => {
+    assert.equal(sanitizeMarkdown("| Level | Latency |\n|---|---|\n| L1 | <1 ns |"), "| Level | Latency |\n|---|---|\n| L1 | &lt;1 ns |");
+  });
+
+  it("keeps a fig: picture only when the check accepts it", () => {
+    const allowed = (ref: string) => ref === "fig:s1/p15/f1";
+    assert.equal(sanitizeMarkdown("![Memory levels](fig:s1/p15/f1)", allowed), "![Memory levels](fig:s1/p15/f1)");
+    assert.equal(sanitizeMarkdown("![Other](fig:s1/p16/f1)", allowed), "Other");
+    assert.equal(sanitizeMarkdown("![Memory levels](fig:s1/p15/f1)"), "Memory levels");
+    assert.equal(sanitizeMarkdown("![x](javascript:alert)", (ref) => /^(fig|gen):/.test(ref)), "x");
   });
 });
 

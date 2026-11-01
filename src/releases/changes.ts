@@ -402,7 +402,7 @@ export function describeChange(change: Change): string {
   }
 }
 
-const TEMPLATE_NAMES = { contrast: "contrast card", practice: "practice set", step_through: "step-through player" } as const;
+const TEMPLATE_NAMES = { contrast: "contrast card", practice: "practice set", step_through: "step-through player", explorer: "formula explorer", compare: "side-by-side comparison" } as const;
 export const describeIntervention = (intervention: Intervention) =>
   `${TEMPLATE_NAMES[intervention.template]} for "${intervention.targets}"`;
 

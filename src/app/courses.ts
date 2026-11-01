@@ -4,6 +4,7 @@ import type { EditRequest, EditResult } from "../edit/types.js";
 import { baseSnapshot } from "../course/bundle.js";
 import type { CourseSnapshot } from "../course/compile.js";
 import type { BuildInput, BuildResult, BuildStep } from "../generate/types.js";
+import type { PageSeer } from "../generate/see.js";
 import { EXEMPLARS } from "../interventions/exemplars.js";
 import type { Intervention } from "../interventions/templates.js";
 import type { StructuredFactory } from "../models.js";
@@ -29,7 +30,12 @@ export interface CourseDefinition {
  * Builds a course from its sources (src/generate). Injected, so the app doesn't depend on how generation
  * works and tests can pass a fake. `structured` makes models with the course owner's key.
  */
-export type CourseBuilder = (input: BuildInput, structured: StructuredFactory, onStep: (step: BuildStep) => void) => Promise<BuildResult>;
+export type CourseBuilder = (input: BuildInput, structured: StructuredFactory, onStep: (step: BuildStep) => void, extras?: BuildExtras) => Promise<BuildResult>;
+
+/** What a build may use besides text models: page pictures to find figures on ("see"). */
+export interface BuildExtras {
+  seer?: PageSeer;
+}
 
 /** Writes one learner's personal repair lesson (src/coach), with the owner's key. Injected like the builder. */
 export type CoachRepairer = (input: RepairInput, structured: StructuredFactory) => Promise<RepairResult>;

@@ -1,5 +1,6 @@
 import type { CourseSnapshot } from "../course/compile.js";
 import type { Source } from "../course/sources.js";
+import type { Figure } from "../storage/media.js";
 
 // The contract between course generation (src/generate) and the app that runs it (CourseService in the
 // course's Durable Object). Generation is a pure function of its input and its models: it reads no
@@ -24,7 +25,7 @@ export interface BuildInput {
 
 /** One line of progress, shown to the owner while the course is built. */
 export interface BuildStep {
-  stage: "classify" | "digest" | "plan" | "write" | "assess" | "validate" | "review" | "stress" | "done";
+  stage: "classify" | "digest" | "see" | "plan" | "write" | "assess" | "validate" | "review" | "stress" | "done";
   title: string;
   detail?: string;
   status: "ok" | "rejected" | "info" | "waiting";
@@ -40,5 +41,6 @@ export interface BuildReport {
 }
 
 export type BuildResult =
-  | { ok: true; snapshot: CourseSnapshot; report: BuildReport }
+  /** `figures`: what the "see" step found on page pictures; the app stores them, lessons refer to them by id. */
+  | { ok: true; snapshot: CourseSnapshot; report: BuildReport; figures?: Figure[] }
   | { ok: false; problems: string[]; report: BuildReport };

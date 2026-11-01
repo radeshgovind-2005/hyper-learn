@@ -474,10 +474,17 @@ export class CourseAgent extends Agent<Env, CourseAgentState> {
     return this.app.overview();
   }
 
+  /** A release; learners get it without answer keys (people who may repair the course get all of it). */
   @callable()
   snapshot(version?: string) {
-    const { userId } = this.actor("learn");
-    return this.app.snapshot(version ?? this.app.myRelease(userId).version);
+    const identity = this.actor("learn");
+    const v = version ?? this.app.myRelease(identity.userId).version;
+    return this.seesAnswers(identity) ? this.app.snapshot(v) : this.app.learnerSnapshot(v);
+  }
+
+  /** Whether someone may see answer keys: whoever may repair the course (owners, editors, instructors, admins). */
+  private seesAnswers(identity: Identity): boolean {
+    return coursePermissions(this.access(identity)).includes("repair");
   }
 
   /** The release the caller is served: during a trial on real learners, half of learners get the trial. */
@@ -490,15 +497,15 @@ export class CourseAgent extends Agent<Env, CourseAgentState> {
   /** The questions the caller's next attempt at a lesson shows (drawn per attempt for lessons with an exam). */
   @callable()
   exam(lesson: string) {
-    const { userId } = this.actor("learn");
-    return this.app.exam(userId, String(lesson));
+    const identity = this.actor("learn");
+    return this.app.exam(identity.userId, String(lesson), !this.seesAnswers(identity));
   }
 
-  /** `item_ids`: the questions exam() returned, in the order answered. */
+  /** `item_ids`: the questions exam() returned, in the order answered; learners answer on the view without keys. */
   @callable()
   submitQuiz(lesson: string, answers: Response[], certainty: Certainty[], item_ids?: string[]): QuizResult {
-    const { userId } = this.actor("learn");
-    return this.app.submitQuiz(userId, String(lesson), answers, certainty, this.connectionId(), item_ids);
+    const identity = this.actor("learn");
+    return this.app.submitQuiz(identity.userId, String(lesson), answers, certainty, this.connectionId(), item_ids, !this.seesAnswers(identity));
   }
 
   /** An answer to a practice check after a section: its feedback, recorded as evidence. */
@@ -520,6 +527,54 @@ export class CourseAgent extends Agent<Env, CourseAgentState> {
   sourcePage(id: string, page: number) {
     const { userId } = this.actor("learn");
     return this.app.sourcePage(userId, id, page);
+  }
+
+  // ─── Original files, page images and figures (stream A) ──────────────
+
+  /** One chunk (base64, ≤ 512 KB decoded) of a source's original PDF; `total` is its chunk count. */
+  @callable()
+  addSourceFileChunk(id: string, seq: number, base64: string, total: number) {
+    this.actor("manage_course");
+    return this.app.addSourceFileChunk(id, seq, base64, total);
+  }
+
+  /** A chunk of any source's original, for the owner's viewer. */
+  @callable()
+  ownerSourceFileChunk(id: string, seq: number) {
+    this.actor("manage_course");
+    return this.app.ownerSourceFileChunk(id, seq);
+  }
+
+  /** A chunk of the original of a file citedSources lists. */
+  @callable()
+  sourceFileChunk(id: string, seq: number) {
+    const { userId } = this.actor("learn");
+    return this.app.sourceFileChunk(userId, id, seq);
+  }
+
+  /** The picture of one page (base64 JPEG or PNG, ≤ 150 KB), rendered by the owner's browser for the build to read. */
+  @callable()
+  addPageImage(id: string, page: number, base64: string, mime?: string) {
+    this.actor("manage_course");
+    return this.app.addPageImage(id, page, base64, mime ?? "image/jpeg");
+  }
+
+  /** A page's picture: any page for the owner, pages of cited files for learners. Null if there is none. */
+  @callable()
+  pageImage(id: string, page: number) {
+    const identity = this.actor("learn");
+    return this.mayManage(identity) ? this.app.ownerPageImage(id, page) : this.app.pageImage(identity.userId, id, page);
+  }
+
+  /** A figure the build found (`s1/p15/f1`): any for the owner, those on cited files for learners. */
+  @callable()
+  figure(id: string) {
+    const identity = this.actor("learn");
+    return this.mayManage(identity) ? this.app.ownerFigure(id) : this.app.figure(identity.userId, id);
+  }
+
+  private mayManage(identity: Identity): boolean {
+    return !isBuiltIn(this.name) && coursePermissions(this.access(identity)).includes("manage_course");
   }
 
   /** Time on a lesson, or an intervention shown or completed, reported by the learner's own browser. */

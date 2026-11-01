@@ -13,7 +13,7 @@
     "dev:worker": "wrangler dev --port 8787",
     "build:web": "vite build",
     "deploy": "vite build && wrangler deploy",
-    "test": "tsx --test \"src/**/*.test.ts\"",
+    "test": "tsx --test \"src/**/*.test.ts\" \"web/src/**/*.test.ts\"",
     "typecheck": "wrangler types worker/worker-configuration.d.ts > /dev/null && tsc --noEmit && tsc -p worker && tsc -p web"
   },
   "repository": {
@@ -36,6 +36,7 @@
     "@langchain/openai": "^1.8.0",
     "agents": "^0.31.0",
     "dotenv": "^18.0.9",
+    "katex": "^0.19.1",
     "marked": "^18.1.2",
     "pdfjs-dist": "^6.4.299",
     "react": "^19.3.1",

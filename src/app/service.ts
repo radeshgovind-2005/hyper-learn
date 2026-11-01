@@ -28,6 +28,13 @@ import type { State } from "../state.js";
 import { PersistentMemorySaver } from "../storage/checkpointer.js";
 import { type LearnerEvent, type Sql, SqlEventLog, SqlMeta, SqlProfiles, SqlReleaseStore, SqlThreadStore } from "../storage/sql.js";
 import { type Member, SqlMembers, SqlSharedRepairs, SqlSources, type SourceSummary } from "../storage/studio.js";
+import { base64Size, type FileChunk, MEDIA_LIMITS, SqlMedia, type StoredFile } from "../storage/media.js";
+import { fromLearnerResponse, learnerItem, learnerSnapshot } from "../assessment/view.js";
+import type { PageImage, PageImages } from "../media/contracts.js";
+import { type Figure } from "../storage/media.js";
+import type { PageSeer } from "../generate/see.js";
+import { readPage, type VisionConfig } from "../meta/vision.js";
+import { segment } from "../meta/sam.js";
 import type { Identity as Person } from "../auth/identity.js";
 import { COURSE_ROLES, type CourseRole } from "./access.js";
 import { builtInCourse, type CoachRepairer, type CourseBuilder, type CourseDefinition, type CourseEditor, FEATURED_COURSE, isStudioId } from "./courses.js";
@@ -173,6 +180,8 @@ export interface StudioRecord {
 export interface OwnerSourceSummary extends SourceSummary {
   /** Whether learners may open it from the lessons that cite it (past exams and briefs never, whatever this says). */
   shared: boolean;
+  /** The original file, when it was uploaded (sources added before that was possible have none). */
+  file?: StoredFile;
 }
 
 /** A file a learner may open from the lessons that cite it. */
@@ -180,6 +189,8 @@ export interface CitedSource {
   id: string;
   name: string;
   pages: number;
+  /** The original file, when it was uploaded: the viewer shows the real page instead of its text. */
+  file?: StoredFile;
 }
 
 /** One page of a source, as the viewer shows it. */
@@ -406,6 +417,8 @@ export interface ServiceOptions {
   repairer?: CoachRepairer;
   /** A studio course's owner-key settings (ignored for built-in courses, which use `models`). */
   ownerModels?: OwnerModelSettings;
+  /** How a build reads page pictures (Spark vision and SAM on the owner's key); tests pass fakes. */
+  pageReader?: (config: VisionConfig) => Pick<PageSeer, "read" | "segment">;
   /**
    * The course this object holds: a built-in definition, or "studio" for a course created in the studio,
    * whose definition is in this object's storage. Default: the featured course (Node tools and tests).
@@ -456,6 +469,8 @@ export class CourseService {
   readonly members: SqlMembers;
   private readonly sources: SqlSources;
   private readonly sharedRepairs: SqlSharedRepairs;
+  /** Original files, page images and figures of a studio course's sources. */
+  private readonly media: SqlMedia;
   private readonly meta: SqlMeta;
   private readonly saver: PersistentMemorySaver;
   private readonly now: () => string;
@@ -479,6 +494,7 @@ export class CourseService {
     this.members = new SqlMembers(sql);
     this.sources = new SqlSources(sql);
     this.sharedRepairs = new SqlSharedRepairs(sql);
+    this.media = new SqlMedia(sql);
     this.saver = new PersistentMemorySaver(new SqlThreadStore(sql));
     // Builds and runs live in this instance's memory, so one still marked running at start was cut off by a restart.
     if (this.record()?.status === "building") this.endBuild("failed", { problems: ["The build was interrupted (the server restarted); build again"] });
@@ -621,6 +637,8 @@ export class CourseService {
     this.meta.set("scenario", scenario?.id ?? "");
     this.meta.set("run", null);
     this.releases.reset(this.startingSnapshot(scenario), this.now);
+    this.learnerViews.clear(); // v1.0.0 may now be another scenario's
+    this.citedByRelease.clear();
     this.events.clear();
     this.profiles.clearStates();
     this.sharedRepairs.clear();
@@ -656,11 +674,43 @@ export class CourseService {
     return { lesson, attempt, items };
   }
 
-  /** The questions this learner's next attempt at a lesson shows, on the release they are served. */
-  exam(learner: string, lessonId: string): Exam {
+  /**
+   * The questions this learner's next attempt at a lesson shows, on the release they are served. With
+   * `view`, as a learner's browser gets them: without the answer key (src/assessment/view.ts); submitQuiz
+   * must then be told the answers are on that view.
+   */
+  exam(learner: string, lessonId: string, view = false): Exam {
     const release = this.servedRelease(learner);
     const { attempt, items } = this.draw(learner, release, lessonId);
-    return { release: release.version, lesson: lessonId, attempt, items };
+    const salt = view ? this.itemSalt() : "";
+    return { release: release.version, lesson: lessonId, attempt, items: view ? items.map((item) => learnerItem(item, salt)) : items };
+  }
+
+  /**
+   * A release as a learner's browser gets it: no answer keys, and ordered answers shuffled by this
+   * course's salt. Release content never changes, so the view is made once per version and kept.
+   */
+  learnerSnapshot(version?: string): CourseSnapshot {
+    const snapshot = this.snapshot(version);
+    let view = this.learnerViews.get(snapshot.version);
+    if (!view) {
+      view = learnerSnapshot(snapshot, this.itemSalt());
+      if (this.learnerViews.size >= 4) this.learnerViews.delete(this.learnerViews.keys().next().value!);
+      this.learnerViews.set(snapshot.version, view);
+    }
+    return view;
+  }
+
+  private readonly learnerViews = new Map<string, CourseSnapshot>();
+
+  /** A random secret per course: learners can't recompute how their ordering questions were shuffled. */
+  private itemSalt(): string {
+    let salt = this.meta.get<string>("item_salt");
+    if (!salt) {
+      salt = this.newId();
+      this.meta.set("item_salt", salt);
+    }
+    return salt;
   }
 
   /**
@@ -668,7 +718,7 @@ export class CourseService {
    * `item_ids` are the questions exam() drew, in the order answered; they must match the draw the server
    * recomputes. They may be left out only for a lesson without an exam config (the whole quiz, in order).
    */
-  submitQuiz(learner: string, lessonId: string, answers: Response[], certainty: Certainty[], session?: string, item_ids?: string[]): QuizResult {
+  submitQuiz(learner: string, lessonId: string, answers: Response[], certainty: Certainty[], session?: string, item_ids?: string[], view = false): QuizResult {
     if (!Array.isArray(answers) || !Array.isArray(certainty)) throw new Error("Send answers and certainty as lists");
     if (item_ids !== undefined && !(Array.isArray(item_ids) && item_ids.every((id) => typeof id === "string"))) throw new Error("item_ids must be a list of question ids");
     if (certainty.some((c) => c !== 1 && c !== 2 && c !== 3)) throw new Error("Certainty is 1, 2 or 3");
@@ -683,6 +733,11 @@ export class CourseService {
     }
     if (answers.length !== drawn.length) throw new Error(`Expected ${drawn.length} answers, got ${answers.length}`);
     if (certainty.length !== drawn.length) throw new Error(`Expected ${drawn.length} certainty ratings, got ${certainty.length}`);
+    // Answers given on the learner's view of the questions come back in their shuffled order.
+    if (view) {
+      const salt = this.itemSalt();
+      answers = answers.map((answer, i) => fromLearnerResponse(drawn[i]!, answer, salt));
+    }
 
     // Short answers arrive as plain text. Without a calibrated grader they are kept for a human to review, unscored.
     const responses = answers.map((answer, i) =>
@@ -1639,7 +1694,8 @@ export class CourseService {
   sourceList(): OwnerSourceSummary[] {
     this.studio();
     const hidden = this.hiddenSources();
-    return this.sources.summaries().map((s) => ({ ...s, shared: !hidden.has(s.id) }));
+    const files = this.media.files();
+    return this.sources.summaries().map((s) => ({ ...s, shared: !hidden.has(s.id), ...(files.has(s.id) && { file: files.get(s.id)! }) }));
   }
 
   /** The full sources, for a build. */
@@ -1688,6 +1744,7 @@ export class CourseService {
     this.editableSources();
     if (typeof id !== "string" || !this.sources.get(id)) throw new Error(`No source "${String(id)}"`);
     this.sources.delete(id);
+    this.media.removeSource(id);
   }
 
   /** Sets what a file is for (null: let the build decide). */
@@ -1741,27 +1798,172 @@ export class CourseService {
    */
   citedSources(learner: string): CitedSource[] {
     if (this.fixed) return []; // built-in courses are written by hand, not from uploaded files
-    const snapshot = this.servedRelease(learner).snapshot;
-    const cited = new Set<string>();
-    for (const lesson of snapshot.lessons.filter((l) => !l.archived)) {
-      for (const section of lesson.sections.filter((s) => !s.archived)) {
-        for (const block of section.blocks) {
-          if (!block.archived && isTextBlock(block)) for (const c of block.cites ?? []) cited.add(c.source);
-        }
-      }
-    }
+    const cited = this.citedIn(this.servedRelease(learner).snapshot);
     const hidden = this.hiddenSources();
+    const files = this.media.files();
     return this.sources
       .summaries()
       .filter((s) => cited.has(s.id) && !hidden.has(s.id) && !(s.role && NEVER_SHOWN.has(s.role)))
-      .map((s) => ({ id: s.id, name: s.name, pages: s.pages }));
+      .map((s) => ({ id: s.id, name: s.name, pages: s.pages, ...(files.has(s.id) && { file: files.get(s.id)! }) }));
   }
+
+  /**
+   * The sources a release's live blocks cite. Release content never changes, so this is worked out once
+   * per version: learners' file, page and figure reads each ask (src/app/service.ts, stream A).
+   */
+  private citedIn(snapshot: CourseSnapshot): ReadonlySet<string> {
+    let cited = this.citedByRelease.get(snapshot.version);
+    if (!cited) {
+      const found = new Set<string>();
+      for (const lesson of snapshot.lessons.filter((l) => !l.archived)) {
+        for (const section of lesson.sections.filter((s) => !s.archived)) {
+          for (const block of section.blocks) {
+            if (!block.archived && isTextBlock(block)) for (const c of block.cites ?? []) found.add(c.source);
+          }
+        }
+      }
+      if (this.citedByRelease.size >= 8) this.citedByRelease.delete(this.citedByRelease.keys().next().value!);
+      this.citedByRelease.set(snapshot.version, (cited = found));
+    }
+    return cited;
+  }
+
+  private readonly citedByRelease = new Map<string, ReadonlySet<string>>();
 
   /** A page of a file the learner may open (see citedSources): any page of it, not only the cited ones. */
   sourcePage(learner: string, id: unknown, page: unknown): SourcePage {
     if (this.fixed) throw new Error("This course has no source files");
     if (typeof id !== "string" || !this.citedSources(learner).some((s) => s.id === id)) throw new Error("This file isn't shared with learners");
     return this.pageOf(this.sources.get(id)!, page);
+  }
+
+  // ─── Original files (stream A) ────────────────────────────────────
+
+  /**
+   * Stores one chunk of a source's original PDF (base64, at most 512 KB decoded), so the real page can be
+   * shown. Idempotent per (source, seq); `total` is the file's chunk count. Allowed in any state: the
+   * file changes what can be shown, not what the lessons say. Returns what is stored so far.
+   */
+  addSourceFileChunk(id: unknown, seq: unknown, base64: unknown, total: unknown): StoredFile {
+    this.studio();
+    if (typeof id !== "string" || !this.sources.get(id)) throw new Error(`No source "${String(id)}"`);
+    const maxChunks = Math.ceil(MEDIA_LIMITS.fileBytes / MEDIA_LIMITS.chunkBytes);
+    if (typeof total !== "number" || !Number.isInteger(total) || total < 1) throw new Error("total is the number of chunks");
+    if (total > maxChunks) throw new Error(`A file can be at most ${MEDIA_LIMITS.fileBytes / 1024 / 1024} MB`);
+    if (typeof seq !== "number" || !Number.isInteger(seq) || seq < 0 || seq >= total) throw new Error(`seq is 0 to ${total - 1}`);
+    const size = typeof base64 === "string" ? base64Size(base64) : null;
+    if (size === null || size === 0) throw new Error("Send the chunk as base64");
+    if (size > MEDIA_LIMITS.chunkBytes) throw new Error(`A chunk can be at most ${MEDIA_LIMITS.chunkBytes / 1024} KB`);
+    // Only PDFs: the viewer renders pages, and a text file is already shown as text.
+    if (seq === 0 && !(base64 as string).startsWith("JVBERi")) throw new Error("Only a PDF's original can be added");
+    if (this.media.fileBytes(id, seq) + size > MEDIA_LIMITS.fileBytes) throw new Error(`A file can be at most ${MEDIA_LIMITS.fileBytes / 1024 / 1024} MB`);
+    if (this.media.courseFileBytes({ source: id, seq }) + size > MEDIA_LIMITS.courseFileBytes) {
+      throw new Error(`A course's original files can be at most ${MEDIA_LIMITS.courseFileBytes / 1024 / 1024} MB in all`);
+    }
+    this.media.putChunk(id, seq, total, base64 as string, size);
+    return this.media.file(id)!;
+  }
+
+  private chunkOf(id: string, seq: unknown): FileChunk {
+    if (typeof seq !== "number" || !Number.isInteger(seq) || seq < 0) throw new Error("seq is a chunk number from 0");
+    const chunk = this.media.chunk(id, seq);
+    if (!chunk) throw new Error(this.media.file(id) ? `No chunk ${seq} of this file` : "This file's original wasn't uploaded");
+    return chunk;
+  }
+
+  /** A chunk of any source's original, for the owner. */
+  ownerSourceFileChunk(id: unknown, seq: unknown): FileChunk {
+    this.studio();
+    if (typeof id !== "string" || !this.sources.get(id)) throw new Error(`No source "${String(id)}"`);
+    return this.chunkOf(id, seq);
+  }
+
+  /** A chunk of the original of a file the learner may open (see citedSources). */
+  sourceFileChunk(learner: string, id: unknown, seq: unknown): FileChunk {
+    if (this.fixed) throw new Error("This course has no source files");
+    if (typeof id !== "string" || !this.citedSources(learner).some((s) => s.id === id)) throw new Error("This file isn't shared with learners");
+    return this.chunkOf(id, seq);
+  }
+
+  // ─── Page pictures and figures (stream A) ─────────────────────────
+
+  /**
+   * Stores the picture of one page (JPEG or PNG, base64, at most 150 KB; at most 300 per course), which a
+   * build reads for figures and the tutor can look at. Rendered by the owner's browser; sending a page
+   * again replaces its picture. Allowed in any state, like the original file.
+   */
+  addPageImage(id: unknown, page: unknown, base64: unknown, mime: unknown = "image/jpeg"): { pages: number } {
+    this.studio();
+    const source = typeof id === "string" ? this.sources.get(id) : undefined;
+    if (!source) throw new Error(`No source "${String(id)}"`);
+    if (typeof page !== "number" || !Number.isInteger(page) || page < 1 || page > source.pages.length) throw new Error(`"${source.name}" has pages 1 to ${source.pages.length}`);
+    if (mime !== "image/jpeg" && mime !== "image/png") throw new Error("A page picture is a JPEG or a PNG");
+    const size = typeof base64 === "string" ? base64Size(base64) : null;
+    if (size === null || size === 0) throw new Error("Send the picture as base64");
+    if (size > MEDIA_LIMITS.pageImageBytes) throw new Error(`A page picture can be at most ${MEDIA_LIMITS.pageImageBytes / 1024} KB`);
+    // The first bytes must say what the mime says: a picture, not something posing as one.
+    if (!(base64 as string).startsWith(mime === "image/jpeg" ? "/9j/" : "iVBORw0KGgo")) throw new Error(`That isn't a ${mime === "image/jpeg" ? "JPEG" : "PNG"}`);
+    if (!this.media.hasPageImage(source.id, page) && this.media.pageImageCount() >= MEDIA_LIMITS.pageImages) {
+      throw new Error(`A course can keep at most ${MEDIA_LIMITS.pageImages} page pictures`);
+    }
+    this.media.putPageImage(source.id, page, mime, base64 as string, size);
+    return { pages: this.media.pageImageCount() };
+  }
+
+  private imageOf(id: string, page: unknown): PageImage | null {
+    if (typeof page !== "number" || !Number.isInteger(page) || page < 1) throw new Error("page is a page number from 1");
+    const image = this.media.pageImage(id, page);
+    return image ? { mime: image.mime as PageImage["mime"], base64: image.base64 } : null;
+  }
+
+  /** The picture of any page of any source, for the owner (null if there is none). */
+  ownerPageImage(id: unknown, page: unknown): PageImage | null {
+    this.studio();
+    if (typeof id !== "string" || !this.sources.get(id)) throw new Error(`No source "${String(id)}"`);
+    return this.imageOf(id, page);
+  }
+
+  /** The picture of a page of a file the learner may open (see citedSources); null if there is none. */
+  pageImage(learner: string, id: unknown, page: unknown): PageImage | null {
+    if (this.fixed) throw new Error("This course has no source files");
+    if (typeof id !== "string" || !this.citedSources(learner).some((s) => s.id === id)) throw new Error("This file isn't shared with learners");
+    return this.imageOf(id, page);
+  }
+
+  /** Pages as pictures for one learner (the tutor's `look_at_page`): only files their release cites. */
+  pageImages(learner: string): PageImages {
+    return {
+      get: async (sourceId, page) => {
+        try {
+          return this.pageImage(learner, sourceId, page);
+        } catch {
+          return null;
+        }
+      },
+    };
+  }
+
+  /** A figure the build found, for the owner. */
+  ownerFigure(id: unknown): Figure {
+    this.studio();
+    const figure = typeof id === "string" ? this.media.figure(id) : undefined;
+    if (!figure) throw new Error(`No figure "${String(id)}"`);
+    return figure;
+  }
+
+  /** A figure on a page of a file the learner may open (see citedSources). */
+  figure(learner: string, id: unknown): Figure {
+    if (this.fixed) throw new Error("This course has no figures");
+    const figure = typeof id === "string" ? this.media.figure(id) : undefined;
+    if (!figure || !this.citedSources(learner).some((s) => s.id === figure.source)) throw new Error("This figure isn't shared with learners");
+    return figure;
+  }
+
+  /** A build's figures replace the previous build's, page by page: every page with a picture is reread. */
+  private storeFigures(figures: readonly Figure[]) {
+    for (const { source, page } of this.media.pagesWithImages()) {
+      this.media.setFigures(source, page, figures.filter((f) => f.source === source && f.page === page));
+    }
   }
 
   // ─── The owner's model key (studio courses) ───────────────────────
@@ -1817,6 +2019,12 @@ export class CourseService {
 
   /** Models with the owner's key, opened just for this use. */
   private async ownerProvider(): Promise<ModelProvider> {
+    const { owner, apiKey, model } = await this.ownerKey();
+    return new ModelProvider({ ...owner.config, apiKey, models: { reasoning: model, fast: model } });
+  }
+
+  /** The owner's key, opened, with the Worker's model settings and the owner's chosen model. */
+  private async ownerKey() {
     const record = this.studio();
     const owner = this.options.ownerModels;
     const stored = this.meta.get<StoredModelKey>("model_key");
@@ -1825,7 +2033,28 @@ export class CourseService {
     if (!owner.choices.includes(stored.model)) throw new Error(`${stored.model} is no longer offered; pick another model`);
     const apiKey = await openSecret(stored.sealed, owner.secret, record.id);
     this.secrets.add(apiKey);
-    return new ModelProvider({ ...owner.config, apiKey, models: { reasoning: stored.model, fast: stored.model } });
+    return { owner, apiKey, model: stored.model };
+  }
+
+  /**
+   * What a build looks at pages with: the stored page pictures, read by Spark vision and SAM on the owner's
+   * key (each call with a 60 s timeout and 2 retries); undefined when no page has a picture.
+   */
+  private async pageSeer(): Promise<PageSeer | undefined> {
+    const pages = this.media.pagesWithImages();
+    if (pages.length === 0) return undefined;
+    const { owner, apiKey, model } = await this.ownerKey();
+    const config: VisionConfig = { baseURL: owner.config.baseURL, apiKey, model, timeoutMs: 60_000, retries: 2 };
+    const reader = this.options.pageReader?.(config) ?? { read: (image: PageImage) => readPage(config, image), segment: (image: PageImage, prompt: string) => segment(config, image, prompt) };
+    return {
+      pages,
+      image: async (source, page) => {
+        const image = this.media.pageImage(source, page);
+        return image ? { mime: image.mime as PageImage["mime"], base64: image.base64 } : null;
+      },
+      read: reader.read,
+      ...(reader.segment && { segment: reader.segment }),
+    };
   }
 
   /** Keys opened in this instance, so an error message that quotes one never reaches state. */
@@ -1890,11 +2119,17 @@ export class CourseService {
         audience: record.audience,
         sources: this.sources.all(),
       };
-      const result = await this.options.builder!(input, provider.structured, (step) => {
-        build.steps.push({ ...step, ...(step.detail && { detail: this.redact(step.detail) }) });
-        this.meta.set("build", build);
-        onUpdate?.();
-      });
+      const seer = await this.pageSeer();
+      const result = await this.options.builder!(
+        input,
+        provider.structured,
+        (step) => {
+          build.steps.push({ ...step, ...(step.detail && { detail: this.redact(step.detail) }) });
+          this.meta.set("build", build);
+          onUpdate?.();
+        },
+        { ...(seer && { seer }) },
+      );
       const report = { warnings: result.report.warnings, model_calls: result.report.model_calls };
       if (!result.ok) {
         this.endBuild("failed", { ...report, problems: result.problems }, onUpdate);
@@ -1902,6 +2137,7 @@ export class CourseService {
         // Code sets what identifies the release; the generator only supplies content.
         const snapshot = { ...result.snapshot, course_id: record.id, version: "1.0.0" };
         courseFromSnapshot(snapshot); // throws if the course isn't valid
+        this.storeFigures(result.figures ?? []);
         this.setDraft(snapshot);
         this.endBuild("done", report, onUpdate);
       }
