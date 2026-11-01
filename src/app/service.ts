@@ -1428,9 +1428,9 @@ export class CourseService {
         }
         return this.startPersonal(learner, release, section, { kind: "rewrite", note: input.shortcut ? "" : note || personalWords, ...(input.shortcut && { shortcut: input.shortcut }) });
       },
-      draw: (section, description) => this.startPersonal(learner, release, section, { kind: "diagram", description }),
-      interact: (section, spec) => this.startPersonal(learner, release, section, { kind: "widget", spec }),
-      storyboard: (section) => this.startPersonal(learner, release, section, { kind: "storyboard" }),
+      draw: (section, description) => this.startPersonal(learner, release, section, { kind: "diagram", description }, personalWords),
+      interact: (section, spec) => this.startPersonal(learner, release, section, { kind: "widget", spec }, personalWords),
+      storyboard: (section) => this.startPersonal(learner, release, section, { kind: "storyboard" }, personalWords),
       suggest: (section, why) => {
         this.tutor.suggest({ lesson: lesson.id, section, why: plainText(why, 500), learner, approach: null, at: this.now() });
       },
@@ -1592,7 +1592,7 @@ export class CourseService {
    * diagram or a storyboard is stored as running and written by continuePersonal in the background. A
    * rewrite with no words of the learner's own reuses one written for someone with the same need.
    */
-  private startPersonal(learner: string, release: Release, sectionId: string, job: PersonalJob): PersonalBlockRef {
+  private startPersonal(learner: string, release: Release, sectionId: string, job: PersonalJob, words = ""): PersonalBlockRef {
     const found = liveSection(release.snapshot, sectionId);
     if (!found) throw new Refused(`No section "${sectionId}"`);
     const { lesson, section } = found;
@@ -1603,6 +1603,7 @@ export class CourseService {
     const evidence: Evidence = {};
     const lastAsk = state.asks.filter((a) => a.lesson === lesson.id && a.status === "answered").at(-1);
     if (lastAsk && !lastAsk.correct) evidence.wrong = { prompt: lastAsk.prompt, chose: lastAsk.chose ?? "" };
+    if (words && !/^I answered: /.test(words)) evidence.note = words;
 
     if (job.kind === "widget") {
       const quiz = this.releases.live().snapshot.lessons.flatMap((l) => l.quiz);

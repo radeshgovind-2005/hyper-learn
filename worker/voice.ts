@@ -46,10 +46,18 @@ export async function voice(request: Request, env: Env, admission: VoiceAdmissio
   upstream.accept();
   const [client, server] = Object.values(new WebSocketPair()) as [WebSocket, WebSocket];
   server.accept();
+  // Newer compatibility dates deliver binary frames as Blobs; the relay wants bytes.
+  for (const socket of [server, upstream]) (socket as WebSocket & { binaryType: string }).binaryType = "arraybuffer";
 
   const relay = new VoiceRelay(server, upstream, { apiKey: grant.meta.apiKey, seconds: grant.seconds, onDone: done });
   const stop = setTimeout(() => relay.closed("client"), grant.seconds * 1000 + GRACE_MS);
-  server.addEventListener("message", (event) => relay.fromClient(event.data as string | ArrayBuffer));
+  // If a runtime still hands over Blobs, read them in order so frames reach Meta in the order they were spoken.
+  let order = Promise.resolve();
+  server.addEventListener("message", (event) => {
+    const data = event.data as string | ArrayBuffer | Blob;
+    if (typeof data === "string" || data instanceof ArrayBuffer) order = order.then(() => relay.fromClient(data));
+    else order = order.then(async () => relay.fromClient(await data.arrayBuffer()));
+  });
   server.addEventListener("close", () => relay.closed("client"));
   server.addEventListener("error", () => relay.closed("client"));
   upstream.addEventListener("message", (event) => relay.fromUpstream(event.data as string | ArrayBuffer));
