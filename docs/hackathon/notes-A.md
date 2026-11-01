@@ -20,7 +20,7 @@ A11's material is chosen and licensed, and its live build is the join's J8. Per-
 | A10 | Each citation carries a quote checked against its page; the viewer highlights exactly that quote | `src/generate/write.ts` (`findQuote`), `web/src/passage.ts` |
 | A11 | Demo material: Eijkhout's *Art of HPC* slides, CC BY 4.0, attribution line ready | `pilot.md` |
 
-Tests: 438 → 505, all passing (`npm test` now also runs `web/src/**/*.test.ts`). Typecheck and `build:web` pass.
+Tests: 438 → 508, all passing (`npm test` now also runs `web/src/**/*.test.ts`). Typecheck and `build:web` pass.
 
 ## For stream B, at the join
 
@@ -136,4 +136,25 @@ admin; a dev learner joined with an invite.
 
 **Course 2: `hpc_scaling.pdf`** (56 slides, CC BY 4.0; the demo material), at the latest commit:
 
-(results below)
+- Upload: 2,546,786 bytes in 5 chunks; 30 of 56 pages pictured.
+- Build (after one restart: `wrangler dev` was stopped mid-build by a tool time limit, and the build was correctly
+  marked "interrupted, build again"): done in 15.3 minutes, 183 model calls. *Figures:* 30 page pictures, 34 figures.
+  6 lessons, 27 sections, 110 questions. Validation round 1 had 2 problems, fixed in one round.
+- Lessons: 22 figure blocks (e.g. the 2D processor-grid diagram of p.36), 6 tables, 64 blocks with formulas
+  (α + βn + γm, Amdahl's law), all rendered.
+- **Quotes (A10): 107 of 115 text blocks carry a quote checked against its page**; 12 quotes were not on their page
+  and were left out (logged per section). Opening a chip highlights exactly the quoted line on the real slide.
+- **Fact check: 101 blocks "fact-checked ✓", 14 "check doubted"** (two sections the checker still doubted after a
+  rewrite; warned in the build). The ComPar run before the revert fix was 26 ✓ / 50 doubted.
+- Found and fixed from this run: LaTeX-made PDFs give a text item per glyph, so a quote was a row of small boxes
+  (joined per line now); a chip's pages are sorted ("p.35, 36").
+- Closing: a socket without a token, and one with a bad token, get 401. The scratch state was deleted.
+
+Quality notes for J8 (content, not code): on diagram-heavy slides some blocks describe the picture literally
+("The display shows x0 with a00 a01 a02 y0"), and vision sometimes crops a slide's formula as a figure next to a
+KaTeX block saying the same. Worth a look in the owner's review before publishing; prompt tuning if it recurs.
+
+## Cost
+
+Both builds ran on Radesh's key: ~300 model calls (54 of them vision, ~35 SAM). At the spike's per-call costs that is
+roughly $2–4 in all; check the Meta dashboard for the exact figure.

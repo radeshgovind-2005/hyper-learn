@@ -33,3 +33,12 @@ One line per item: `todo | doing | done | cut`, the commit, and what stream B ca
 - `src/course/compile.ts` (A's): `TextBlock.provenance`, `TextBlock.quotes` (optional).
 - `src/interventions/templates.ts` (A's): two templates; `src/releases/changes.ts` and `src/simulation/learners.ts`: their names and default efficacy.
 - `src/generate/schemas.ts` (A's): `SectionDraftSchema` cites have `quote`.
+
+## Ready to join (JOIN.md §5), 2026-11-01
+
+- [x] Every non-stretch item done; A10 (stretch) done too. A11: material chosen and licensed; its live build is J8.
+- [x] `npm run typecheck`, `npm test` (508 pass) and `npm run build:web` pass; CI green on PR #15.
+- [x] Hand-off note: `notes-A.md`.
+- [x] Runs in workerd with studio courses and a real key; the 60-second demo works (`notes-A.md`, "Smoke run").
+- [x] No secret in the diff: the grep finds only variable names and the tests' fake keys.
+- [x] Degrades without stream B: `PageImages` unused until the join; no `gen:` image renders as its alt text.
