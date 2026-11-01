@@ -52,11 +52,16 @@ export const PlanDraftSchema = z.object({
 });
 export type PlanDraft = z.infer<typeof PlanDraftSchema>;
 
+/** A page a written block cites, with the words on that page it rests on (checked in code, highlighted in the viewer). */
+export const CiteSchema = PageRefSchema.extend({
+  quote: z.string().nullable().describe("4 to 20 words copied exactly from that page, which this block is based on; null if none fits"),
+});
+
 export const SectionDraftSchema = z.object({
   blocks: z.array(
     z.object({
       markdown: z.string().describe("A paragraph, a bullet list or a fenced code block; no headings"),
-      cites: z.array(PageRefSchema).describe("The pages this block is based on"),
+      cites: z.array(CiteSchema).describe("The pages this block is based on"),
     }),
   ),
   check: z.object({

@@ -19,8 +19,33 @@ export interface Passage {
   marked: [number, number] | null;
 }
 
-/** The page's pieces and which of them best match `block` (Markdown is fine: only words count). */
+/** A text's words, lowercased and normalised, with where each starts and ends (as src/generate/write.ts). */
+function wordSpans(text: string): { word: string; start: number; end: number }[] {
+  return [...text.matchAll(/[\p{L}\p{N}]+/gu)].map((m) => ({ word: m[0].normalize("NFKC").toLowerCase(), start: m.index!, end: m.index! + m[0].length }));
+}
+
+/**
+ * Where a quote is in a page's text, ignoring case, punctuation and spacing; null if it isn't. Built
+ * blocks carry quotes the build checked against the page (A10), so the viewer can mark exactly them.
+ */
+export function findQuote(text: string, quote: string | undefined): [number, number] | null {
+  const want = wordSpans(quote ?? "").map((w) => w.word);
+  if (want.length < 3) return null;
+  const have = wordSpans(text);
+  outer: for (let i = 0; i + want.length <= have.length; i++) {
+    for (let k = 0; k < want.length; k++) if (have[i + k]!.word !== want[k]) continue outer;
+    return [have[i]!.start, have[i + want.length - 1]!.end];
+  }
+  return null;
+}
+
+/**
+ * The page's pieces and which of them hold `block`: exactly the quote when `block` is one found on the
+ * page, otherwise the lines sharing the most longer words with it (Markdown is fine: only words count).
+ */
 export function findPassage(text: string, block: string | undefined): Passage {
+  const exact = findQuote(text, block);
+  if (exact) return { pieces: [text.slice(0, exact[0]), text.slice(exact[0], exact[1]), text.slice(exact[1])], marked: [1, 1] };
   const parts = pieces(text);
   if (!block) return { pieces: parts, marked: null };
   const wanted = words(block);

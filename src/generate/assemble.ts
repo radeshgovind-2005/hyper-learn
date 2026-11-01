@@ -40,6 +40,7 @@ export function assembleSnapshot(
           kind: b.kind,
           markdown: b.markdown,
           cites: b.cites.map((c) => ({ ...c })),
+          ...(b.quotes && { quotes: b.quotes.map((q) => ({ ...q })) }),
           archived: false,
         }));
         // The check practises the first objective this section teaches.

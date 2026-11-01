@@ -1,5 +1,6 @@
 import { splitBlocks, type TextKind } from "../course/compile.js";
 import type { Citation } from "../course/schema.js";
+import type { Quote } from "../course/compile.js";
 import { citedPage, type Source } from "../course/sources.js";
 import { type CheckQuestion, CheckQuestionSchema } from "../interventions/templates.js";
 import type { PlannedLesson, PlannedSection } from "./plan.js";
@@ -16,6 +17,28 @@ export interface WrittenBlock {
   kind: TextKind;
   markdown: string;
   cites: Citation[];
+  /** The cited pages' words the block rests on, each found on its page. */
+  quotes?: Quote[];
+}
+
+/** A text's words, lowercased and normalised, with where each starts and ends in it. */
+export function wordsOf(text: string): { word: string; start: number; end: number }[] {
+  return [...text.matchAll(/[\p{L}\p{N}]+/gu)].map((m) => ({ word: m[0].normalize("NFKC").toLowerCase(), start: m.index!, end: m.index! + m[0].length }));
+}
+
+/**
+ * Where `quote` is on `page`: its words in order, ignoring case, punctuation and spacing (PDF text breaks
+ * lines and hyphenates where the model doesn't). Null if they aren't there. The viewer does the same.
+ */
+export function findQuote(page: string, quote: string): [number, number] | null {
+  const want = wordsOf(quote).map((w) => w.word);
+  if (want.length < 3) return null;
+  const have = wordsOf(page);
+  outer: for (let i = 0; i + want.length <= have.length; i++) {
+    for (let k = 0; k < want.length; k++) if (have[i + k]!.word !== want[k]) continue outer;
+    return [have[i]!.start, have[i + want.length - 1]!.end];
+  }
+  return null;
 }
 
 export interface WrittenSection {
@@ -134,11 +157,17 @@ const FIGURE_REF = /!\[[^\]]*\]\(\s*((?:fig|gen):[^)\s]*)/g;
  * Checks a section draft against its planned pages and builds the section, or lists what to fix. A
  * picture must be one of `figures` (those on the section's pages); any other id is sent back.
  */
-export function sectionFromDraft(draft: SectionDraft, section: PlannedSection, figures: readonly Figure[] = []): { section?: WrittenSection; problems: string[] } {
+export function sectionFromDraft(
+  draft: SectionDraft,
+  section: PlannedSection,
+  figures: readonly Figure[] = [],
+  sources?: readonly Source[],
+): { section?: WrittenSection; problems: string[]; dropped_quotes?: number } {
   const problems: string[] = [];
   const allowed = section.pages.map(pageLabel);
   const blocks: WrittenBlock[] = [];
   const shown = new Set(figures.map((f) => `fig:${f.id}`));
+  let dropped = 0;
   const ids = figures.map((f) => `fig:${f.id}`).join(", ") || "none";
 
   draft.blocks.forEach((block, i) => {
@@ -153,7 +182,16 @@ export function sectionFromDraft(draft: SectionDraft, section: PlannedSection, f
       else if (!cites.some((c) => pageLabel(c) === pageLabel(ref))) cites.push({ source: ref.source, page: ref.page });
     }
     if (block.cites.length === 0) problems.push(`block ${i + 1} cites no page; every block must cite the pages it is based on`);
-    for (const part of splitBlocks(markdown)) blocks.push({ ...part, cites });
+    // A quote is kept only if it is on the page it names; one that isn't is dropped, not fatal (PDF text is noisy).
+    const quotes: Quote[] = [];
+    for (const ref of block.cites) {
+      const text = ref.quote?.trim();
+      if (!text || !sources || !cites.some((c) => pageLabel(c) === pageLabel(ref))) continue;
+      const page = citedPage(sources, ref);
+      if (page !== undefined && findQuote(page, text)) quotes.push({ source: ref.source, page: ref.page, text: text.slice(0, 300) });
+      else dropped++;
+    }
+    for (const part of splitBlocks(markdown)) blocks.push({ ...part, cites, ...(quotes.length > 0 && { quotes }) });
   });
   if (blocks.length === 0) problems.push("the section has no text blocks");
 
@@ -165,7 +203,7 @@ export function sectionFromDraft(draft: SectionDraft, section: PlannedSection, f
     for (const issue of check.error.issues) problems.push(`practice question ${issue.path.join(".") || "(whole)"}: ${issue.message}`);
   }
 
-  return problems.length > 0 || !check.success ? { problems } : { section: { blocks, check: check.data }, problems };
+  return problems.length > 0 || !check.success ? { problems } : { section: { blocks, check: check.data }, problems, ...(dropped > 0 && { dropped_quotes: dropped }) };
 }
 
 /** The section's text with its citations, for the fact checker. */

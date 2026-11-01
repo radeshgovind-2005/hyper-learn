@@ -65,7 +65,9 @@ export function cannedSection(prompt: string): SectionDraft {
   const pages = [...prompt.matchAll(/<source id="([^"]+)" page="(\d+)">\n([\s\S]*?)\n<\/source>/g)];
   const blocks = pages.flatMap(([, source, page, text]) => {
     const first = sentences(text!).slice(0, 2).join(" ");
-    return first ? [{ markdown: first, cites: [{ source: source!, page: Number(page) }] }] : [];
+    // The quote: the first words of the page, as the writer is asked to copy them.
+    const quote = text!.split(/\s+/).slice(0, 8).join(" ");
+    return first ? [{ markdown: first, cites: [{ source: source!, page: Number(page), quote }] }] : [];
   });
   const claim = cut(sentences(pages[0]?.[3] ?? "").at(0) ?? `The section explains ${title}.`, 190);
   return {

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { findPassage, markItems, type TextItem } from "./passage.js";
+import { findPassage, findQuote, markItems, type TextItem } from "./passage.js";
 
 // The viewer highlights the cited lines on the real page: scored on pdf.js text items, not only on lines.
 
@@ -51,5 +51,21 @@ describe("markItems", () => {
   it("never marks an empty item", () => {
     const marked = markItems(slide, "Multicore CPU L1 per core L2 per core GPU registers");
     assert.ok(!marked.includes(5));
+  });
+});
+
+describe("quotes", () => {
+  it("are found whatever the case, punctuation and line breaks, and marked exactly", () => {
+    const page = "Amdahl's law:\nthe serial frac-\ntion limits speed-up. Gustafson disagrees.";
+    const { pieces, marked } = findPassage(page, "the serial frac tion limits");
+    assert.deepEqual(marked, [1, 1]);
+    assert.equal(pieces[1], "the serial frac-\ntion limits");
+    assert.equal(findQuote(page, "the parallel part limits"), null);
+    assert.equal(findQuote(page, "the serial"), null, "too short to mean anything");
+  });
+
+  it("mark exactly the items the quote covers", () => {
+    const marked = markItems(slide, "Registers: per-thread, ~1 cycle");
+    assert.deepEqual(marked, [7]);
   });
 });

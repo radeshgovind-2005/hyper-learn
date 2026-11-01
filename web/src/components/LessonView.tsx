@@ -20,6 +20,9 @@ export interface Citations {
   open: (source: CitedSource, page: number, passage: string) => void;
 }
 
+/** What the viewer highlights for a citation: the block's checked quote from that page, else the block's text. */
+const passageFor = (block: TextBlock, source: string, page: number) => block.quotes?.find((q) => q.source === source && q.page === page)?.text ?? block.markdown;
+
 /** "Lecture-01 · p.3" chips after a text block, for the cited files the reader may open. */
 function CiteChips({ block, citations }: { block: TextBlock; citations: Citations }) {
   const chips = (block.cites ?? []).flatMap((c) => {
@@ -30,7 +33,7 @@ function CiteChips({ block, citations }: { block: TextBlock; citations: Citation
   return (
     <div className="cites">
       {chips.map(({ source, page }) => (
-        <button key={`${source.id}:${page}`} className="chip cite" title={`Open ${source.name}, page ${page}`} onClick={() => citations.open(source, page, block.markdown)}>
+        <button key={`${source.id}:${page}`} className="chip cite" title={`Open ${source.name}, page ${page}`} onClick={() => citations.open(source, page, passageFor(block, source.id, page))}>
           {shortName(source.name)} · p.{page}
         </button>
       ))}
@@ -110,7 +113,7 @@ function BlockView({
       <>
         {text}
         {block.provenance ? (
-          <ProvenanceChip provenance={block.provenance} sources={citations.sources} open={(source, page) => citations.open(source, page, block.markdown)} />
+          <ProvenanceChip provenance={block.provenance} sources={citations.sources} open={(source, page) => citations.open(source, page, passageFor(block, source.id, page))} />
         ) : (
           <CiteChips block={block} citations={citations} />
         )}

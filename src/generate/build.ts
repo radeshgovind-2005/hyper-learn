@@ -188,16 +188,19 @@ export async function buildCourse(input: BuildInput, models: BuilderModels, opti
       const previous = sectionUnits.get(section.id);
       const extra = retry && retryText("writer", retry.template, previous?.draft, retry.problems, room);
       let unit: Unit<WrittenSection, SectionDraft>;
+      let quotesDropped = 0;
       try {
         const shown = figuresOn(figures, section.pages);
         const draft = await calls.invoke(models.writer, "writer", writerPrompt({ input, sources, lesson, section, figures: shown }, room, extra));
-        const result = sectionFromDraft(draft, section, shown);
+        const result = sectionFromDraft(draft, section, shown, sources);
+        quotesDropped = result.dropped_quotes ?? 0;
         unit = { ...(result.section && { value: result.section }), draft, problems: result.problems, warnings: [] };
       } catch (error) {
         if (error instanceof CallBudgetExceeded) throw error;
         unit = { problems: [`the writer's call failed: ${message(error)}`], warnings: [] };
       }
-      step("write", `${unit.value ? "Wrote" : "Rejected"} ${section.id}`, unit.value ? "ok" : "rejected", unit.problems.length > 0 ? bullets(unit.problems) : undefined);
+      const dropped = unit.value && quotesDropped > 0 ? `${quotesDropped} quote(s) not found on their page were left out.` : undefined;
+      step("write", `${unit.value ? "Wrote" : "Rejected"} ${section.id}`, unit.value ? "ok" : "rejected", unit.problems.length > 0 ? bullets(unit.problems) : dropped);
       return unit;
     };
     await mapLimit(allSections, concurrency, async ({ lesson, section }) => {

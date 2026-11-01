@@ -26,6 +26,8 @@ export interface TextBlock extends BlockBase {
   cites?: Citation[];
   /** For generated content: its pages and what the fact check said (absent on blocks built before it was kept). */
   provenance?: Provenance;
+  /** For generated content: words on a cited page this block rests on, each checked to be on that page. */
+  quotes?: Quote[];
 }
 
 /** A templated intervention aimed at one misconception. Shown to the learners who show that belief. */
@@ -46,6 +48,13 @@ export interface CheckBlock extends BlockBase {
 }
 
 export type Block = TextBlock | InterventionBlock | CheckBlock;
+
+/** Words copied from a cited page. */
+export interface Quote {
+  source: string;
+  page: number;
+  text: string;
+}
 
 export const isTextBlock = (block: Block): block is TextBlock => block.kind !== "intervention" && block.kind !== "check";
 

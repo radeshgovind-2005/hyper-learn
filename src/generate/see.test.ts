@@ -55,7 +55,7 @@ function figureWriter(missing = false) {
       const id = wrong ? "s1/p9/f1" : offered;
       if (wrong && !prompt.includes("REJECTED")) wrong = false;
       else if (wrong) return answer;
-      return { ...answer, blocks: [...answer.blocks, { markdown: `![Notch spacing](fig:${id})`, cites: [{ source: page[1]!, page: Number(page[2]) }] }] };
+      return { ...answer, blocks: [...answer.blocks, { markdown: `![Notch spacing](fig:${id})`, cites: [{ source: page[1]!, page: Number(page[2]), quote: null }] }] };
     },
   });
 }
@@ -169,5 +169,31 @@ describe("provenance", () => {
     assert.ok(verdicts.has("doubted") && verdicts.has("supported"), [...verdicts].join());
     const unchecked = await buildCourse(INPUT, spiedModels(), { stress: false, review: false, concurrency: 1 });
     assert.ok(blocks(unchecked).every((b) => b.provenance?.fact_check === "unchecked"));
+  });
+});
+
+describe("quotes (A10)", () => {
+  it("keeps a quote found on its page and drops one that isn't, without rejecting the block", async () => {
+    const { sectionFromDraft, findQuote } = await import("./write.js");
+    const section = { id: "l/s", title: "S", pages: [{ source: "s1", page: 1 }] };
+    const sources = [{ id: "s1", name: "n", role: "material" as const, pages: ["A bramble clock measures time by the growth of a trained bramble stem."] }];
+    const draft = (quote: string | null) => ({
+      blocks: [{ markdown: "Bramble clocks grow.", cites: [{ source: "s1", page: 1, quote }] }],
+      check: { prompt: "Which?", options: [{ text: "A", correct: true, feedback: "Yes" }, { text: "B", correct: false, feedback: "No" }] },
+    });
+    const kept = sectionFromDraft(draft("measures time by the GROWTH of a trained"), section, [], sources);
+    assert.deepEqual(kept.section!.blocks[0]!.quotes, [{ source: "s1", page: 1, text: "measures time by the GROWTH of a trained" }]);
+    const dropped = sectionFromDraft(draft("measures time by the shadow of a sundial"), section, [], sources);
+    assert.equal(dropped.problems.length, 0);
+    assert.equal(dropped.section!.blocks[0]!.quotes, undefined);
+    assert.equal(dropped.dropped_quotes, 1);
+    assert.deepEqual(findQuote("one two\nthree-four five", "two three four"), [4, 18]);
+  });
+
+  it("built blocks carry the quotes the build checked", async () => {
+    const result = await buildCourse(INPUT, spiedModels(), { stress: false, concurrency: 1 });
+    assert.ok(result.ok);
+    const blocks = result.snapshot.lessons.flatMap((l) => l.sections.flatMap((s) => s.blocks.filter(isTextBlock)));
+    assert.ok(blocks.every((b) => (b.quotes ?? []).length > 0), "the canned writer quotes every page");
   });
 });

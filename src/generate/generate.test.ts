@@ -210,8 +210,8 @@ describe("grounding", () => {
       {
         blocks: [
           { markdown: "Uncited claim.", cites: [] },
-          { markdown: "Cited elsewhere.", cites: [{ source: "s1", page: 3 }] },
-          { markdown: "Fine.", cites: [{ source: "s1", page: 2 }] },
+          { markdown: "Cited elsewhere.", cites: [{ source: "s1", page: 3, quote: null }] },
+          { markdown: "Fine.", cites: [{ source: "s1", page: 2, quote: null }] },
         ],
         check,
       },
@@ -241,7 +241,7 @@ describe("grounding", () => {
     const models = spiedModels({
       writer: (_, answer) => {
         if (calls++ > 0) return undefined;
-        answer.blocks[0]!.cites = [{ source: "s1", page: 7 }];
+        answer.blocks[0]!.cites = [{ source: "s1", page: 7, quote: null }];
         return answer;
       },
     });

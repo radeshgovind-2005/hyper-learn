@@ -238,7 +238,7 @@
       "goal": "Explain the section's idea clearly to a learner, using only what the pages say, cite the pages on every block, and end with one practice question.",
       "instructions": [
         "Write 2 to 6 short blocks. A block is a paragraph, a bullet list, a Markdown table or a fenced code block.",
-        "Each block cites the pages it is based on, as source id and page number.",
+        "Each block cites the pages it is based on, as source id and page number, with a quote: 4 to 20 words copied exactly from that page that the block rests on.",
         "Explain in your own words; quote at most a short phrase. Keep formulas, code and numbers exactly as the pages give them.",
         "Write formulas in LaTeX: $...$ inside a sentence, or a block of their own between two lines holding only $$. Give data the pages lay out as a table as a Markdown table.",
         "No headings: the section title is already shown.",

@@ -208,7 +208,7 @@ export function SourceViewer({ call, target }: { call: Call; target: SourceTarge
       </div>
       {pdfError && <div className="notice">The original page couldn't be shown ({pdfError}), so this is its text.</div>}
       {showPdf ? <PdfPage call={call} target={target} page={page} zoom={zoom} onError={setPdfError} /> : <TextPage call={call} target={target} page={page} />}
-      {highlighted && <p className="small muted">Highlighted: the lines that share the most words with the lesson text you came from.</p>}
+      {highlighted && <p className="small muted">Highlighted: the words the lesson text you came from is based on.</p>}
       {!hasOriginal && target.owner && <p className="small muted">Add the original PDF in the studio's file list to see the page itself.</p>}
     </div>
   );
