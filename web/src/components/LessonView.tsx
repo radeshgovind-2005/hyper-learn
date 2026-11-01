@@ -4,6 +4,7 @@ import { interventionTracker, useLessonTimer } from "../tracking.js";
 import type { Block, Call, Certainty, CheckResult, CitedSource, CourseSnapshot, Exam, Intervention, QuizItem, QuizResult, Response } from "../types.js";
 import { InterventionView } from "./Interventions.js";
 import { Markdown } from "./Markdown.js";
+import { ProvenanceChip } from "./ProvenanceChip.js";
 import { QuizFlow } from "./Quiz.js";
 import { plainPreview, type RailItem, SectionRail } from "./SectionRail.js";
 
@@ -104,10 +105,15 @@ function BlockView({
     // Markdown with tables, formulas and figures (Markdown.tsx); generated text is sanitised before it is stored.
     const text = <Markdown className={`block prose ${isNew ? "new" : ""} ${block.archived ? "archived" : ""}`} markdown={block.markdown} call={call} />;
     if (!citations || !block.cites?.length) return text;
+    // Built blocks say where they come from in one chip; blocks built before provenance was kept keep their page chips.
     return (
       <>
         {text}
-        <CiteChips block={block} citations={citations} />
+        {block.provenance ? (
+          <ProvenanceChip provenance={block.provenance} sources={citations.sources} open={(source, page) => citations.open(source, page, block.markdown)} />
+        ) : (
+          <CiteChips block={block} citations={citations} />
+        )}
       </>
     );
   }

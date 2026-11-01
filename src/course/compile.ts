@@ -2,6 +2,7 @@ import type { QuizItem } from "../assessment/items.js";
 import { type CheckQuestion, CheckQuestionSchema, type Intervention, InterventionSchema } from "../interventions/templates.js";
 import { buildCourse } from "./validate.js";
 import { type Citation, type Course, type ExamConfig, ExamConfigSchema, type MisconceptionDef, type Objective, ObjectiveSchema } from "./schema.js";
+import type { Provenance } from "../media/contracts.js";
 
 // The course as a content graph: lessons contain sections, sections contain blocks. Compiled once
 // from the Markdown lessons into release v1.0.0; after that, releases (not the Markdown) are the
@@ -23,6 +24,8 @@ export interface TextBlock extends BlockBase {
   markdown: string;
   /** For generated content: the source pages this block is based on. */
   cites?: Citation[];
+  /** For generated content: its pages and what the fact check said (absent on blocks built before it was kept). */
+  provenance?: Provenance;
 }
 
 /** A templated intervention aimed at one misconception. Shown to the learners who show that belief. */

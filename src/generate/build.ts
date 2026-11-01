@@ -2,7 +2,8 @@ import { type AgentName, renderTemplate } from "../agents.js";
 import { type CourseSnapshot, courseFromSnapshot } from "../course/compile.js";
 import { type Source, SourceSchema } from "../course/sources.js";
 import type { StructuredFactory } from "../models.js";
-import { assembleSnapshot, shuffleOptions } from "./assemble.js";
+import { assembleSnapshot, shuffleOptions, stampProvenance } from "./assemble.js";
+import type { Provenance } from "../media/contracts.js";
 import { assessmentFromDraft, examinerPrompt, type LessonAssessment, mergeDrafts, problemsByPart } from "./assess.js";
 import { assessmentSentences, routeValidationError, studioChecks } from "./checks.js";
 import { type BuilderModels, CallBudgetExceeded, createBuilderModels, ModelCalls } from "./models.js";
@@ -321,7 +322,9 @@ export async function buildCourse(input: BuildInput, models: BuilderModels, opti
     }
     for (const unit of lessonUnits.values()) unit.warnings.forEach(warn);
 
-    // 7. Review grounding with a model; a section it doubts is rewritten once.
+    // 7. Review grounding with a model; a section it doubts is rewritten once. Each section's verdict is
+    // kept for its blocks' provenance chips.
+    const verdicts = new Map<string, Provenance["fact_check"]>();
     if (options.review !== false) {
       const before = new Map(written());
       const rewritten: string[] = [];
@@ -338,9 +341,11 @@ export async function buildCourse(input: BuildInput, models: BuilderModels, opti
           return;
         }
         if (verdict.supported) {
+          verdicts.set(section.id, "supported");
           step("review", `Grounded: ${section.id}`);
           return;
         }
+        verdicts.set(section.id, "doubted");
         const claims = verdict.unsupported.length > 0 ? verdict.unsupported : ["(the fact checker named no claim)"];
         const unit = await writeSection(lesson, section, { template: "revise", problems: claims });
         if (!unit.value) {
@@ -355,8 +360,10 @@ export async function buildCourse(input: BuildInput, models: BuilderModels, opti
           if (error instanceof CallBudgetExceeded) throw error;
           return undefined;
         });
-        if (again?.supported) step("review", `Rewritten and grounded: ${section.id}`, "ok", bullets(claims));
-        else {
+        if (again?.supported) {
+          verdicts.set(section.id, "supported");
+          step("review", `Rewritten and grounded: ${section.id}`, "ok", bullets(claims));
+        } else {
           warn(`Section ${section.id} may state things its pages don't support, even after a rewrite: ${(again?.unsupported ?? claims).join("; ")}`);
           step("review", `Weak grounding: ${section.id}`, "rejected", bullets(again?.unsupported ?? claims));
         }
@@ -366,7 +373,10 @@ export async function buildCourse(input: BuildInput, models: BuilderModels, opti
         if (gate(candidate).length === 0) snapshot = candidate;
         else {
           // A rewrite broke a whole-course rule: go back to the validated text for those sections.
-          for (const id of rewritten) sectionUnits.set(id, { value: before.get(id)!, problems: [], warnings: [] });
+          for (const id of rewritten) {
+            sectionUnits.set(id, { value: before.get(id)!, problems: [], warnings: [] });
+            verdicts.set(id, "doubted"); // the first text, which the fact check doubted
+          }
           warn(`Rewrites after the fact check broke validation, so ${rewritten.join(", ")} keep their first text`);
         }
       }
@@ -387,7 +397,7 @@ export async function buildCourse(input: BuildInput, models: BuilderModels, opti
     const items = snapshot.lessons.reduce((n, l) => n + l.quiz.length, 0);
     step("done", `Built ${snapshot.lessons.length} lessons, ${sectionCount} sections, ${items} questions`, "ok", `${calls.count} model call(s).`);
     report.model_calls = calls.count;
-    return { ok: true, snapshot: shuffleOptions(snapshot), report, ...(figures.length > 0 && { figures }) };
+    return { ok: true, snapshot: shuffleOptions(stampProvenance(snapshot, verdicts)), report, ...(figures.length > 0 && { figures }) };
   } catch (error) {
     return fail([error instanceof CallBudgetExceeded ? error.message : `Generation stopped: ${message(error)}`]);
   }

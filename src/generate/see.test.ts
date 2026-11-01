@@ -147,3 +147,27 @@ describe("boxes", () => {
     assert.deepEqual(cleanBox({ x1: Number.NaN, y1: 0.1, x2: 0.5, y2: 0.6 }), { x1: 0, y1: 0.1, x2: 0.5, y2: 0.6 });
   });
 });
+
+describe("provenance", () => {
+  const blocks = (result: BuildResult) => (result.ok ? result.snapshot.lessons.flatMap((l) => l.sections.flatMap((s) => s.blocks.filter(isTextBlock))) : []);
+
+  it("gives every built text block its pages and the fact check's verdict", async () => {
+    const result = await buildCourse(INPUT, spiedModels(), { stress: false, concurrency: 1 });
+    const all = blocks(result);
+    assert.ok(all.length > 0);
+    for (const b of all) {
+      assert.deepEqual(b.provenance?.pages, b.cites);
+      assert.equal(b.provenance?.fact_check, "supported");
+    }
+  });
+
+  it("marks a section the fact check still doubts after its rewrite, and one never checked", async () => {
+    let first = true;
+    const doubting = spiedModels({ fact_checker: (prompt, answer) => (prompt.includes("Pruning") ? { supported: false, unsupported: ["Pruning stops time."] } : first ? ((first = false), answer) : answer) });
+    const result = await buildCourse(INPUT, doubting, { stress: false, concurrency: 1 });
+    const verdicts = new Set(blocks(result).map((b) => b.provenance?.fact_check));
+    assert.ok(verdicts.has("doubted") && verdicts.has("supported"), [...verdicts].join());
+    const unchecked = await buildCourse(INPUT, spiedModels(), { stress: false, review: false, concurrency: 1 });
+    assert.ok(blocks(unchecked).every((b) => b.provenance?.fact_check === "unchecked"));
+  });
+});

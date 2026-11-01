@@ -173,7 +173,7 @@ function looksLikeFigure(ops: { fnArray: number[] }, OPS: Record<string, number>
     if (images.has(fn)) imageOps++;
     else if (shapes.has(fn)) shapeOps++;
   }
-  return imageOps > 0 || shapeOps >= 10 || (textChars < 200 && ops.fnArray.length > 0);
+  return imageOps > 0 || shapeOps >= 60 || (textChars < 200 && ops.fnArray.length > 0);
 }
 
 /** A canvas as JPEG, as small as it must be: lower quality first, then a smaller picture. */

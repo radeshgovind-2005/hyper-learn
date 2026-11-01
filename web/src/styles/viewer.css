@@ -33,3 +33,14 @@
 .asset-crop img { position: absolute; max-width: none; border-radius: 0; }
 .asset figcaption { font-size: var(--t-sm); color: var(--muted); margin-top: var(--s2); }
 .asset-alt { display: block; font-style: italic; color: var(--muted); margin: var(--s3) 0; }
+
+/* The provenance chip under a built block (ProvenanceChip.tsx). */
+.prov { display: inline-flex; flex-wrap: wrap; align-items: center; gap: var(--s1) var(--s2); margin: calc(-1 * var(--s2)) 0 var(--s4); padding: 2px var(--s2); border: 1px solid var(--line); border-radius: 999px; font-size: var(--t-xs); color: var(--muted); background: var(--surface-2); }
+.prov-file { display: inline-flex; gap: 2px; align-items: baseline; }
+.prov-page { border: 0; background: none; padding: 0 1px; font: inherit; color: var(--blue); cursor: pointer; text-decoration: underline; text-underline-offset: 2px; }
+.prov-page + .prov-page::before { content: ","; color: var(--muted); margin-right: 2px; }
+.prov-page.plain { color: inherit; text-decoration: none; cursor: default; }
+.prov-check.ok { color: var(--green); }
+.prov-check.doubted { color: var(--amber); }
+.prov-made { color: var(--violet); font-weight: 600; }
+.prov-check::before, .prov-made + .prov-file::before { content: "·"; margin-right: var(--s2); color: var(--muted); }
