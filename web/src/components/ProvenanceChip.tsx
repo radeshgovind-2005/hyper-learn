@@ -25,7 +25,7 @@ export function ProvenanceChip({
   const verdict = VERDICT[provenance.fact_check];
   // Pages grouped by file: "Lec01 p.3, 4".
   const byFile = new Map<string, number[]>();
-  for (const c of provenance.pages) byFile.set(c.source, [...(byFile.get(c.source) ?? []), c.page].filter((p, i, all) => all.indexOf(p) === i));
+  for (const c of provenance.pages) byFile.set(c.source, [...new Set([...(byFile.get(c.source) ?? []), c.page])].sort((a, b) => a - b));
   return (
     <div className="prov" role="note" aria-label="Where this comes from">
       {provenance.made_for && <span className="prov-made" title={provenance.made_for}>Made for you</span>}
