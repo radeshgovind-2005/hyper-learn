@@ -522,6 +522,29 @@ export class CourseAgent extends Agent<Env, CourseAgentState> {
     return this.app.sourcePage(userId, id, page);
   }
 
+  // ─── Original files, page images and figures (stream A) ──────────────
+
+  /** One chunk (base64, ≤ 512 KB decoded) of a source's original PDF; `total` is its chunk count. */
+  @callable()
+  addSourceFileChunk(id: string, seq: number, base64: string, total: number) {
+    this.actor("manage_course");
+    return this.app.addSourceFileChunk(id, seq, base64, total);
+  }
+
+  /** A chunk of any source's original, for the owner's viewer. */
+  @callable()
+  ownerSourceFileChunk(id: string, seq: number) {
+    this.actor("manage_course");
+    return this.app.ownerSourceFileChunk(id, seq);
+  }
+
+  /** A chunk of the original of a file citedSources lists. */
+  @callable()
+  sourceFileChunk(id: string, seq: number) {
+    const { userId } = this.actor("learn");
+    return this.app.sourceFileChunk(userId, id, seq);
+  }
+
   /** Time on a lesson, or an intervention shown or completed, reported by the learner's own browser. */
   @callable()
   track(event: unknown) {

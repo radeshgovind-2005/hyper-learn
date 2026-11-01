@@ -28,6 +28,7 @@ import type { State } from "../state.js";
 import { PersistentMemorySaver } from "../storage/checkpointer.js";
 import { type LearnerEvent, type Sql, SqlEventLog, SqlMeta, SqlProfiles, SqlReleaseStore, SqlThreadStore } from "../storage/sql.js";
 import { type Member, SqlMembers, SqlSharedRepairs, SqlSources, type SourceSummary } from "../storage/studio.js";
+import { base64Size, type FileChunk, MEDIA_LIMITS, SqlMedia, type StoredFile } from "../storage/media.js";
 import type { Identity as Person } from "../auth/identity.js";
 import { COURSE_ROLES, type CourseRole } from "./access.js";
 import { builtInCourse, type CoachRepairer, type CourseBuilder, type CourseDefinition, type CourseEditor, FEATURED_COURSE, isStudioId } from "./courses.js";
@@ -173,6 +174,8 @@ export interface StudioRecord {
 export interface OwnerSourceSummary extends SourceSummary {
   /** Whether learners may open it from the lessons that cite it (past exams and briefs never, whatever this says). */
   shared: boolean;
+  /** The original file, when it was uploaded (sources added before that was possible have none). */
+  file?: StoredFile;
 }
 
 /** A file a learner may open from the lessons that cite it. */
@@ -180,6 +183,8 @@ export interface CitedSource {
   id: string;
   name: string;
   pages: number;
+  /** The original file, when it was uploaded: the viewer shows the real page instead of its text. */
+  file?: StoredFile;
 }
 
 /** One page of a source, as the viewer shows it. */
@@ -456,6 +461,8 @@ export class CourseService {
   readonly members: SqlMembers;
   private readonly sources: SqlSources;
   private readonly sharedRepairs: SqlSharedRepairs;
+  /** Original files, page images and figures of a studio course's sources. */
+  private readonly media: SqlMedia;
   private readonly meta: SqlMeta;
   private readonly saver: PersistentMemorySaver;
   private readonly now: () => string;
@@ -479,6 +486,7 @@ export class CourseService {
     this.members = new SqlMembers(sql);
     this.sources = new SqlSources(sql);
     this.sharedRepairs = new SqlSharedRepairs(sql);
+    this.media = new SqlMedia(sql);
     this.saver = new PersistentMemorySaver(new SqlThreadStore(sql));
     // Builds and runs live in this instance's memory, so one still marked running at start was cut off by a restart.
     if (this.record()?.status === "building") this.endBuild("failed", { problems: ["The build was interrupted (the server restarted); build again"] });
@@ -1639,7 +1647,8 @@ export class CourseService {
   sourceList(): OwnerSourceSummary[] {
     this.studio();
     const hidden = this.hiddenSources();
-    return this.sources.summaries().map((s) => ({ ...s, shared: !hidden.has(s.id) }));
+    const files = this.media.files();
+    return this.sources.summaries().map((s) => ({ ...s, shared: !hidden.has(s.id), ...(files.has(s.id) && { file: files.get(s.id)! }) }));
   }
 
   /** The full sources, for a build. */
@@ -1688,6 +1697,7 @@ export class CourseService {
     this.editableSources();
     if (typeof id !== "string" || !this.sources.get(id)) throw new Error(`No source "${String(id)}"`);
     this.sources.delete(id);
+    this.media.removeSource(id);
   }
 
   /** Sets what a file is for (null: let the build decide). */
@@ -1751,10 +1761,11 @@ export class CourseService {
       }
     }
     const hidden = this.hiddenSources();
+    const files = this.media.files();
     return this.sources
       .summaries()
       .filter((s) => cited.has(s.id) && !hidden.has(s.id) && !(s.role && NEVER_SHOWN.has(s.role)))
-      .map((s) => ({ id: s.id, name: s.name, pages: s.pages }));
+      .map((s) => ({ id: s.id, name: s.name, pages: s.pages, ...(files.has(s.id) && { file: files.get(s.id)! }) }));
   }
 
   /** A page of a file the learner may open (see citedSources): any page of it, not only the cited ones. */
@@ -1762,6 +1773,54 @@ export class CourseService {
     if (this.fixed) throw new Error("This course has no source files");
     if (typeof id !== "string" || !this.citedSources(learner).some((s) => s.id === id)) throw new Error("This file isn't shared with learners");
     return this.pageOf(this.sources.get(id)!, page);
+  }
+
+  // ─── Original files (stream A) ────────────────────────────────────
+
+  /**
+   * Stores one chunk of a source's original PDF (base64, at most 512 KB decoded), so the real page can be
+   * shown. Idempotent per (source, seq); `total` is the file's chunk count. Allowed in any state: the
+   * file changes what can be shown, not what the lessons say. Returns what is stored so far.
+   */
+  addSourceFileChunk(id: unknown, seq: unknown, base64: unknown, total: unknown): StoredFile {
+    this.studio();
+    if (typeof id !== "string" || !this.sources.get(id)) throw new Error(`No source "${String(id)}"`);
+    const maxChunks = Math.ceil(MEDIA_LIMITS.fileBytes / MEDIA_LIMITS.chunkBytes);
+    if (typeof total !== "number" || !Number.isInteger(total) || total < 1) throw new Error("total is the number of chunks");
+    if (total > maxChunks) throw new Error(`A file can be at most ${MEDIA_LIMITS.fileBytes / 1024 / 1024} MB`);
+    if (typeof seq !== "number" || !Number.isInteger(seq) || seq < 0 || seq >= total) throw new Error(`seq is 0 to ${total - 1}`);
+    const size = typeof base64 === "string" ? base64Size(base64) : null;
+    if (size === null || size === 0) throw new Error("Send the chunk as base64");
+    if (size > MEDIA_LIMITS.chunkBytes) throw new Error(`A chunk can be at most ${MEDIA_LIMITS.chunkBytes / 1024} KB`);
+    // Only PDFs: the viewer renders pages, and a text file is already shown as text.
+    if (seq === 0 && !(base64 as string).startsWith("JVBERi")) throw new Error("Only a PDF's original can be added");
+    if (this.media.fileBytes(id, seq) + size > MEDIA_LIMITS.fileBytes) throw new Error(`A file can be at most ${MEDIA_LIMITS.fileBytes / 1024 / 1024} MB`);
+    if (this.media.courseFileBytes({ source: id, seq }) + size > MEDIA_LIMITS.courseFileBytes) {
+      throw new Error(`A course's original files can be at most ${MEDIA_LIMITS.courseFileBytes / 1024 / 1024} MB in all`);
+    }
+    this.media.putChunk(id, seq, total, base64 as string, size);
+    return this.media.file(id)!;
+  }
+
+  private chunkOf(id: string, seq: unknown): FileChunk {
+    if (typeof seq !== "number" || !Number.isInteger(seq) || seq < 0) throw new Error("seq is a chunk number from 0");
+    const chunk = this.media.chunk(id, seq);
+    if (!chunk) throw new Error(this.media.file(id) ? `No chunk ${seq} of this file` : "This file's original wasn't uploaded");
+    return chunk;
+  }
+
+  /** A chunk of any source's original, for the owner. */
+  ownerSourceFileChunk(id: unknown, seq: unknown): FileChunk {
+    this.studio();
+    if (typeof id !== "string" || !this.sources.get(id)) throw new Error(`No source "${String(id)}"`);
+    return this.chunkOf(id, seq);
+  }
+
+  /** A chunk of the original of a file the learner may open (see citedSources). */
+  sourceFileChunk(learner: string, id: unknown, seq: unknown): FileChunk {
+    if (this.fixed) throw new Error("This course has no source files");
+    if (typeof id !== "string" || !this.citedSources(learner).some((s) => s.id === id)) throw new Error("This file isn't shared with learners");
+    return this.chunkOf(id, seq);
   }
 
   // ─── The owner's model key (studio courses) ───────────────────────

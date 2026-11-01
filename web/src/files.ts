@@ -12,12 +12,20 @@ export const ACCEPTED = ".pdf,.md,.markdown,.txt";
 export interface ReadFile {
   name: string;
   pages: string[];
+  /** A PDF's own bytes, uploaded next to its text so the real page can be shown. */
+  bytes?: Uint8Array;
 }
 
-async function pdfPages(file: File, onProgress?: (page: number, of: number) => void): Promise<string[]> {
+/** pdf.js, loaded on first use, with its worker. */
+export async function loadPdfjs() {
   const [pdfjs, { default: workerUrl }] = await Promise.all([import("pdfjs-dist"), import("pdfjs-dist/build/pdf.worker.min.mjs?url")]);
   pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;
-  const task = pdfjs.getDocument({ data: new Uint8Array(await file.arrayBuffer()) });
+  return pdfjs;
+}
+
+async function pdfPages(data: Uint8Array, onProgress?: (page: number, of: number) => void): Promise<string[]> {
+  const pdfjs = await loadPdfjs();
+  const task = pdfjs.getDocument({ data });
   const pdf = await task.promise;
   const pages: string[] = [];
   for (let n = 1; n <= pdf.numPages; n++) {
@@ -55,9 +63,11 @@ function textPages(text: string): string[] {
 export async function readFile(file: File, onProgress?: (page: number, of: number) => void): Promise<ReadFile> {
   const lower = file.name.toLowerCase();
   if (lower.endsWith(".pdf")) {
-    const pages = await pdfPages(file, onProgress);
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    // pdf.js may take over the buffer it is given, so it reads a copy.
+    const pages = await pdfPages(bytes.slice(), onProgress);
     if (pages.every((p) => !p)) throw new Error(`${file.name} has no text to read (a scanned PDF?)`);
-    return { name: file.name, pages: pages.map((p) => p || "(no text on this page)") };
+    return { name: file.name, pages: pages.map((p) => p || "(no text on this page)"), bytes };
   }
   if (/\.(md|markdown|txt)$/.test(lower)) {
     const pages = textPages((await file.text()).trim());
@@ -83,4 +93,63 @@ export function chunkPages(pages: readonly string[]): string[][] {
   }
   if (current.length > 0) chunks.push(current);
   return chunks;
+}
+
+// ─── The original file (stream A) ─────────────────────────────────────
+
+/** Bytes per chunk of an original file (MEDIA_LIMITS.chunkBytes): ~683 KB as base64, under the 1 MiB message limit. */
+export const FILE_CHUNK_BYTES = 512 * 1024;
+/** The server's caps (MEDIA_LIMITS), checked here first so a big file fails before it uploads. */
+export const MAX_FILE_BYTES = 25 * 1024 * 1024;
+
+export function toBase64(bytes: Uint8Array): string {
+  let binary = "";
+  for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  return btoa(binary);
+}
+
+export function fromBase64(text: string): Uint8Array {
+  const binary = atob(text);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+}
+
+type Call = <T>(method: string, args?: unknown[]) => Promise<T>;
+
+/** Sends a PDF's bytes to the server in chunks, after its text (addSource), one message at a time. */
+export async function uploadOriginal(call: Call, sourceId: string, bytes: Uint8Array, onProgress?: (sent: number, of: number) => void) {
+  if (bytes.length > MAX_FILE_BYTES) throw new Error(`The original is over ${MAX_FILE_BYTES / 1024 / 1024} MB, so only its text was added`);
+  const total = Math.ceil(bytes.length / FILE_CHUNK_BYTES);
+  for (let seq = 0; seq < total; seq++) {
+    await call("addSourceFileChunk", [sourceId, seq, toBase64(bytes.subarray(seq * FILE_CHUNK_BYTES, (seq + 1) * FILE_CHUNK_BYTES)), total]);
+    onProgress?.(seq + 1, total);
+  }
+}
+
+/**
+ * The original PDF of a source, fetched once per page load and kept in memory: every page of the viewer
+ * and every figure reads the same copy. `method` is sourceFileChunk (learners) or ownerSourceFileChunk.
+ */
+const originals = new Map<string, Promise<Uint8Array>>();
+export function fetchOriginal(call: Call, method: "sourceFileChunk" | "ownerSourceFileChunk", sourceId: string, total: number): Promise<Uint8Array> {
+  const key = `${method}:${sourceId}:${total}`;
+  let pending = originals.get(key);
+  if (!pending) {
+    pending = (async () => {
+      const parts: Uint8Array[] = [];
+      for (let seq = 0; seq < total; seq++) parts.push(fromBase64((await call<{ base64: string }>(method, [sourceId, seq])).base64));
+      const out = new Uint8Array(parts.reduce((n, p) => n + p.length, 0));
+      let at = 0;
+      for (const part of parts) {
+        out.set(part, at);
+        at += part.length;
+      }
+      return out;
+    })();
+    // A failed fetch is forgotten, so opening the viewer again retries it.
+    pending.catch(() => originals.delete(key));
+    originals.set(key, pending);
+  }
+  return pending;
 }
