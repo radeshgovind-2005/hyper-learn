@@ -128,8 +128,8 @@ Tick each box with a link to the evidence (file, test, or video timestamp) befor
 
 **Stage 1: pass/fail**
 - [ ] Fits a problem statement: **Build for Your World** (a problem you know firsthand: studying from lecture PDFs)
-- [ ] Uses Meta's models, in the demo and the code
-- [ ] Built during the event, with a dated "what's new" section (history starts 2026-10-28 ✓)
+- [x] Uses Meta's models, in the demo and the code: Spark, SAM, Image, Voice, Wonder all called live in the join smoke ([notes-join §J6](notes-join.md#j6-smoke-run-in-workerd-2026-11-01))
+- [x] Built during the event, with a dated "what's new" section (history starts 2026-10-28 ✓; [README](../../README.md#built-during-the-hackathon-history-starts-2026-10-28))
 - [ ] Repository public ✓ (`radeshgovind-2005/hyper-learn`), LICENSE ✓
 - [ ] Not an anti-project: not a chatbot over documents; the tutor writes grounded mutations that are measured
 - [ ] No assets without rights (P2.3)
@@ -137,22 +137,22 @@ Tick each box with a link to the evidence (file, test, or video timestamp) befor
 **Impact (30%)**
 - [ ] A named user and a concrete pain, in the first 15 s of the video
 - [ ] A real pilot, honestly reported (P2.2)
-- [ ] Works on any student's own lecture PDFs (the Studio already does)
-- [ ] Owner dashboard: "what learners keep needing repaired" (exists: `coachInsights`)
+- [x] Works on any student's own lecture PDFs: built from uploaded slides in the join smoke ([notes-join §J6](notes-join.md#j6-smoke-run-in-workerd-2026-11-01), step 1)
+- [x] Owner dashboard: "what learners keep needing repaired" (`coachInsights`, with promotion; [notes-join §J6](notes-join.md#j6-smoke-run-in-workerd-2026-11-01), step 9)
 
 **Use of Meta AI tooling (25%): the 5-model table**
-- [ ] **Muse Spark 1.3**: tutor tool loop, writer, examiner, vision on pages, structured output
-- [ ] **Muse Wonder 1.0**: independent verifier of every mutation *(stretch)*
-- [ ] **Muse Image 1.0**: diagrams and storyboard frames
-- [ ] **Muse Voice Transcribe 1.0**: push-to-talk through a Worker proxy
-- [ ] **SAM 3.1**: figure and table crops from page images
+- [x] **Muse Spark 1.3**: tutor tool loop, writer, examiner, vision on pages, structured output ([notes-join §J6](notes-join.md#j6-smoke-run-in-workerd-2026-11-01))
+- [x] **Muse Wonder 1.0**: independent verifier of personal rewrites (`TUTOR_VERIFIER=on`, on in the join smoke; not every mutation)
+- [x] **Muse Image 1.0**: diagrams ([notes-join §J6](notes-join.md#j6-smoke-run-in-workerd-2026-11-01), step 7); storyboards in B's smoke ([notes-B](notes-B.md))
+- [x] **Muse Voice Transcribe 1.0**: push-to-talk through a Worker relay, recorded audio through workerd ([notes-join §J6](notes-join.md#j6-smoke-run-in-workerd-2026-11-01), step 5); a real browser mic not yet
+- [x] **SAM 3.1**: figure crops from page images, 12 calls in the join build ([notes-join §J6](notes-join.md#j6-smoke-run-in-workerd-2026-11-01), step 1)
 - [ ] **Muse Spark Open** on Baseten: the whole loop behind one flag
-- [ ] A slide or README table naming each model, what it does and where in the code
+- [x] A README table naming each model, what it does and where in the code ([README](../../README.md#meta-models-and-where-they-are-used))
 - [ ] Something "that surprised even us": the lesson changes itself, grounded in the original page
 
 **Technical depth and execution (20%)**
-- [ ] Guarantees in code, not prompts: risk tier, autopilot ceiling, keep-or-revert, figure and citation validation
-- [ ] 440+ tests pass; new tests for P0.1, P0.3, P0.5, P1.1 (figure ids), P1.6
+- [x] Guarantees in code, not prompts: risk tier, autopilot ceiling, keep-or-revert, figure and citation validation, widget checks, answer-key stripping ([join.test.ts](../../src/app/join.test.ts))
+- [x] 440+ tests pass: 554 on `hackathon/integration` (P-item mapping to tests not re-checked here)
 - [ ] Per-call timeouts, quotas, bounded model-call budgets on every new path
 - [ ] A one-page diagram of the loop
 

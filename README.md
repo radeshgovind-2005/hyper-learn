@@ -1,4 +1,57 @@
-# hyper-learn
+# HyperLearn
+
+**Upload your lecture PDFs; HyperLearn builds a course from them, and when you get stuck it diagnoses what
+you're missing and rewrites that part of the page for you, grounded in the original slides.**
+
+<!-- TODO(J12): screenshot of a lesson with a "Made for you" block, and the video link. Not recorded yet. -->
+> Screenshot and 3-minute video: _to come (J12)_.
+
+```
+  PDFs ─► build (Muse Spark reads text and page pictures, SAM 3.1 crops figures)
+       ─► course: lessons, figures, formulas, quizzes; every block cites its page, fact-checked
+       ─► learner stuck ─► "Ask Muse": one diagnostic question first
+       ─► a personal rewrite, a Muse Image diagram, a widget; "Made for you", with its pages
+       ─► re-check ─► the approach that fixes most learners (a bandit) ─► "Promote to the course"
+       ─► an owner edit through the release harness: validated, risk-tiered, undoable
+```
+
+Agents propose; code decides. The risk tier, autopilot's ceiling, keep-or-revert, citation and figure
+checks, answer-key stripping and every quota live in code, not prompts.
+
+### Meta models, and where they are used
+
+| Model | What it does here | Code |
+| --- | --- | --- |
+| Muse Spark 1.3 | Builds the course (classify, plan, write, examine, fact-check), reads page pictures (vision, strict JSON), runs the tutor's tool loop | `src/generate/`, `src/meta/vision.ts`, `src/tutor/loop.ts` |
+| SAM 3.1 | Refines figure crops on page pictures | `src/meta/sam.ts`, `src/generate/see.ts` |
+| Muse Image 1.0 | Diagrams and storyboard frames for one learner | `src/meta/image.ts`, `src/tutor/storyboard.ts` |
+| Muse Voice Transcribe 1.0 | Push-to-talk through a Worker relay (the key never reaches the browser) | `worker/voice.ts`, `src/tutor/voice.ts`, `web/src/hooks/useVoice.ts` |
+| Muse Wonder 1.0 | Optional independent check of a personal rewrite (`TUTOR_VERIFIER=on`) | `src/tutor/verify.ts` |
+| Muse Spark Open (Baseten) | The open-weights choice for a course's text model (`OPEN_WEIGHTS_BASE_URL`); not yet run end to end | `src/models.ts` |
+
+### Built during the hackathon (history starts 2026-10-28)
+
+- **Oct 28–29:** the self-repairing course core: curator, reflection, release harness (trial, keep or revert), learner events pinned to releases; studio courses per Durable Object; the course generator.
+- **Oct 30:** Studio UI (upload, key, build, publish), owner edits, the study coach (diagnose, repair, re-check), paging and scale work.
+- **Nov 1, stream A** ([notes](docs/hackathon/notes-A.md)): the original PDF and a real page viewer with the cited lines highlighted, deep links, KaTeX and tables, figures found by vision + SAM, a provenance chip on every block, no answer keys in learners' browsers, `explorer` and `compare` widgets.
+- **Nov 1, stream B** ([notes](docs/hackathon/notes-B.md)): the "Ask Muse" dock (tool loop on Spark), personal blocks, voice, Muse Image diagrams and storyboards, the Thompson-sampling bandit and promotion, the open-weights switch, the Wonder verifier.
+- **Nov 1, the join** ([notes](docs/hackathon/notes-join.md)): the two streams wired together and smoke-tested in workerd with a real Meta key.
+
+Judging checklist with evidence: [`docs/hackathon/PLAN.md` §7](docs/hackathon/PLAN.md#7-checklist-against-what-the-judges-score).
+
+### Run it
+
+```bash
+npm install
+npm run typecheck && npm test           # no model server or key needed
+npm run build:web && npm run dev:worker  # http://localhost:8787; set MODEL_API_KEY etc. in .dev.vars
+```
+
+A studio course uses its owner's Meta key, entered in the UI. More in [Setup](#setup) below.
+
+---
+
+## How it works inside
 
 **HyperLearn** is an adaptive learning platform built on a self-correcting hypergraph (lessons → sections →
 blocks, with prerequisites and named misconceptions). Agents diagnose the course from learners' answers and
