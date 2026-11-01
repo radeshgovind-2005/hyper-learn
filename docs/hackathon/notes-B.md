@@ -1,7 +1,7 @@
 # Stream B hand-off: the tutor, voice, pictures and the mutation loop
 
-Branch `hackathon/b-tutor` from `origin/main`, built 2026-11-01. `npm run typecheck`, `npm test` (470 tests,
-32 new) and `npm run build:web` pass. Smoke-tested in workerd (`wrangler dev --port 8799 --persist-to <scratch>
+Branch `hackathon/b-tutor` from `origin/main`, built 2026-11-01. `npm run typecheck`, `npm test` (471 tests,
+33 new) and `npm run build:web` pass. Smoke-tested in workerd (`wrangler dev --port 8799 --persist-to <scratch>
 --var AUTH_DEV_BYPASS:true`) with a real Meta key on a studio course built by the real generator.
 
 ## What was built
