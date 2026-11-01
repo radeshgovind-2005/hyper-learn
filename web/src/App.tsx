@@ -7,6 +7,8 @@ import { AskForm, EditStatus } from "./components/EditPanel.js";
 import { Drawer } from "./components/Drawer.js";
 import { HistoryDrawer } from "./components/HistoryDrawer.js";
 import { LessonView } from "./components/LessonView.js";
+import { PersonalLayer, usePersonalBlocks } from "./components/PersonalLayer.js";
+import { TutorDock } from "./components/TutorDock.js";
 import { RepairDrawer } from "./components/RepairDrawer.js";
 import { Shell } from "./components/Shell.js";
 import { TuneButton } from "./components/TuneButton.js";
@@ -18,7 +20,7 @@ import { JoinCourse } from "./pages/JoinCourse.js";
 import { LearnerDetail, Learners } from "./pages/Learners.js";
 import { MyProgress } from "./pages/MyProgress.js";
 import { Studio } from "./pages/Studio.js";
-import type { AgentState, Call, CitedSource, CourseSnapshot, LessonProgress, Me, Overview, ServedRelease } from "./types.js";
+import type { AgentState, Call, CitedSource, CourseSnapshot, LessonProgress, Me, Overview, ServedRelease, StreamCall, TutorAction } from "./types.js";
 
 type Route =
   | { page: "new" }
@@ -92,6 +94,8 @@ function CourseApp({ courseId, base, rest, directory }: { courseId: string; base
     onStateUpdate: (state) => state.overview && setOverview(state.overview),
   });
   const call: Call = useCallback((method, args = []) => agent.call(method, args), [agent]);
+  const stream: StreamCall = useCallback((method, args, handlers) => void agent.call(method, args, { stream: handlers }).catch((e: unknown) => handlers.onError(e instanceof Error ? e.message : String(e))), [agent]);
+  const token = useCallback(async () => (await query()).token, [query]);
 
   const published = overview ? overview.live !== null : null;
   useEffect(() => {
@@ -174,6 +178,30 @@ function CourseApp({ courseId, base, rest, directory }: { courseId: string; base
     openLesson(lesson);
     setTimeout(() => document.getElementById(section)?.scrollIntoView({ behavior: "smooth", block: "start" }), 50);
   };
+
+  // The tutor's personal blocks on the lesson in view, and what its answers ask the page to do.
+  const learningLive = Boolean(snapshot && published && viewVersion === null && rest === "");
+  const [personalVersion, setPersonalVersion] = useState(0);
+  const bumpPersonal = useCallback(() => setPersonalVersion((v) => v + 1), []);
+  const personal = usePersonalBlocks(call, lessonId, personalVersion, learningLive && Boolean(lessonId));
+  const onTutorAction = useCallback(
+    (action: TutorAction) => {
+      if (action.kind === "open_source") {
+        const source = cited.get(action.source);
+        if (source) openSource({ source, page: action.page, passage: "", owner: false });
+        return;
+      }
+      if (action.lesson !== lessonId) openLesson(action.lesson);
+      setTimeout(() => {
+        const element = document.getElementById(action.section);
+        element?.scrollIntoView({ behavior: "smooth", block: "start" });
+        element?.classList.add("tutor-highlight");
+        setTimeout(() => element?.classList.remove("tutor-highlight"), 2_500);
+      }, 80);
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [cited, openSource, lessonId],
+  );
 
   const running = status === "running";
   const waiting = status === "awaiting_approval";
@@ -297,6 +325,17 @@ function CourseApp({ courseId, base, rest, directory }: { courseId: string; base
         }}
         {...(editable && { sectionTools: (section) => <TuneButton call={call} sectionId={section.id} busy={editBusy} onRequested={() => setDrawer("repair")} /> })}
         citations={citations}
+        {...(learningLive && {
+          sectionFooter: (section) => (
+            <PersonalLayer
+              call={call}
+              blocks={personal.blocks.filter((b) => b.section === section.id)}
+              sources={cited}
+              open={(s, page) => openSource({ source: s, page, passage: "", owner: false })}
+              onChanged={bumpPersonal}
+            />
+          ),
+        })}
       />
     );
   } else {
@@ -357,6 +396,7 @@ function CourseApp({ courseId, base, rest, directory }: { courseId: string; base
       }
     >
       {page}
+      {learningLive && lessonId && <TutorDock call={call} stream={stream} courseId={courseId} lessonId={lessonId} token={token} onAction={onTutorAction} onBlocks={bumpPersonal} />}
     </Shell>
   );
 }
