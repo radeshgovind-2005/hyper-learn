@@ -466,3 +466,31 @@ describe("tutor: where it runs", () => {
     assert.match(toolMessages(seen[1]!)[0]!.content, /Personal rewrites need a course built from its own pages/);
   });
 });
+
+describe("tutor: the independent verifier (B8)", () => {
+  it("turns a disagreement into a doubt on the block, and a failed check leaves the first verdict", async () => {
+    let mode: "disagree" | "fail" = "disagree";
+    const { s, lesson, section } = await course({
+      tutor: {
+        verifier: async () => {
+          if (mode === "fail") throw new Error("verifier down");
+          return { supported: false, unsupported: ['"notches are weekly" — the page says daily'] };
+        },
+      },
+    });
+    // Each on its own section: through a shortcut, a second learner on the same section would get the first one's block.
+    const rewrite = async (who: string, sectionId = section.id) => {
+      const { model } = scripted([uses(call("rewrite_for_me", { section: sectionId, note: "" })), says("ok")]);
+      (s as unknown as { options: { tutor: TutorOptions } }).options.tutor.model = () => model;
+      const turn = await s.tutorTurn(who, { lesson: lesson.id, section: sectionId, text: "help", shortcut: "explain" });
+      for (const b of turn.blocks) await s.continuePersonal(who, b.id);
+      return s.personalBlocks(who, lesson.id)[0]!;
+    };
+    const doubted = await rewrite("user_a");
+    assert.equal(doubted.provenance!.fact_check, "doubted");
+    assert.match(doubted.problems[0]!, /page says daily/);
+    mode = "fail";
+    const kept = await rewrite("user_b", lesson.sections[1]!.id);
+    assert.equal(kept.provenance!.fact_check, "supported");
+  });
+});
