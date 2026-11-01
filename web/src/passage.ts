@@ -3,9 +3,12 @@
 // is scored by the longer words it shares with the block, and the best piece is highlighted together
 // with up to two neighbours that score nearly as well.
 
-/** Lowercase words of 4+ letters: short ones ("the", "and") match everything. */
+/**
+ * Lowercase words of 4+ letters (short ones like "the" match everything), and any token with a digit in it
+ * ("L1", "32", "100"): on slides the numbers are often what a line is about.
+ */
 function words(text: string): Set<string> {
-  return new Set(text.toLowerCase().match(/[\p{L}\p{N}]{4,}/gu) ?? []);
+  return new Set((text.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? []).filter((w) => w.length >= 4 || /\d/.test(w)));
 }
 
 /** The page cut into pieces that join back into exactly the page text. */

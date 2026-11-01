@@ -10,7 +10,8 @@ if (method === "setModelKey" && raw === '"env"') {
   const key = /^MODEL_API_KEY=(\S+)/m.exec(readFileSync(".env", "utf8"))![1]!;
   args = [key, "muse-spark-1.3"];
 }
-const client = new AgentClient({ agent: "course-agent", name: course!, host: "localhost:8787", query: { devUser: user!, devRole: role! } });
+// AGENT=directory-agent (course "main") reaches the directory, e.g. to join with an invite.
+const client = new AgentClient({ agent: process.env.AGENT ?? "course-agent", name: course!, host: "localhost:8787", query: { devUser: user!, devRole: role! } });
 await new Promise<void>((resolve, reject) => {
   client.addEventListener("open", () => resolve());
   client.addEventListener("close", (e) => reject(new Error(`closed ${(e as CloseEvent).code}`)));

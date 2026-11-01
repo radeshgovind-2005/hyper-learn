@@ -9,8 +9,8 @@ The demo course is built from Victor Eijkhout's lecture slides for *The Art of H
 
 | File | What it covers | Pages | Source |
 | --- | --- | --- | --- |
-| `hpc_scaling.pdf` | Collectives and their cost model (α, β, γ), speedup and efficiency, Amdahl's and Gustafson's laws, strong and weak scaling | 87 | [vol1/lectures/hpc_scaling.pdf](https://github.com/VictorEijkhout/TheArtofHPC_pdfs/blob/main/vol1/lectures/hpc_scaling.pdf) |
-| `hpc_architecture.pdf` (optional second file) | Memory hierarchy, caches, multicore, NUMA | 56 | [vol1/lectures/hpc_architecture.pdf](https://github.com/VictorEijkhout/TheArtofHPC_pdfs/blob/main/vol1/lectures/hpc_architecture.pdf) |
+| `hpc_scaling.pdf` | Collectives and their cost model (α, β, γ), speedup and efficiency, Amdahl's and Gustafson's laws, strong and weak scaling | 56 | [vol1/lectures/hpc_scaling.pdf](https://github.com/VictorEijkhout/TheArtofHPC_pdfs/blob/main/vol1/lectures/hpc_scaling.pdf) |
+| `hpc_architecture.pdf` (optional second file) | Memory hierarchy, caches, multicore, NUMA | 87 | [vol1/lectures/hpc_architecture.pdf](https://github.com/VictorEijkhout/TheArtofHPC_pdfs/blob/main/vol1/lectures/hpc_architecture.pdf) |
 
 **Licence.** The repository's README, checked 2026-11-01: "All materials are copyright Victor Eijkhout
 2023, and released under a CC-by 4.0 license." ([TheArtofHPC_pdfs](https://github.com/VictorEijkhout/TheArtofHPC_pdfs),
