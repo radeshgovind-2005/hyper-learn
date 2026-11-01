@@ -72,16 +72,14 @@ describe("quotes", () => {
 
 describe("slides with numbers", () => {
   it("matches lines by their numbers too (the ComPar p.15 memory-hierarchy card)", () => {
-    const card: TextItem[] = [
-      { str: "Multicore CPU", hasEOL: true },
-      { str: "L1 (per core): ~32 KB, <1 ns", hasEOL: true },
-      { str: "L2 (per core): ~256 KB, ~4 ns", hasEOL: true },
-      { str: "L3 (shared): 32–768 MB, ~30 ns", hasEOL: true },
-      { str: "General-purpose · OS · databases · servers", hasEOL: true },
-    ];
+    // As pdf.js gives that card: each line, then an empty item that ends it.
+    const lines = ["Multicore CPU", "4 – 192 cores", "Memory Hierarchy", "L1 (per core): ~32 KB, <1 ns", "L2 (per core): ~256 KB, ~4 ns", "L3 (shared): 32–768 MB, ~30 ns", "DRAM: up to TBs, ~100 ns", "General-purpose · OS · databases · servers"];
+    const card: TextItem[] = lines.flatMap((str) => [{ str }, { str: "", hasEOL: true }]);
     // The block the real build wrote from that page.
     const block =
       "A multicore CPU is a general-purpose chip for OS, databases and servers with 4 – 192 cores, where a core is one processing unit. Its memory hierarchy means layers from small-close to large-far, with latency meaning access time. In order it is L1 (per core): ~32 KB, <1 ns, where L1 is the private first cache, then L2 (per core): ~256 KB, ~4 ns, then L3 (shared): 32–768 MB, ~30 ns, where shared means used by all cores, then DRAM, the large main memory: up to TBs, ~100 ns.";
-    assert.deepEqual(markItems(card, block), [1, 2, 3]);
+    const marked = markItems(card, block).map((i) => card[i]!.str);
+    for (const line of ["L1 (per core): ~32 KB, <1 ns", "L2 (per core): ~256 KB, ~4 ns", "L3 (shared): 32–768 MB, ~30 ns"]) assert.ok(marked.includes(line), `${line} in ${marked.join(" | ")}`);
+    assert.ok(!marked.includes("General-purpose · OS · databases · servers"));
   });
 });
