@@ -371,18 +371,29 @@ export async function buildCourse(input: BuildInput, models: BuilderModels, opti
           step("review", `Weak grounding: ${section.id}`, "rejected", bullets(again?.unsupported ?? claims));
         }
       });
-      if (rewritten.length > 0) {
-        const candidate = assemble();
-        if (gate(candidate).length === 0) snapshot = candidate;
-        else {
-          // A rewrite broke a whole-course rule: go back to the validated text for those sections.
-          for (const id of rewritten) {
-            sectionUnits.set(id, { value: before.get(id)!, problems: [], warnings: [] });
-            verdicts.set(id, "doubted"); // the first text, which the fact check doubted
-          }
-          warn(`Rewrites after the fact check broke validation, so ${rewritten.join(", ")} keep their first text`);
+      // A rewrite may break a whole-course rule (a practice question now gives its answer away by length,
+      // say). Only the rewrites the problems name go back to their validated first text; if the problems name
+      // none of them, all do. The rest keep their grounded rewrite.
+      let kept = [...rewritten];
+      const undone: string[] = [];
+      const undo = (ids: readonly string[]) => {
+        for (const id of ids) {
+          sectionUnits.set(id, { value: before.get(id)!, problems: [], warnings: [] });
+          verdicts.set(id, "doubted"); // the first text, which the fact check doubted
         }
+        undone.push(...ids);
+        kept = kept.filter((id) => !ids.includes(id));
+      };
+      for (let round = 0; kept.length > 0; round++) {
+        const found = gate(assemble());
+        if (found.length === 0) {
+          snapshot = assemble();
+          break;
+        }
+        const named = kept.filter((id) => found.some((p) => p.section === id || (!p.section && p.lesson !== undefined && id.startsWith(`${p.lesson}/`))));
+        undo(named.length > 0 && round < 2 ? named : kept);
       }
+      if (undone.length > 0) warn(`Rewrites after the fact check broke validation, so ${undone.join(", ")} keep their first text`);
     }
 
     // 8. Stress test.

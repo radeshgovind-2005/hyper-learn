@@ -197,3 +197,31 @@ describe("quotes (A10)", () => {
     assert.ok(blocks.every((b) => (b.quotes ?? []).length > 0), "the canned writer quotes every page");
   });
 });
+
+describe("rewrites after the fact check", () => {
+  it("undoes only the rewrites that break a whole-course rule, and keeps the others", async () => {
+    const checked = new Map<string, number>();
+    const models = spiedModels({
+      // Every section is doubted once, then supported: each is rewritten once.
+      fact_checker: (prompt, answer) => {
+        const section = /^Section "([^"]+)"/.exec(prompt)![1]!;
+        checked.set(section, (checked.get(section) ?? 0) + 1);
+        return checked.get(section) === 1 ? { supported: false, unsupported: ["A claim the pages don't make."] } : answer;
+      },
+      // In the first lesson, the rewrite's practice question gives its answer away by length.
+      writer: (prompt, answer) =>
+        prompt.includes("A fact check found claims") && prompt.includes("Lesson: Part 1")
+          ? { ...answer, check: { ...answer.check, options: answer.check.options.map((o) => ({ ...o, text: o.correct ? `${o.text} — the full and complete explanation of why it is so` : "No" })) } }
+          : answer,
+    });
+    const result = await buildCourse(INPUT, models, { stress: false, concurrency: 1 });
+    assert.ok(result.ok);
+    const verdict = new Map(result.snapshot.lessons.flatMap((l) => l.sections.map((s) => [s.id, s.blocks.find(isTextBlock)!.provenance!.fact_check] as const)));
+    const [first, ...rest] = result.snapshot.lessons;
+    assert.ok(first!.sections.every((s) => verdict.get(s.id) === "doubted"), "the first lesson's rewrites are undone");
+    assert.ok(rest.flatMap((l) => l.sections).every((s) => verdict.get(s.id) === "supported"), "the other lessons keep their grounded rewrites");
+    const warning = result.report.warnings.find((w) => w.startsWith("Rewrites after the fact check broke validation"))!;
+    assert.ok(first!.sections.every((s) => warning.includes(s.id)));
+    assert.ok(!rest.some((l) => l.sections.some((s) => warning.includes(s.id))));
+  });
+});
