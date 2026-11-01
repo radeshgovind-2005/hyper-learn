@@ -1,6 +1,6 @@
 /* Stream A: the real page viewer, figures and provenance chips. Uses the tokens in styles.css. */
 
-.viewer-bar { flex-wrap: wrap; gap: var(--s2); }
+.viewer-bar { display: flex; flex-direction: column; gap: var(--s2); }
 .viewer-bar .zoom { gap: var(--s1); }
 
 .pdf-frame { width: 100%; overflow: auto; max-height: calc(100vh - 220px); border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface-2); }

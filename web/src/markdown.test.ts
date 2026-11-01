@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import katex from "katex";
-import { extractMath, mathToken, repairLists, segments, withMath } from "./markdown.js";
+import { escapeHtml, extractMath, mathToken, repairLists, segments, withMath } from "./markdown.js";
 
 describe("repairLists", () => {
   it("starts a new paragraph after a list (the live Lesson 1 text)", () => {
@@ -69,5 +69,28 @@ describe("segments", () => {
 
   it("splits a list from the paragraph after it", () => {
     assert.match(html("- Big data, crypto, AI\nSequential programming"), /<\/ul>\n<p>Sequential programming<\/p>/);
+  });
+});
+
+describe("formulas in plain text (a quiz prompt or option)", () => {
+  // MathText: extract the formulas, escape what is left, put the formulas back. A quiz option is never HTML.
+  const plain = (text: string, k: typeof katex | null) => {
+    const { text: rest, math } = extractMath(text);
+    return withMath(escapeHtml(rest), math, k);
+  };
+
+  it("draws the formula and escapes everything around it", () => {
+    const html = plain("$cost = \\alpha + \\beta \\cdot n$, since <b>reduction</b> & more", katex);
+    assert.match(html, /class="katex"/);
+    assert.ok(!html.includes("<b>"), "markup in the text stays text");
+    assert.match(html, /&lt;b&gt;reduction&lt;\/b&gt; &amp; more/);
+  });
+
+  it("shows the TeX as code until KaTeX has loaded, escaped", () => {
+    assert.equal(plain("$x < 2$ holds", null), '<code class="math-pending">x &lt; 2</code> holds');
+  });
+
+  it("leaves text without formulas alone", () => {
+    assert.equal(plain("costs $5 and $7", null), "costs $5 and $7");
   });
 });

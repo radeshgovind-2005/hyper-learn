@@ -1,3 +1,4 @@
+import { MathText } from "./Markdown.js";
 import { useMemo, useState } from "react";
 import type { Certainty, QuizItem, Response } from "../types.js";
 
@@ -90,7 +91,9 @@ function Options({ texts, picked, onPick, multi }: { texts: string[]; picked: nu
             <span className={`mark ${multi ? "square" : ""}`} aria-hidden>
               {multi && on ? "✓" : ""}
             </span>
-            <span>{text}</span>
+            <span>
+              <MathText text={text} />
+            </span>
           </button>
         );
       })}
@@ -124,7 +127,9 @@ function ItemInput({ item, value, onChange }: { item: QuizItem; value: Response 
       return (
         <>
           <Options texts={item.options.map((o) => o.text)} picked={[a!]} onPick={(i) => onChange([i, r!])} />
-          <div className="sub">{item.reason_prompt}</div>
+          <div className="sub">
+            <MathText text={item.reason_prompt} />
+          </div>
           <Options texts={item.reasons.map((o) => o.text)} picked={[r!]} onPick={(i) => onChange([a!, i])} />
         </>
       );
@@ -275,7 +280,9 @@ export function QuizFlow({ quiz, busy, onSubmit }: { quiz: QuizItem[]; busy: boo
           {index + 1} of {quiz.length} · {TYPE_LABEL[item.type]}
           {item.pilot && <span className="chip amber" style={{ marginLeft: 8 }}>pilot · not scored</span>}
         </div>
-        <div className="prompt">{item.prompt}</div>
+        <div className="prompt">
+          <MathText text={item.prompt} />
+        </div>
         <ItemInput item={item} value={answers[index]} onChange={(r) => setAnswers((a) => a.map((v, j) => (j === index ? r : v)))} />
         <div className="certainty">
           <span>How sure are you?</span>

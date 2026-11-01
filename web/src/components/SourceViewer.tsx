@@ -187,32 +187,36 @@ export function SourceViewer({ call, target }: { call: Call; target: SourceTarge
 
   return (
     <div className="stack source-viewer">
-      <div className="row between viewer-bar">
-        <span className="small muted" aria-live="polite">
-          Page {page} of {total}
-        </span>
-        <div className="row">
-          {showPdf && (
-            <div className="row zoom" role="group" aria-label="Zoom">
-              {ZOOMS.map((z) => (
-                <button key={z} className={`btn sm ${zoom === z ? "secondary" : "quiet"}`} aria-pressed={zoom === z} onClick={() => setZoom(z)}>
-                  {z === 1 ? "Fit" : `${z * 100}%`}
-                </button>
-              ))}
-            </div>
-          )}
-          {hasOriginal && (
+      <div className="viewer-bar">
+        <div className="row between">
+          <span className="small muted" aria-live="polite">
+            Page {page} of {total}
+          </span>
+          <div className="row">
+            <button className="btn secondary sm" disabled={page <= 1} onClick={() => setPage((p) => p - 1)}>
+              Previous
+            </button>
+            <button className="btn secondary sm" disabled={page >= total} onClick={() => setPage((p) => p + 1)}>
+              Next
+            </button>
+          </div>
+        </div>
+        {hasOriginal && (
+          <div className="row">
+            {showPdf && (
+              <div className="row zoom" role="group" aria-label="Zoom">
+                {ZOOMS.map((z) => (
+                  <button key={z} className={`btn sm ${zoom === z ? "secondary" : "quiet"}`} aria-pressed={zoom === z} onClick={() => setZoom(z)}>
+                    {z === 1 ? "Fit" : `${z * 100}%`}
+                  </button>
+                ))}
+              </div>
+            )}
             <button className="btn quiet sm" aria-pressed={asText} onClick={() => setAsText((t) => !t)}>
               {asText ? "Page" : "Text"}
             </button>
-          )}
-          <button className="btn secondary sm" disabled={page <= 1} onClick={() => setPage((p) => p - 1)}>
-            Previous
-          </button>
-          <button className="btn secondary sm" disabled={page >= total} onClick={() => setPage((p) => p + 1)}>
-            Next
-          </button>
-        </div>
+          </div>
+        )}
       </div>
       {pdfError && <div className="notice">The original page couldn't be shown ({pdfError}), so this is its text.</div>}
       {showPdf ? <PdfPage call={call} target={target} page={page} zoom={zoom} onError={setPdfError} /> : <TextPage call={call} target={target} page={page} />}

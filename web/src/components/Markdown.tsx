@@ -1,5 +1,5 @@
 import { type ReactNode, useEffect, useMemo, useState } from "react";
-import { type Katex, segments, withMath } from "../markdown.js";
+import { escapeHtml, extractMath, type Katex, segments, withMath } from "../markdown.js";
 import type { Call } from "../types.js";
 import { AssetImage } from "./AssetImage.js";
 
@@ -45,4 +45,12 @@ export function Markdown({ markdown, call, className }: { markdown: string; call
       )}
     </div>
   );
+}
+
+/** Plain text (a quiz prompt or option) with its `$…$` formulas drawn by KaTeX. No Markdown and no HTML: the rest stays text. */
+export function MathText({ text }: { text: string }): ReactNode {
+  const { text: plain, math } = extractMath(text);
+  const katex = useKatex(math.length > 0);
+  if (math.length === 0) return <>{text}</>;
+  return <span dangerouslySetInnerHTML={{ __html: withMath(escapeHtml(plain), math, katex) }} />;
 }

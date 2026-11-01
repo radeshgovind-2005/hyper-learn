@@ -225,3 +225,33 @@ describe("rewrites after the fact check", () => {
     assert.ok(!rest.some((l) => l.sections.some((s) => warning.includes(s.id))));
   });
 });
+
+describe("equation crops", () => {
+  const box = { x1: 0.1, y1: 0.1, x2: 0.5, y2: 0.2 };
+  const fig = (id: string, kind: "equation" | "chart"): import("../storage/media.js").Figure => ({
+    id, source: "s1", page: 1, kind, caption: `A ${kind}`, box, table_markdown: null, latex: kind === "equation" ? "S_p = T_1 / T_p" : null, teaches: "",
+  });
+  const figures = [fig("s1/p1/f1", "equation"), fig("s1/p1/f2", "chart")];
+  const section = { id: "l/s", title: "S", pages: [{ source: "s1", page: 1 }] };
+  const draft = (ref: string) => ({
+    blocks: [{ markdown: `Speedup.\n\n![A figure](${ref})`, cites: [{ source: "s1", page: 1, quote: null }] }],
+    check: { prompt: "Which?", options: [{ text: "A", correct: true, feedback: "Yes" }, { text: "B", correct: false, feedback: "No" }] },
+  });
+
+  it("are read as LaTeX for the writer but not offered as pictures", async () => {
+    const { writerPrompt } = await import("./write.js");
+    const lesson = { id: "l", title: "L", summary: "x", prerequisites: [], sections: [section], objectives: [] };
+    const sources = [{ id: "s1", name: "n", role: "material" as const, pages: ["Speedup is S_p = T_1 / T_p."] }];
+    const prompt = writerPrompt({ input: INPUT, sources, lesson, section, figures }, 20_000);
+    assert.match(prompt, /\$\$ S_p = T_1 \/ T_p \$\$/, "the formula is in the page text the writer reads");
+    assert.match(prompt, /fig:s1\/p1\/f2/, "the chart is offered");
+    assert.ok(!prompt.includes("fig:s1/p1/f1"), "the equation's crop is not");
+  });
+
+  it("are refused if the writer shows one anyway, and a chart is accepted", async () => {
+    const { sectionFromDraft } = await import("./write.js");
+    const refused = sectionFromDraft(draft("fig:s1/p1/f1"), section, figures);
+    assert.ok(refused.problems.some((p) => /not a figure on this section's pages/.test(p)));
+    assert.deepEqual(sectionFromDraft(draft("fig:s1/p1/f2"), section, figures).problems, []);
+  });
+});

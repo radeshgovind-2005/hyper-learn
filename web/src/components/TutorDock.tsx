@@ -1,4 +1,6 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { MathText } from "./Markdown.js";
+import { useAgent } from "agents/react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useVoice } from "../hooks/useVoice.js";
 import type { Call, StreamCall, TutorAction, TutorAsk, TutorEvent, TutorInfo, TutorTurnResult } from "../types.js";
 import "../styles/tutor.css";
@@ -29,7 +31,8 @@ function sectionInView(): string | undefined {
 
 export function TutorDock({
   call,
-  stream,
+  query,
+  userId,
   courseId,
   lessonId,
   token,
@@ -37,7 +40,9 @@ export function TutorDock({
   onBlocks,
 }: {
   call: Call;
-  stream: StreamCall;
+  /** The page's token reader (Clerk), for the dock's own socket. */
+  query: () => Promise<{ token: string }>;
+  userId: string | null | undefined;
   courseId: string;
   lessonId: string;
   token: () => Promise<string>;
@@ -59,21 +64,45 @@ export function TutorDock({
   const input = useRef<HTMLTextAreaElement>(null);
   const log = useRef<HTMLDivElement>(null);
 
+  // A tutor turn takes 10-60 s. The page's own socket is replaced every `cacheTtl` (30 s) so its token stays
+  // fresh, and a call still running on it is rejected with "Connection closed". So the streaming turn runs
+  // on a socket of its own: a cache key of its own per mount (never a stale token from an earlier mount), and
+  // a long TTL. The SDK still refreshes the token whenever this socket really drops and reconnects.
+  const mount = useMemo(() => Math.random().toString(36).slice(2), []);
+  const socket = useAgent({
+    agent: "course-agent",
+    name: courseId,
+    query,
+    queryDeps: [userId, mount],
+    cacheTtl: 3_600_000,
+    shouldReconnectOnClose: (event) => event.code < 4000 || event.code >= 5000,
+  });
+  const socketRef = useRef(socket);
+  socketRef.current = socket;
+  const stream: StreamCall = useCallback(
+    (method, args, handlers) => void socketRef.current.call(method, args, { stream: handlers }).catch((e: unknown) => handlers.onError(e instanceof Error ? e.message : String(e))),
+    [],
+  );
+
   const voice = useVoice({ courseId, token, onText: (text) => setDraft(text) });
 
-  // The conversation is per lesson: switching lessons loads that lesson's.
+  // The conversation is per lesson: switching lessons loads that lesson's. `call` changes identity whenever
+  // the connection's token refreshes, and that must not wipe the question being answered, so the effect
+  // reads it through a ref and runs only when the lesson changes.
+  const callRef = useRef(call);
+  callRef.current = call;
   useEffect(() => {
     setMessages([]);
     setAsk(null);
     setAnswered(null);
     setError(null);
-    void call<TutorInfo>("tutorInfo", [lessonId])
+    void callRef.current<TutorInfo>("tutorInfo", [lessonId])
       .then((i) => {
         setInfo(i);
         setMessages(i.history.filter((m) => m.role !== "summary").map((m) => ({ role: m.role as Message["role"], text: m.text })));
       })
       .catch(() => setInfo(null));
-  }, [call, lessonId]);
+  }, [lessonId]);
 
   useEffect(() => {
     log.current?.scrollTo({ top: log.current.scrollHeight });
@@ -188,12 +217,16 @@ export function TutorDock({
             {ask && (
               <div className="tutor-ask">
                 <div className="check-label small">A quick question first</div>
-                <div className="prompt">{ask.prompt}</div>
+                <div className="prompt">
+                  <MathText text={ask.prompt} />
+                </div>
                 <div className="options" role="radiogroup">
                   {ask.options.map((text, i) => (
                     <button key={i} className={`option ${answered?.option === i ? "picked" : ""}`} role="radio" aria-checked={answered?.option === i} disabled={answered !== null} onClick={() => void answer(i)}>
                       <span className="mark" aria-hidden />
-                      <span>{text}</span>
+                      <span>
+                        <MathText text={text} />
+                      </span>
                     </button>
                   ))}
                 </div>

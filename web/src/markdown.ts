@@ -70,6 +70,7 @@ export function extractMath(markdown: string): { text: string; math: MathSpan[] 
 export type Katex = typeof import("katex").default;
 
 const escape = (text: string) => text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+export const escapeHtml = escape;
 
 /** Same rule as ASSET_REF in src/media/contracts.ts (the UI imports no code from the core). */
 const ASSET = /^(fig|gen):([a-z0-9][a-z0-9/_-]{0,79})$/;

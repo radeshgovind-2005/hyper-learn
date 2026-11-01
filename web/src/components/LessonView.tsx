@@ -3,7 +3,7 @@ import { shortName } from "../passage.js";
 import { interventionTracker, useLessonTimer } from "../tracking.js";
 import type { Block, Call, Certainty, CheckResult, CitedSource, CourseSnapshot, Exam, Intervention, QuizItem, QuizResult, Response } from "../types.js";
 import { InterventionView } from "./Interventions.js";
-import { Markdown } from "./Markdown.js";
+import { Markdown, MathText } from "./Markdown.js";
 import { ProvenanceChip } from "./ProvenanceChip.js";
 import { QuizFlow } from "./Quiz.js";
 import { plainPreview, type RailItem, SectionRail } from "./SectionRail.js";
@@ -65,18 +65,22 @@ function CheckView({ block, call, live }: { block: CheckBlock; call: Call; live:
   return (
     <div className="block check">
       <div className="check-label small">Practice</div>
-      <div className="prompt">{block.check.prompt}</div>
+      <div className="prompt">
+        <MathText text={block.check.prompt} />
+      </div>
       <div className="options" role="radiogroup">
         {block.check.options.map((o, i) => (
           <button key={i} className={`option ${picked === i ? "picked" : ""}`} role="radio" aria-checked={picked === i} onClick={() => void pick(i)}>
             <span className="mark" aria-hidden />
-            <span>{o.text}</span>
+            <span>
+              <MathText text={o.text} />
+            </span>
           </button>
         ))}
       </div>
       {result && (
         <div className={`check-feedback ${result.correct ? "right" : "wrong"}`} role="status">
-          <strong>{result.correct ? "Right." : "Not quite."}</strong> {result.feedback}
+          <strong>{result.correct ? "Right." : "Not quite."}</strong> <MathText text={result.feedback} />
         </div>
       )}
       {error && <div className="notice">{error}</div>}

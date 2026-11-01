@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Call, CitedSource, PersonalBlock, PublicPiece } from "../types.js";
 import { InterventionView } from "./Interventions.js";
-import { Markdown } from "./Markdown.js";
+import { Markdown, MathText } from "./Markdown.js";
 import { ProvenanceChip } from "./ProvenanceChip.js";
 import { Storyboard } from "./Storyboard.js";
 import "../styles/tutor.css";
@@ -42,7 +42,9 @@ function PracticeCheck({ call, blockId, piece }: { call: Call; blockId: string; 
   return (
     <div className="block check personal-check">
       <div className="check-label small">Practice</div>
-      <div className="prompt">{piece.prompt}</div>
+      <div className="prompt">
+        <MathText text={piece.prompt} />
+      </div>
       <div className="options" role="radiogroup">
         {piece.options.map((text, i) => (
           <button
@@ -56,13 +58,15 @@ function PracticeCheck({ call, blockId, piece }: { call: Call; blockId: string; 
             }}
           >
             <span className="mark" aria-hidden />
-            <span>{text}</span>
+            <span>
+              <MathText text={text} />
+            </span>
           </button>
         ))}
       </div>
       {result && (
         <div className={`check-feedback ${result.correct ? "right" : "wrong"}`} role="status">
-          <strong>{result.correct ? "Right." : "Not quite."}</strong> {result.feedback}
+          <strong>{result.correct ? "Right." : "Not quite."}</strong> <MathText text={result.feedback} />
         </div>
       )}
     </div>

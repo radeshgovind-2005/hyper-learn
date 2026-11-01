@@ -1,3 +1,4 @@
+import { MathText } from "./Markdown.js";
 import { useEffect, useMemo, useState } from "react";
 import { evaluate, parseFormula } from "../expr.js";
 import type { Intervention } from "../types.js";
@@ -10,7 +11,9 @@ function Check({ question, onAnswered }: { question: CheckQuestion; onAnswered?:
   const [picked, setPicked] = useState<number | null>(null);
   return (
     <div>
-      <div style={{ fontWeight: 600 }}>{question.prompt}</div>
+      <div style={{ fontWeight: 600 }}>
+        <MathText text={question.prompt} />
+      </div>
       <div className="options">
         {question.options.map((option, i) => {
           const state = picked === null ? "" : option.correct ? "right" : picked === i ? "wrong" : "";
@@ -28,8 +31,12 @@ function Check({ question, onAnswered }: { question: CheckQuestion; onAnswered?:
                 {state === "right" ? "✓" : state === "wrong" ? "✕" : ""}
               </span>
               <span>
-                {option.text}
-                {picked !== null && (picked === i || option.correct) && <div className="feedback">{option.feedback}</div>}
+                <MathText text={option.text} />
+                {picked !== null && (picked === i || option.correct) && (
+                  <div className="feedback">
+                    <MathText text={option.feedback} />
+                  </div>
+                )}
               </span>
             </button>
           );

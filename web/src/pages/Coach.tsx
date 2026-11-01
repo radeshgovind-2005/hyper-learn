@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { InterventionView } from "../components/Interventions.js";
 import type { Citations } from "../components/LessonView.js";
-import { Markdown } from "../components/Markdown.js";
+import { Markdown, MathText } from "../components/Markdown.js";
 import { QuizFlow } from "../components/Quiz.js";
 import { shortName } from "../passage.js";
 import type { Call, Certainty, CourseSnapshot, Response } from "../types.js";
@@ -107,7 +107,9 @@ function PersonalLesson({ call, repairId, lesson, citations }: { call: Call; rep
       ))}
       <div className="block check">
         <div className="check-label small">Practice</div>
-        <div className="prompt">{check.prompt}</div>
+        <div className="prompt">
+          <MathText text={check.prompt} />
+        </div>
         <div className="options" role="radiogroup">
           {check.options.map((o, i) => (
             <button
@@ -122,7 +124,9 @@ function PersonalLesson({ call, repairId, lesson, citations }: { call: Call; rep
               }}
             >
               <span className="mark" aria-hidden />
-              <span>{o.text}</span>
+              <span>
+                <MathText text={o.text} />
+              </span>
             </button>
           ))}
         </div>

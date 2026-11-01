@@ -75,13 +75,18 @@ export function AssetImage({ call, kind, id, alt }: { call: Call | undefined; ki
     );
   }
   // The crop: the page image scaled so the box fills a frame of the box's own shape.
-  const w = Math.max(0.01, box.x2 - box.x1);
-  const h = Math.max(0.01, box.y2 - box.y1);
+  // The stored box hugs what vision and SAM found, and clips the edges of a line of text, so it gets a margin
+  // in proportion to its size (more above and below than at the sides), kept inside the page.
+  const padX = Math.max(0.02, (box.x2 - box.x1) * 0.06);
+  const padY = Math.max(0.025, (box.y2 - box.y1) * 0.4);
+  const padded = { x1: Math.max(0, box.x1 - padX), y1: Math.max(0, box.y1 - padY), x2: Math.min(1, box.x2 + padX), y2: Math.min(1, box.y2 + padY) };
+  const w = Math.max(0.01, padded.x2 - padded.x1);
+  const h = Math.max(0.01, padded.y2 - padded.y1);
   return (
     <figure className="asset">
       {/* At most 640 px wide and 420 px tall, so a tall, narrow figure doesn't fill the screen. */}
       <div className="asset-crop" style={{ aspectRatio: `${w * loaded.aspect} / ${h}`, maxWidth: `${Math.min(640, 420 * ((w * loaded.aspect) / h))}px` }} role="img" aria-label={caption}>
-        <img src={loaded.src} alt="" style={{ width: `${100 / w}%`, height: `${100 / h}%`, left: `${(-box.x1 / w) * 100}%`, top: `${(-box.y1 / h) * 100}%` }} />
+        <img src={loaded.src} alt="" style={{ width: `${100 / w}%`, height: `${100 / h}%`, left: `${(-padded.x1 / w) * 100}%`, top: `${(-padded.y1 / h) * 100}%` }} />
       </div>
       {caption && <figcaption>{caption}</figcaption>}
     </figure>

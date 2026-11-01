@@ -1,5 +1,5 @@
 import { useAgent } from "agents/react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router";
 import { CoursePanel } from "./components/CoursePanel.js";
 import { CourseSwitcher } from "./components/CourseSwitcher.js";
@@ -22,7 +22,7 @@ import { JoinCourse } from "./pages/JoinCourse.js";
 import { LearnerDetail, Learners } from "./pages/Learners.js";
 import { MyProgress } from "./pages/MyProgress.js";
 import { Studio } from "./pages/Studio.js";
-import type { AgentState, Call, CitedSource, CourseSnapshot, LessonProgress, Me, Overview, ServedRelease, StreamCall, TutorAction } from "./types.js";
+import type { AgentState, Call, CitedSource, CourseSnapshot, LessonProgress, Me, Overview, ServedRelease, TutorAction } from "./types.js";
 
 type Route =
   | { page: "new" }
@@ -97,7 +97,6 @@ function CourseApp({ courseId, base, rest, directory }: { courseId: string; base
     onStateUpdate: (state) => state.overview && setOverview(state.overview),
   });
   const call: Call = useCallback((method, args = []) => agent.call(method, args), [agent]);
-  const stream: StreamCall = useCallback((method, args, handlers) => void agent.call(method, args, { stream: handlers }).catch((e: unknown) => handlers.onError(e instanceof Error ? e.message : String(e))), [agent]);
   const token = useCallback(async () => (await query()).token, [query]);
 
   const published = overview ? overview.live !== null : null;
@@ -416,7 +415,12 @@ function CourseApp({ courseId, base, rest, directory }: { courseId: string; base
       }
     >
       {page}
-      {learningLive && lessonId && <TutorDock call={call} stream={stream} courseId={courseId} lessonId={lessonId} token={token} onAction={onTutorAction} onBlocks={bumpPersonal} />}
+      {learningLive && lessonId && (
+        // Own socket, so a tutor turn isn't cut off when the page's socket is replaced (see TutorDock). Suspends while it gets its token.
+        <Suspense fallback={null}>
+          <TutorDock call={call} query={query} userId={userId} courseId={courseId} lessonId={lessonId} token={token} onAction={onTutorAction} onBlocks={bumpPersonal} />
+        </Suspense>
+      )}
     </Shell>
   );
 }

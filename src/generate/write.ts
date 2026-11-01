@@ -116,6 +116,13 @@ export interface WriterContext {
   figures?: readonly Figure[];
 }
 
+/**
+ * The figures a section may show as pictures. An equation is read as LaTeX and written into the text, so
+ * its crop would only repeat a formula that is already on the page (and a tight crop of a line of small
+ * type clips it). Tables, charts and diagrams are shown.
+ */
+export const embeddable = (figures: readonly Figure[]): Figure[] => figures.filter((f) => f.kind !== "equation");
+
 /** What vision read from a page's picture that its text loses: tables as Markdown, equations as LaTeX. */
 function readFromPicture(figures: readonly Figure[]): string {
   const parts = figures.flatMap((f) => (f.table_markdown ? [`${f.caption}:\n${f.table_markdown}`] : f.latex ? [`${f.caption}: $$ ${f.latex} $$`] : []));
@@ -135,8 +142,8 @@ export function writerPrompt({ input, sources, lesson, section, figures = [] }: 
     languageLine(input.language),
     audienceLine(input.audience),
     `Cite only these pages: ${section.pages.map(pageLabel).join(", ")}.`,
-    figures.length > 0 &&
-      `Figures on these pages. Where one helps, show it on a line of its own as ![caption](fig:ID), and cite its page; use no other ids:\n${figures
+    embeddable(figures).length > 0 &&
+      `Figures on these pages. Where one helps, show it on a line of its own as ![caption](fig:ID), and cite its page; use no other ids:\n${embeddable(figures)
         .map((f) => `- fig:${f.id} (${f.kind}, ${f.source} p.${f.page}): ${f.caption}${f.teaches ? ` It shows: ${f.teaches}` : ""}`)
         .join("\n")}`,
   ]
@@ -166,9 +173,9 @@ export function sectionFromDraft(
   const problems: string[] = [];
   const allowed = section.pages.map(pageLabel);
   const blocks: WrittenBlock[] = [];
-  const shown = new Set(figures.map((f) => `fig:${f.id}`));
+  const shown = new Set(embeddable(figures).map((f) => `fig:${f.id}`));
   let dropped = 0;
-  const ids = figures.map((f) => `fig:${f.id}`).join(", ") || "none";
+  const ids = [...shown].join(", ") || "none";
 
   draft.blocks.forEach((block, i) => {
     for (const [, ref] of block.markdown.matchAll(FIGURE_REF)) {
