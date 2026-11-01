@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { findPassage, findQuote, markItems, type TextItem } from "./passage.js";
+import { findPassage, findQuote, joinLines, markItems, type TextItem } from "./passage.js";
 
 // The viewer highlights the cited lines on the real page: scored on pdf.js text items, not only on lines.
 
@@ -81,5 +81,18 @@ describe("slides with numbers", () => {
     const marked = markItems(card, block).map((i) => card[i]!.str);
     for (const line of ["L1 (per core): ~32 KB, <1 ns", "L2 (per core): ~256 KB, ~4 ns", "L3 (shared): 32–768 MB, ~30 ns"]) assert.ok(marked.includes(line), `${line} in ${marked.join(" | ")}`);
     assert.ok(!marked.includes("General-purpose · OS · databases · servers"));
+  });
+});
+
+describe("joinLines", () => {
+  it("makes one box per line from per-glyph marks, but keeps other lines and columns apart", () => {
+    const glyphs = [0, 6, 12, 18].map((left) => ({ left, top: 100, width: 5, height: 10 }));
+    const nextLine = { left: 0, top: 115, width: 30, height: 10 };
+    const otherColumn = { left: 300, top: 100, width: 30, height: 10 };
+    assert.deepEqual(joinLines([...glyphs, nextLine, otherColumn]), [
+      { left: 0, top: 100, width: 23, height: 10 },
+      { left: 300, top: 100, width: 30, height: 10 },
+      { left: 0, top: 115, width: 30, height: 10 },
+    ]);
   });
 });

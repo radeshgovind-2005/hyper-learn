@@ -2,7 +2,7 @@ import type { PDFDocumentProxy } from "pdfjs-dist";
 import type { TextItem as PdfTextItem } from "pdfjs-dist/types/src/display/api.js";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { fetchOriginal, loadPdfjs } from "../files.js";
-import { findPassage, markItems } from "../passage.js";
+import { findPassage, joinLines, type Mark, markItems } from "../passage.js";
 import type { Call, CitedSource, Figure, SourcePage } from "../types.js";
 import "../styles/viewer.css";
 
@@ -36,14 +36,6 @@ function openDocument(call: Call, owner: boolean, source: CitedSource): Promise<
   return pending;
 }
 
-interface Mark {
-  left: number;
-  top: number;
-  width: number;
-  height: number;
-  /** A figure's outline rather than highlighted text. */
-  box?: boolean;
-}
 
 /** The figure a block that is only a picture shows (`![…](fig:s1/p15/f1)`): the viewer outlines it on the page. */
 const FIGURE_BLOCK = /^\s*!\[[^\]]*\]\(fig:([a-z0-9][a-z0-9/_-]{0,79})\)\s*$/;
@@ -101,12 +93,14 @@ function PdfPage({ call, target, page, zoom, onError }: { call: Call; target: So
         const pdfjs = await loadPdfjs();
         const items = (content?.items ?? []).filter((item): item is PdfTextItem => "str" in item);
         setMarks(
-          markItems(items, target.passage).map((i) => {
-            const item = items[i]!;
-            const [, , c, d, x, y] = pdfjs.Util.transform(viewport.transform, item.transform) as number[];
-            const height = Math.hypot(c!, d!);
-            return { left: x!, top: y! - height, width: item.width * scale, height: height * 1.15 };
-          }),
+          joinLines(
+            markItems(items, target.passage).map((i) => {
+              const item = items[i]!;
+              const [, , c, d, x, y] = pdfjs.Util.transform(viewport.transform, item.transform) as number[];
+              const height = Math.hypot(c!, d!);
+              return { left: x!, top: y! - height, width: item.width * scale, height: height * 1.15 };
+            }),
+          ),
         );
         setLoading(false);
       } catch (e) {

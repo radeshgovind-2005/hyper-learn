@@ -102,3 +102,42 @@ export function markItems(items: readonly TextItem[], block: string | undefined)
   const to = from + parts.slice(marked[0], marked[1] + 1).join("").length;
   return spans.flatMap(([start, end], i) => (end > start && start < to && end > from ? [i] : []));
 }
+
+/** A highlight on a rendered page, in CSS pixels. */
+export interface Mark {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+  /** A figure's outline rather than highlighted text. */
+  box?: boolean;
+}
+
+/**
+ * Marks on one line become one: PDFs from LaTeX give a text item per word or even per glyph, and a box
+ * around each reads as noise. Marks are on one line when their vertical extents mostly overlap and they are
+ * near each other (not in the next column).
+ */
+export function joinLines(marks: readonly Mark[]): Mark[] {
+  const lines: Mark[] = [];
+  for (const m of [...marks].sort((a, b) => a.top - b.top || a.left - b.left)) {
+    // Same line, and close enough not to be the next column of a slide.
+    const line = lines.find(
+      (l) =>
+        Math.min(l.top + l.height, m.top + m.height) - Math.max(l.top, m.top) > 0.5 * Math.min(l.height, m.height) &&
+        Math.max(l.left, m.left) - Math.min(l.left + l.width, m.left + m.width) < 2 * Math.max(l.height, m.height),
+    );
+    if (!line) {
+      lines.push({ ...m });
+      continue;
+    }
+    const right = Math.max(line.left + line.width, m.left + m.width);
+    const bottom = Math.max(line.top + line.height, m.top + m.height);
+    line.left = Math.min(line.left, m.left);
+    line.top = Math.min(line.top, m.top);
+    line.width = right - line.left;
+    line.height = bottom - line.top;
+  }
+  return lines;
+}
+
