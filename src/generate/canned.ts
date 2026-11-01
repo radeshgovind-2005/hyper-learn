@@ -74,7 +74,8 @@ export function cannedSection(prompt: string): SectionDraft {
       prompt: cut(`Which statement agrees with the section "${title}"?`, 290),
       options: [
         { text: claim, correct: true, feedback: "Right: this is what the section explains." },
-        { text: "The section says the opposite of this.", correct: false, feedback: "Not quite: reread the first paragraph." },
+        // As long as the right one, as the writer is told: the code checks reject answers given away by length.
+        { text: cut(`The section says the opposite of this: ${claim}`, 199), correct: false, feedback: "Not quite: reread the first paragraph." },
         { text: "The section does not discuss this topic.", correct: false, feedback: "It does: the first paragraph is about it." },
       ],
     },

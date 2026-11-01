@@ -49,7 +49,8 @@ function CheckView({ block, call, live }: { block: CheckBlock; call: Call; live:
     setPicked(i);
     setError(null);
     const option = block.check.options[i]!;
-    if (!live) return setResult({ correct: option.correct, feedback: option.feedback });
+    // Learners' copies carry no key (src/assessment/view.ts): an earlier release's check can't be answered here.
+    if (!live) return setResult(option.correct === undefined ? null : { correct: option.correct, feedback: option.feedback });
     try {
       setResult(await call<CheckResult>("answerCheck", [block.id, i]));
     } catch (e) {

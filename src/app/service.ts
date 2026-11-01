@@ -29,6 +29,7 @@ import { PersistentMemorySaver } from "../storage/checkpointer.js";
 import { type LearnerEvent, type Sql, SqlEventLog, SqlMeta, SqlProfiles, SqlReleaseStore, SqlThreadStore } from "../storage/sql.js";
 import { type Member, SqlMembers, SqlSharedRepairs, SqlSources, type SourceSummary } from "../storage/studio.js";
 import { base64Size, type FileChunk, MEDIA_LIMITS, SqlMedia, type StoredFile } from "../storage/media.js";
+import { fromLearnerResponse, learnerItem, learnerSnapshot } from "../assessment/view.js";
 import type { Identity as Person } from "../auth/identity.js";
 import { COURSE_ROLES, type CourseRole } from "./access.js";
 import { builtInCourse, type CoachRepairer, type CourseBuilder, type CourseDefinition, type CourseEditor, FEATURED_COURSE, isStudioId } from "./courses.js";
@@ -629,6 +630,7 @@ export class CourseService {
     this.meta.set("scenario", scenario?.id ?? "");
     this.meta.set("run", null);
     this.releases.reset(this.startingSnapshot(scenario), this.now);
+    this.learnerViews.clear(); // v1.0.0 may now be another scenario's
     this.events.clear();
     this.profiles.clearStates();
     this.sharedRepairs.clear();
@@ -664,11 +666,43 @@ export class CourseService {
     return { lesson, attempt, items };
   }
 
-  /** The questions this learner's next attempt at a lesson shows, on the release they are served. */
-  exam(learner: string, lessonId: string): Exam {
+  /**
+   * The questions this learner's next attempt at a lesson shows, on the release they are served. With
+   * `view`, as a learner's browser gets them: without the answer key (src/assessment/view.ts); submitQuiz
+   * must then be told the answers are on that view.
+   */
+  exam(learner: string, lessonId: string, view = false): Exam {
     const release = this.servedRelease(learner);
     const { attempt, items } = this.draw(learner, release, lessonId);
-    return { release: release.version, lesson: lessonId, attempt, items };
+    const salt = view ? this.itemSalt() : "";
+    return { release: release.version, lesson: lessonId, attempt, items: view ? items.map((item) => learnerItem(item, salt)) : items };
+  }
+
+  /**
+   * A release as a learner's browser gets it: no answer keys, and ordered answers shuffled by this
+   * course's salt. Release content never changes, so the view is made once per version and kept.
+   */
+  learnerSnapshot(version?: string): CourseSnapshot {
+    const snapshot = this.snapshot(version);
+    let view = this.learnerViews.get(snapshot.version);
+    if (!view) {
+      view = learnerSnapshot(snapshot, this.itemSalt());
+      if (this.learnerViews.size >= 4) this.learnerViews.delete(this.learnerViews.keys().next().value!);
+      this.learnerViews.set(snapshot.version, view);
+    }
+    return view;
+  }
+
+  private readonly learnerViews = new Map<string, CourseSnapshot>();
+
+  /** A random secret per course: learners can't recompute how their ordering questions were shuffled. */
+  private itemSalt(): string {
+    let salt = this.meta.get<string>("item_salt");
+    if (!salt) {
+      salt = this.newId();
+      this.meta.set("item_salt", salt);
+    }
+    return salt;
   }
 
   /**
@@ -676,7 +710,7 @@ export class CourseService {
    * `item_ids` are the questions exam() drew, in the order answered; they must match the draw the server
    * recomputes. They may be left out only for a lesson without an exam config (the whole quiz, in order).
    */
-  submitQuiz(learner: string, lessonId: string, answers: Response[], certainty: Certainty[], session?: string, item_ids?: string[]): QuizResult {
+  submitQuiz(learner: string, lessonId: string, answers: Response[], certainty: Certainty[], session?: string, item_ids?: string[], view = false): QuizResult {
     if (!Array.isArray(answers) || !Array.isArray(certainty)) throw new Error("Send answers and certainty as lists");
     if (item_ids !== undefined && !(Array.isArray(item_ids) && item_ids.every((id) => typeof id === "string"))) throw new Error("item_ids must be a list of question ids");
     if (certainty.some((c) => c !== 1 && c !== 2 && c !== 3)) throw new Error("Certainty is 1, 2 or 3");
@@ -691,6 +725,11 @@ export class CourseService {
     }
     if (answers.length !== drawn.length) throw new Error(`Expected ${drawn.length} answers, got ${answers.length}`);
     if (certainty.length !== drawn.length) throw new Error(`Expected ${drawn.length} certainty ratings, got ${certainty.length}`);
+    // Answers given on the learner's view of the questions come back in their shuffled order.
+    if (view) {
+      const salt = this.itemSalt();
+      answers = answers.map((answer, i) => fromLearnerResponse(drawn[i]!, answer, salt));
+    }
 
     // Short answers arrive as plain text. Without a calibrated grader they are kept for a human to review, unscored.
     const responses = answers.map((answer, i) =>

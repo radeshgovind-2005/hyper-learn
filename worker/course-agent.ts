@@ -474,10 +474,17 @@ export class CourseAgent extends Agent<Env, CourseAgentState> {
     return this.app.overview();
   }
 
+  /** A release; learners get it without answer keys (people who may repair the course get all of it). */
   @callable()
   snapshot(version?: string) {
-    const { userId } = this.actor("learn");
-    return this.app.snapshot(version ?? this.app.myRelease(userId).version);
+    const identity = this.actor("learn");
+    const v = version ?? this.app.myRelease(identity.userId).version;
+    return this.seesAnswers(identity) ? this.app.snapshot(v) : this.app.learnerSnapshot(v);
+  }
+
+  /** Whether someone may see answer keys: whoever may repair the course (owners, editors, instructors, admins). */
+  private seesAnswers(identity: Identity): boolean {
+    return coursePermissions(this.access(identity)).includes("repair");
   }
 
   /** The release the caller is served: during a trial on real learners, half of learners get the trial. */
@@ -490,15 +497,15 @@ export class CourseAgent extends Agent<Env, CourseAgentState> {
   /** The questions the caller's next attempt at a lesson shows (drawn per attempt for lessons with an exam). */
   @callable()
   exam(lesson: string) {
-    const { userId } = this.actor("learn");
-    return this.app.exam(userId, String(lesson));
+    const identity = this.actor("learn");
+    return this.app.exam(identity.userId, String(lesson), !this.seesAnswers(identity));
   }
 
-  /** `item_ids`: the questions exam() returned, in the order answered. */
+  /** `item_ids`: the questions exam() returned, in the order answered; learners answer on the view without keys. */
   @callable()
   submitQuiz(lesson: string, answers: Response[], certainty: Certainty[], item_ids?: string[]): QuizResult {
-    const { userId } = this.actor("learn");
-    return this.app.submitQuiz(userId, String(lesson), answers, certainty, this.connectionId(), item_ids);
+    const identity = this.actor("learn");
+    return this.app.submitQuiz(identity.userId, String(lesson), answers, certainty, this.connectionId(), item_ids, !this.seesAnswers(identity));
   }
 
   /** An answer to a practice check after a section: its feedback, recorded as evidence. */
