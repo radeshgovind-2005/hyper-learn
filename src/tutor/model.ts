@@ -28,7 +28,8 @@ export function chatTutorModel(chat: ChatOpenAI): TutorModel {
     async step(messages, tools: readonly ToolSpec[], onText, signal): Promise<ModelStep> {
       const bound = chat.bindTools(tools.map((t) => ({ name: t.name, description: t.description, schema: t.schema })));
       let message: AIMessageChunk | undefined;
-      for await (const chunk of await bound.stream(toLangChain(messages), { signal })) {
+      // Low reasoning effort: about a quarter faster per step on Spark (B0); the tools carry the hard parts.
+      for await (const chunk of await bound.stream(toLangChain(messages), { signal, reasoning: { effort: "low" } })) {
         if (typeof chunk.content === "string" && chunk.content) onText(chunk.content);
         message = message ? message.concat(chunk) : chunk;
       }

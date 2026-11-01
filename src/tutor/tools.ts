@@ -157,7 +157,9 @@ export async function runTool(world: TutorWorld, name: string, rawArgs: unknown)
   const tool = name as ToolName;
   const parsed = ARGS[tool].safeParse(rawArgs ?? {});
   if (!parsed.success) {
-    return { content: `Error: bad arguments for ${tool}: ${parsed.error.issues.map((i) => `${i.path.join(".") || "(args)"} ${i.message}`).join("; ")}`, label: "Choosing a tool" };
+    const problems = parsed.error.issues.map((i) => `${i.path.join(".") || "(args)"} ${i.message}`).join("; ");
+    console.warn(`tutor tool ${tool} bad arguments: ${problems.slice(0, 300)}`);
+    return { content: `Error: bad arguments for ${tool}: ${problems}`, label: "Choosing a tool" };
   }
   const args = parsed.data as Record<string, unknown>;
   try {
@@ -228,6 +230,9 @@ export async function runTool(world: TutorWorld, name: string, rawArgs: unknown)
       }
     }
   } catch (error) {
-    return { content: `Refused: ${error instanceof Error ? error.message : String(error)}`, label: "Checking" };
+    const reason = error instanceof Error ? error.message : String(error);
+    // A refusal costs the turn another model call; logged (tool and reason only) so the prompts can be tuned.
+    console.warn(`tutor tool ${tool} refused: ${reason.slice(0, 300)}`);
+    return { content: `Refused: ${reason}`, label: "Checking" };
   }
 }
