@@ -22,3 +22,15 @@ which read `.env` and never print the key). `GET /v1/models` lists `muse-spark-1
 - **Voice path** (S5): browser → Worker route `/agents/voice` (signed in, a course member, within quota) →
   Meta's realtime socket, key added by the Worker. Fallback: the browser's speech recognition, labelled.
 - **Images** (S4): webp as returned, refused above 400 KB, cached by prompt hash.
+
+## Follow-up checks (same day, after building B1–B8)
+
+- **S5 in workerd: pass.** Recorded speech through `/agents/voice` → Meta: partial words while sending, final
+  transcript 206 ms after the end; no token → 401. One fix was needed: with this compatibility date workerd hands
+  binary WebSocket frames over as `Blob`s, so both sockets set `binaryType = "arraybuffer"`. A burst of ~2.4 s of
+  audio sent while the session starts is accepted (final 0.5 s after the end), so the relay holds audio during the
+  ~1–2.5 s handshake instead of making the learner wait.
+- **S6 with the real tutor**: Spark used `ask_me` first, then made up to 7 parallel calls in one step
+  (`read_section`, `read_page`, `go_to`, `open_source`, `rewrite_for_me`, `draw_it`, `interact`).
+  Low reasoning effort: a 3-step loop went from 9.9 s to 7.5 s; real turns 6–24 s.
+- **B8**: `muse-wonder-1.0` with structured output works on the same endpoint and key (5–6 s per check).
