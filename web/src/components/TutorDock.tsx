@@ -79,6 +79,18 @@ export function TutorDock({
     log.current?.scrollTo({ top: log.current.scrollHeight });
   }, [messages, streaming, steps, ask, open]);
 
+  // Escape closes the panel and the menu wherever focus is (a clicked shortcut leaves focus on the page).
+  useEffect(() => {
+    if (!open && !menu) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      setOpen(false);
+      setMenu(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open, menu]);
+
   const send = useCallback(
     (text: string, shortcut?: (typeof SHORTCUTS)[number]["shortcut"]) => {
       const trimmed = text.trim();
@@ -139,7 +151,7 @@ export function TutorDock({
   const listening = voice.state === "listening" || voice.state === "connecting";
 
   return (
-    <div className={`tutor-dock ${open ? "open" : ""}`} onKeyDown={(e) => e.key === "Escape" && (setOpen(false), setMenu(false))}>
+    <div className={`tutor-dock ${open ? "open" : ""}`}>
       {open && (
         <section className="tutor-panel" aria-label="Muse">
           <div className="tutor-panel-head">
@@ -219,10 +231,16 @@ export function TutorDock({
           rows={1}
           value={draft}
           maxLength={1000}
-          placeholder={listening ? (voice.state === "connecting" ? "Connecting…" : "Listening… press the mic again when you're done") : "Ask Muse what you're stuck on…"}
+          placeholder={listening ? (voice.state === "connecting" ? "Connecting…" : "Listening… tap the mic when done") : "What are you stuck on?"}
           aria-label="Ask Muse"
           onFocus={() => messages.length > 0 && setOpen(true)}
           onChange={(e) => setDraft(e.target.value)}
+          onInput={(e) => {
+            // Grows with the text up to five lines, then scrolls.
+            const box = e.currentTarget;
+            box.style.height = "auto";
+            box.style.height = `${Math.min(box.scrollHeight, 120)}px`;
+          }}
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.shiftKey) {
               e.preventDefault();

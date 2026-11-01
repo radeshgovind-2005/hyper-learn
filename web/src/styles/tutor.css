@@ -33,12 +33,15 @@
   padding: 6px 0;
   max-height: 120px;
   line-height: 1.5;
+  overflow-y: auto;
+  scrollbar-width: none;
 }
+.tutor-input::placeholder { color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .tutor-bar .icon-btn { flex: none; }
 .tutor-plus { font-size: 20px; line-height: 1; }
 .tutor-mic.on { background: var(--red-soft); color: var(--red); animation: tutor-pulse 1.4s ease-in-out infinite; }
 @keyframes tutor-pulse { 50% { box-shadow: 0 0 0 6px rgba(201, 48, 44, 0.12); } }
-.tutor-menu-wrap { position: relative; }
+.tutor-menu-wrap { position: relative; z-index: 2; }
 .tutor-menu {
   position: absolute;
   bottom: calc(100% + var(--s2));

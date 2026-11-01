@@ -55,7 +55,8 @@ export class CourseAgent extends Agent<Env, CourseAgentState> {
           ? {
               agentsAvailable: Boolean(env.MODEL_API_KEY && env.MODEL_BASE_URL),
               models: new ModelProvider(modelConfigFromEnv(env)),
-              ...(env.MODEL_API_KEY && env.MODEL_BASE_URL && { tutor: { meta: { baseURL: env.MODEL_BASE_URL, apiKey: env.MODEL_API_KEY } } }),
+              // The tutor on a built-in course spends the Worker's own key for every signed-in person: only when TUTOR_FEATURED=on.
+              ...(env.TUTOR_FEATURED === "on" && env.MODEL_API_KEY && env.MODEL_BASE_URL && { tutor: { meta: { baseURL: env.MODEL_BASE_URL, apiKey: env.MODEL_API_KEY } } }),
             }
           : {
               // The tutor's independent verifier (Muse Wonder) is one extra call per personal rewrite: on when TUTOR_VERIFIER=on.

@@ -451,3 +451,18 @@ describe("tutor: the open-weights switch (B7)", () => {
     await assert.rejects(s.metaConfig(), /need a Meta model key/);
   });
 });
+
+describe("tutor: where it runs", () => {
+  it("is off on a built-in course unless the Worker opts in, and never rewrites there", async () => {
+    const off = new CourseService(sqlite());
+    const lesson = off.snapshot().lessons[0]!;
+    assert.equal(off.tutorInfo("user_bob").available, false);
+    await assert.rejects(off.tutorTurn("user_bob", { lesson: lesson.id, text: "hi" }), /isn't available/);
+    const { model, seen } = scripted([uses(call("rewrite_for_me", { section: lesson.sections[0]!.id, note: "x" })), says("ok")]);
+    const on = new CourseService(sqlite(), { agentsAvailable: true, tutor: { model: () => model, meta: { baseURL: "https://api.example.com/v1", apiKey: "k" } } });
+    assert.equal(on.tutorInfo("user_bob").available, true);
+    const turn = await on.tutorTurn("user_bob", { lesson: lesson.id, text: "explain", shortcut: "explain" });
+    assert.deepEqual(turn.blocks, []);
+    assert.match(toolMessages(seen[1]!)[0]!.content, /Personal rewrites need a course built from its own pages/);
+  });
+});

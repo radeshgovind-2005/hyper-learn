@@ -1422,6 +1422,7 @@ export class CourseService {
       pageImages: this.options.tutor?.pageImages?.(learner) ?? noPageImages,
       ask: (section) => this.askLearner(learner, release, lesson.id, section, pending),
       rewrite: (section, note) => {
+        if (this.fixed || !this.options.repairer) throw new Refused("Personal rewrites need a course built from its own pages; explain from the section instead");
         if (quotesPending(note, pending)) throw new Refused("That note quotes the learner's quiz; rewrite around the idea, not the question");
         if (!input.shortcut && !this.knowsWhatsMissing(learner, lesson.id, this.tutorState(learner))) {
           throw new Refused("Nothing yet shows what the learner is missing here: ask a diagnostic question first (ask_me)");
