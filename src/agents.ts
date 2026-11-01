@@ -23,6 +23,9 @@ export const AGENT_NAMES = [
   "fact_checker",
   // Owner edits (src/edit).
   "editor",
+  // The tutor in the lesson page and its independent verifier (src/tutor).
+  "tutor",
+  "verifier",
 ] as const;
 export type AgentName = (typeof AGENT_NAMES)[number];
 

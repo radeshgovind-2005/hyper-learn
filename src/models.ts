@@ -72,11 +72,33 @@ export function modelConfigFromEnv(env: ModelEnv): ModelConfig {
   };
 }
 
-/** Models a course owner may pick (MODEL_CHOICES, comma-separated; default: REASONING_MODEL). */
+/** Muse Spark Open on Baseten: the open-weights model, served at its own OpenAI-compatible endpoint. */
+export const OPEN_WEIGHTS_DEFAULT_MODEL = "meta-models/muse-spark-open-1026";
+
+/**
+ * Models a course owner may pick (MODEL_CHOICES, comma-separated; default: REASONING_MODEL), plus the
+ * open-weights model when OPEN_WEIGHTS_BASE_URL is set.
+ */
 export function modelChoicesFromEnv(env: ModelEnv): string[] {
   const listed = (env.MODEL_CHOICES ?? "").split(",").map((m) => m.trim()).filter(Boolean);
-  if (listed.length > 0) return [...new Set(listed)];
-  return env.REASONING_MODEL ? [env.REASONING_MODEL] : [];
+  const choices = listed.length > 0 ? listed : env.REASONING_MODEL ? [env.REASONING_MODEL] : [];
+  if (env.OPEN_WEIGHTS_BASE_URL) choices.push(env.OPEN_WEIGHTS_MODEL ?? OPEN_WEIGHTS_DEFAULT_MODEL);
+  return [...new Set(choices)];
+}
+
+/**
+ * Base URLs for models that don't live at MODEL_BASE_URL: the open-weights model at OPEN_WEIGHTS_BASE_URL.
+ * Set by the Worker's configuration only, never by a user: an owner picks a model, not an address.
+ */
+export function modelEndpointsFromEnv(env: ModelEnv): Record<string, string> {
+  return env.OPEN_WEIGHTS_BASE_URL ? { [env.OPEN_WEIGHTS_MODEL ?? OPEN_WEIGHTS_DEFAULT_MODEL]: env.OPEN_WEIGHTS_BASE_URL } : {};
+}
+
+/** The open-weights settings for Node tools: OPEN_WEIGHTS_API_KEY with the endpoint above, or none. */
+export function openWeightsConfigFromEnv(env: ModelEnv): ModelConfig | null {
+  if (!env.OPEN_WEIGHTS_BASE_URL || !env.OPEN_WEIGHTS_API_KEY) return null;
+  const model = env.OPEN_WEIGHTS_MODEL ?? OPEN_WEIGHTS_DEFAULT_MODEL;
+  return { ...modelConfigFromEnv(env), baseURL: env.OPEN_WEIGHTS_BASE_URL, apiKey: env.OPEN_WEIGHTS_API_KEY, models: { reasoning: model, fast: model } };
 }
 
 /**
@@ -94,6 +116,11 @@ export class ModelProvider {
   /** The model names, for display. The key is never exposed. */
   get models(): Readonly<Record<ModelType, string>> {
     return this.#config.models;
+  }
+
+  /** The same endpoint and key with another model (the independent verifier runs on a different family). */
+  withModel(model: string): ModelProvider {
+    return new ModelProvider({ ...this.#config, models: { reasoning: model, fast: model } });
   }
 
   chat(type: ModelType): ChatOpenAI {

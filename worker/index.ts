@@ -4,6 +4,7 @@ import { getAgentByName, routeAgentRequest } from "agents";
 import { type AgentRoute, DIRECTORY_NAME, routeAllowed } from "../src/app/courses.js";
 import { type Identity, roleFrom, verifySessionToken, withIdentity } from "../src/auth/identity.js";
 import { refuseDefaultModels } from "../src/models.js";
+import { voice, VOICE_PATH } from "./voice.js";
 
 // LangGraph finds the running graph (for interrupt() and config propagation) through async-local
 // storage. Its non-Node builds don't set one up, so register the runtime's (nodejs_compat) once.
@@ -90,6 +91,7 @@ async function admit(request: Request, route: AgentRoute, env: Env): Promise<Req
 /** WebSocket and RPC traffic for agents goes to their Durable Objects, signed in; everything else is the UI's static assets. */
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
+    if (new URL(request.url).pathname === VOICE_PATH) return voice(request, env, { authenticate: (r) => authenticate(r, env as unknown as AuthEnv), exists: (id) => courseExists(env, id) });
     return (
       (await routeAgentRequest(request, env, {
         onBeforeConnect: (req, route) => admit(req, route, env),

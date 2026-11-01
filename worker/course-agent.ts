@@ -1,4 +1,4 @@
-import { Agent, type Connection, type ConnectionContext, callable, getAgentByName, getCurrentAgent } from "agents";
+import { Agent, type Connection, type ConnectionContext, callable, getAgentByName, getCurrentAgent, type StreamingResponse } from "agents";
 import { coursePermissions, mayEnter, type Permission, requireCoursePermission } from "../src/app/access.js";
 import { builtInCourse, DIRECTORY_NAME, isBuiltIn, isStudioId } from "../src/app/courses.js";
 import type { CourseDetailsInput } from "../src/app/directory.js";
@@ -6,7 +6,8 @@ import { CourseService, type DataSource, type DirectoryLink, parseApproval, type
 import type { Certainty, Response } from "../src/assessment/items.js";
 import { type Identity, identityFrom } from "../src/auth/identity.js";
 import { checkRoleChange, setClerkRole } from "../src/auth/roles.js";
-import { ModelProvider, modelChoicesFromEnv, modelConfigFromEnv } from "../src/models.js";
+import { ModelProvider, modelChoicesFromEnv, modelConfigFromEnv, modelEndpointsFromEnv } from "../src/models.js";
+import { wonderVerifier } from "../src/tutor/verify.js";
 import { LANGSMITH_SETTINGS } from "../src/observability.js";
 import type { ApprovalMode } from "../src/nodes/release.js";
 import type { Sql } from "../src/storage/sql.js";
@@ -51,8 +52,14 @@ export class CourseAgent extends Agent<Env, CourseAgentState> {
         course,
         directory: this.directoryLink(),
         ...(builtIn
-          ? { agentsAvailable: Boolean(env.MODEL_API_KEY && env.MODEL_BASE_URL), models: new ModelProvider(modelConfigFromEnv(env)) }
+          ? {
+              agentsAvailable: Boolean(env.MODEL_API_KEY && env.MODEL_BASE_URL),
+              models: new ModelProvider(modelConfigFromEnv(env)),
+              ...(env.MODEL_API_KEY && env.MODEL_BASE_URL && { tutor: { meta: { baseURL: env.MODEL_BASE_URL, apiKey: env.MODEL_API_KEY } } }),
+            }
           : {
+              // The tutor's independent verifier (Muse Wonder) is one extra call per personal rewrite: on when TUTOR_VERIFIER=on.
+              tutor: { ...(env.TUTOR_VERIFIER === "on" && { verifier: wonderVerifier }) },
               ...(courseBuilder && { builder: courseBuilder }),
               editor: courseEditor,
               repairer: coachRepairer,
@@ -61,6 +68,7 @@ export class CourseAgent extends Agent<Env, CourseAgentState> {
                 // The Worker's endpoint and limits; the key comes from the owner, opened only when used.
                 config: { ...modelConfigFromEnv(env), apiKey: "" },
                 choices: modelChoicesFromEnv(env),
+                endpoints: modelEndpointsFromEnv(env),
               },
             }),
         ...(env.AI && { guard: workersAiGuard(env.AI), embedder: workersAiEmbedder(env.AI) }),
@@ -388,6 +396,87 @@ export class CourseAgent extends Agent<Env, CourseAgentState> {
   coachInsights() {
     this.actor("view_learners");
     return this.app.coachInsights();
+  }
+
+  // ─── Tutor ("Ask Muse"): the dock in the lesson page and the personal blocks it makes ──
+  // Personal state never goes into the shared overview; the dock and the page ask for it.
+
+  /** Whether the dock works here, turns left today, and this lesson's conversation. */
+  @callable()
+  tutorInfo(lesson?: string) {
+    const { userId } = this.actor("learn");
+    return this.app.tutorInfo(userId, lesson);
+  }
+
+  /** One turn: step names and reply text stream as they happen; the result ends the stream. */
+  @callable({ streaming: true })
+  async tutorTurn(stream: StreamingResponse, input: unknown) {
+    const { userId } = this.actor("learn");
+    const result = await this.keepAliveWhile(() => this.app.tutorTurn(userId, input, (event) => stream.send(event)));
+    for (const block of result.blocks) if (block.status === "running") this.background(() => this.app.continuePersonal(userId, block.id));
+    stream.end({ type: "done", result });
+  }
+
+  @callable()
+  answerAsk(id: string, option: number) {
+    const { userId } = this.actor("learn");
+    return this.app.answerAsk(userId, id, option);
+  }
+
+  /** The caller's live personal blocks on a lesson (the page polls while one is being made). */
+  @callable()
+  personalBlocks(lesson: string) {
+    const { userId } = this.actor("learn");
+    return this.app.personalBlocks(userId, lesson);
+  }
+
+  @callable()
+  undoPersonal(id: string) {
+    const { userId } = this.actor("learn");
+    return this.app.undoPersonal(userId, id);
+  }
+
+  @callable()
+  answerPersonal(id: string, option: number) {
+    const { userId } = this.actor("learn");
+    return this.app.answerPersonal(userId, id, option);
+  }
+
+  /** A generated picture (gen:<id>), for a learner whose personal blocks show it. */
+  @callable()
+  generatedImage(id: string) {
+    const { userId } = this.actor("learn");
+    return this.app.generatedImage(userId, id);
+  }
+
+  /** What the tutor suggested changing for everyone (owners, editors, instructors). */
+  @callable()
+  tutorSuggestions() {
+    this.actor("view_learners");
+    return this.app.tutorSuggestions();
+  }
+
+  /** "Promote to the course": an edit request, reviewed and applied like any other (overview.edit). */
+  @callable()
+  promoteRepair(key: string) {
+    const { userId } = this.actor("repair");
+    const edit = this.app.beginPromotion(key, userId, () => this.pushState());
+    this.background(() => this.app.continueEdit(edit, () => this.pushState()));
+    return { id: edit.id };
+  }
+
+  // ─── RPC only (not @callable): the Worker's voice route ──────────────
+
+  /** Lets a member start one recording; returns its length and the upstream settings (they stay in the Worker). */
+  async voiceGrant(identity: Identity) {
+    if (!this.known()) throw new Error("No such course");
+    const courseRole = this.app.memberRole(identity.userId);
+    requireCoursePermission(identity, { featured: isBuiltIn(this.name), courseRole }, "learn");
+    return this.app.voiceGrant(identity.userId);
+  }
+
+  voiceDone(userId: string, seconds: number) {
+    this.app.voiceDone(String(userId), Number(seconds) || 0);
   }
 
   // ─── Owner edits: tune a section, ask for a change, add a file ──────

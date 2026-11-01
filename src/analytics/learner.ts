@@ -242,6 +242,10 @@ export function timelineOf(
           entries.push({ at: e.at, kind: e.kind, lesson: e.lesson, text: `Study coach: diagnosed ${lesson} (${Math.round((d.score ?? 0) * 100)}%); first to fix: ${what}` });
         } else if (d.type === "recheck") {
           entries.push({ at: e.at, kind: e.kind, lesson: e.lesson, text: `Study coach: personal lesson on ${what} (${d.approach?.replace(/_/g, " ")}): ${d.fixed ? "fixed" : "not yet"}`, outcome: d.fixed ? "pass" : "fail" });
+        } else if (d.type === "tutor_rewrite") {
+          entries.push({ at: e.at, kind: e.kind, lesson: e.lesson, text: `Muse: rewrote a section of ${lesson} for them on ${what} (${d.approach?.replace(/_/g, " ")})` });
+        } else if (d.type === "tutor_outcome") {
+          entries.push({ at: e.at, kind: e.kind, lesson: e.lesson, text: `Muse: question after the rewrite on ${what}: ${d.fixed ? "fixed" : "not yet"}`, outcome: d.fixed ? "pass" : "fail" });
         }
         break;
       }
