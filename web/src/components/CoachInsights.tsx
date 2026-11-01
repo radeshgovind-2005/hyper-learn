@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
-import type { Call } from "../types.js";
+import type { Call, TutorSuggestion } from "../types.js";
+import "../styles/tutor.css";
 
 // What learners keep asking the study coach to repair, and whether the personal lessons worked. One
 // click turns a pattern into an owner edit for everyone (the same "Ask for a change" engine).
@@ -12,6 +13,8 @@ interface Insight {
   repaired: number;
   fixed: number;
   approaches: Record<string, { tried: number; fixed: number }>;
+  /** An approach that fixed enough learners on this target to propose it to everyone (the tutor's bandit counts). */
+  promote?: { approach: string; fixed: number; shown: number; section_id: string } | null;
 }
 
 const APPROACH: Record<string, string> = { refute: "a refutation (name the mix-up, then correct it)", worked_example: "a worked example", smaller_steps: "smaller steps" };
@@ -34,12 +37,32 @@ export function CoachInsights({ call, busy }: { call: Call; busy: boolean }) {
   const [rows, setRows] = useState<Insight[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [sent, setSent] = useState<string | null>(null);
+  const [suggestions, setSuggestions] = useState<TutorSuggestion[]>([]);
   useEffect(() => {
     void call<Insight[]>("coachInsights")
       .then(setRows)
       .catch(() => setRows([]));
+    void call<TutorSuggestion[]>("tutorSuggestions")
+      .then(setSuggestions)
+      .catch(() => setSuggestions([]));
   }, [call]);
-  if (!rows || rows.length === 0) return <p className="small muted">When learners use the study coach, what they keep needing repaired shows up here.</p>;
+  const fromTutor =
+    suggestions.length > 0 ? (
+      <div className="stack">
+        <h4 className="small muted">Muse suggested changing for everyone</h4>
+        <ul className="coach-insights">
+          {suggestions.slice(0, 5).map((s) => (
+            <li key={s.id}>
+              <span className="grow">
+                <strong>{s.title}</strong>
+                <span className="small muted"> · {s.why}</span>
+              </span>
+            </li>
+          ))}
+        </ul>
+      </div>
+    ) : null;
+  if (!rows || rows.length === 0) return fromTutor ?? <p className="small muted">When learners use the study coach or ask Muse, what they keep needing repaired shows up here.</p>;
   return (
     <div className="stack">
       <ul className="coach-insights">
@@ -65,10 +88,26 @@ export function CoachInsights({ call, busy }: { call: Call; busy: boolean }) {
             >
               {sent === r.key ? "Proposal on its way" : "Fix it for everyone"}
             </button>
+            {r.promote && (
+              <button
+                className="btn primary sm"
+                disabled={busy || sent === r.key}
+                title={`${APPROACH[r.promote.approach] ?? r.promote.approach} fixed ${r.promote.fixed} of ${r.promote.shown} learners: rewrite the section that way, through the usual review`}
+                onClick={() => {
+                  setError(null);
+                  void call("promoteRepair", [r.key])
+                    .then(() => setSent(r.key))
+                    .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)));
+                }}
+              >
+                Promote to the course ({r.promote.fixed}/{r.promote.shown} fixed)
+              </button>
+            )}
           </li>
         ))}
       </ul>
       {error && <div className="notice">{error}</div>}
+      {fromTutor}
     </div>
   );
 }

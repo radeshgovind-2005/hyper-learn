@@ -1,4 +1,4 @@
-import { Agent, type Connection, type ConnectionContext, callable, getAgentByName, getCurrentAgent } from "agents";
+import { Agent, type Connection, type ConnectionContext, callable, getAgentByName, getCurrentAgent, type StreamingResponse } from "agents";
 import { coursePermissions, mayEnter, type Permission, requireCoursePermission } from "../src/app/access.js";
 import { builtInCourse, DIRECTORY_NAME, isBuiltIn, isStudioId } from "../src/app/courses.js";
 import type { CourseDetailsInput } from "../src/app/directory.js";
@@ -6,7 +6,8 @@ import { CourseService, type DataSource, type DirectoryLink, parseApproval, type
 import type { Certainty, Response } from "../src/assessment/items.js";
 import { type Identity, identityFrom } from "../src/auth/identity.js";
 import { checkRoleChange, setClerkRole } from "../src/auth/roles.js";
-import { ModelProvider, modelChoicesFromEnv, modelConfigFromEnv } from "../src/models.js";
+import { ModelProvider, modelChoicesFromEnv, modelConfigFromEnv, modelEndpointsFromEnv } from "../src/models.js";
+import { wonderVerifier } from "../src/tutor/verify.js";
 import { LANGSMITH_SETTINGS } from "../src/observability.js";
 import type { ApprovalMode } from "../src/nodes/release.js";
 import type { Sql } from "../src/storage/sql.js";
@@ -51,8 +52,15 @@ export class CourseAgent extends Agent<Env, CourseAgentState> {
         course,
         directory: this.directoryLink(),
         ...(builtIn
-          ? { agentsAvailable: Boolean(env.MODEL_API_KEY && env.MODEL_BASE_URL), models: new ModelProvider(modelConfigFromEnv(env)) }
+          ? {
+              agentsAvailable: Boolean(env.MODEL_API_KEY && env.MODEL_BASE_URL),
+              models: new ModelProvider(modelConfigFromEnv(env)),
+              // The tutor on a built-in course spends the Worker's own key for every signed-in person: only when TUTOR_FEATURED=on.
+              ...(env.TUTOR_FEATURED === "on" && env.MODEL_API_KEY && env.MODEL_BASE_URL && { tutor: { meta: { baseURL: env.MODEL_BASE_URL, apiKey: env.MODEL_API_KEY } } }),
+            }
           : {
+              // The tutor's independent verifier (Muse Wonder) is one extra call per personal rewrite: on when TUTOR_VERIFIER=on.
+              tutor: { ...(env.TUTOR_VERIFIER === "on" && { verifier: wonderVerifier }) },
               ...(courseBuilder && { builder: courseBuilder }),
               editor: courseEditor,
               repairer: coachRepairer,
@@ -61,6 +69,7 @@ export class CourseAgent extends Agent<Env, CourseAgentState> {
                 // The Worker's endpoint and limits; the key comes from the owner, opened only when used.
                 config: { ...modelConfigFromEnv(env), apiKey: "" },
                 choices: modelChoicesFromEnv(env),
+                endpoints: modelEndpointsFromEnv(env),
               },
             }),
         ...(env.AI && { guard: workersAiGuard(env.AI), embedder: workersAiEmbedder(env.AI) }),
@@ -352,35 +361,44 @@ export class CourseAgent extends Agent<Env, CourseAgentState> {
 
   @callable()
   coachState() {
-    const { userId } = this.actor("learn");
-    return this.app.coachState(userId);
+    const identity = this.actor("learn");
+    return this.app.coachState(identity.userId, !this.seesAnswers(identity));
   }
 
   @callable()
   startDiagnosis(lesson: string, note?: string) {
-    const { userId } = this.actor("learn");
-    return this.app.startDiagnosis(userId, lesson, note);
+    const identity = this.actor("learn");
+    this.app.startDiagnosis(identity.userId, lesson, note);
+    return this.app.coachState(identity.userId, !this.seesAnswers(identity));
   }
 
+  /** Learners answer on coachState's view without keys. */
   @callable()
   submitDiagnosis(id: string, answers: unknown) {
-    const { userId } = this.actor("learn");
-    return this.app.submitDiagnosis(userId, id, answers);
+    const identity = this.actor("learn");
+    return this.app.submitDiagnosis(identity.userId, id, answers, !this.seesAnswers(identity));
   }
 
   /** Repairs a target from the diagnosis (default: its priority); `again` tries the next approach. */
   @callable()
   startRepair(target?: string, again?: boolean) {
+    const identity = this.actor("learn");
+    const { write } = this.app.beginRepair(identity.userId, target, again === true);
+    if (write) this.background(() => this.app.continueRepair(identity.userId));
+    return this.app.coachState(identity.userId, !this.seesAnswers(identity));
+  }
+
+  /** The personal lesson's practice question, graded here: learners' copies carry no key. */
+  @callable()
+  answerCoachCheck(repair: string, option: number) {
     const { userId } = this.actor("learn");
-    const { state, write } = this.app.beginRepair(userId, target, again === true);
-    if (write) this.background(() => this.app.continueRepair(userId));
-    return state;
+    return this.app.answerCoachCheck(userId, repair, option);
   }
 
   @callable()
   submitRecheck(id: string, answers: unknown) {
-    const { userId } = this.actor("learn");
-    return this.app.submitRecheck(userId, id, answers);
+    const identity = this.actor("learn");
+    return this.app.submitRecheck(identity.userId, id, answers, !this.seesAnswers(identity));
   }
 
   /** What learners keep needing repaired (owners, editors, instructors). */
@@ -388,6 +406,87 @@ export class CourseAgent extends Agent<Env, CourseAgentState> {
   coachInsights() {
     this.actor("view_learners");
     return this.app.coachInsights();
+  }
+
+  // ─── Tutor ("Ask Muse"): the dock in the lesson page and the personal blocks it makes ──
+  // Personal state never goes into the shared overview; the dock and the page ask for it.
+
+  /** Whether the dock works here, turns left today, and this lesson's conversation. */
+  @callable()
+  tutorInfo(lesson?: string) {
+    const { userId } = this.actor("learn");
+    return this.app.tutorInfo(userId, lesson);
+  }
+
+  /** One turn: step names and reply text stream as they happen; the result ends the stream. */
+  @callable({ streaming: true })
+  async tutorTurn(stream: StreamingResponse, input: unknown) {
+    const { userId } = this.actor("learn");
+    const result = await this.keepAliveWhile(() => this.app.tutorTurn(userId, input, (event) => stream.send(event)));
+    for (const block of result.blocks) if (block.status === "running") this.background(() => this.app.continuePersonal(userId, block.id));
+    stream.end({ type: "done", result });
+  }
+
+  @callable()
+  answerAsk(id: string, option: number) {
+    const { userId } = this.actor("learn");
+    return this.app.answerAsk(userId, id, option);
+  }
+
+  /** The caller's live personal blocks on a lesson (the page polls while one is being made). */
+  @callable()
+  personalBlocks(lesson: string) {
+    const { userId } = this.actor("learn");
+    return this.app.personalBlocks(userId, lesson);
+  }
+
+  @callable()
+  undoPersonal(id: string) {
+    const { userId } = this.actor("learn");
+    return this.app.undoPersonal(userId, id);
+  }
+
+  @callable()
+  answerPersonal(id: string, option: number) {
+    const { userId } = this.actor("learn");
+    return this.app.answerPersonal(userId, id, option);
+  }
+
+  /** A generated picture (gen:<id>), for a learner whose personal blocks show it. */
+  @callable()
+  generatedImage(id: string) {
+    const { userId } = this.actor("learn");
+    return this.app.generatedImage(userId, id);
+  }
+
+  /** What the tutor suggested changing for everyone (owners, editors, instructors). */
+  @callable()
+  tutorSuggestions() {
+    this.actor("view_learners");
+    return this.app.tutorSuggestions();
+  }
+
+  /** "Promote to the course": an edit request, reviewed and applied like any other (overview.edit). */
+  @callable()
+  promoteRepair(key: string) {
+    const { userId } = this.actor("repair");
+    const edit = this.app.beginPromotion(key, userId, () => this.pushState());
+    this.background(() => this.app.continueEdit(edit, () => this.pushState()));
+    return { id: edit.id };
+  }
+
+  // ─── RPC only (not @callable): the Worker's voice route ──────────────
+
+  /** Lets a member start one recording; returns its length and the upstream settings (they stay in the Worker). */
+  async voiceGrant(identity: Identity) {
+    if (!this.known()) throw new Error("No such course");
+    const courseRole = this.app.memberRole(identity.userId);
+    requireCoursePermission(identity, { featured: isBuiltIn(this.name), courseRole }, "learn");
+    return this.app.voiceGrant(identity.userId);
+  }
+
+  voiceDone(userId: string, seconds: number) {
+    this.app.voiceDone(String(userId), Number(seconds) || 0);
   }
 
   // ─── Owner edits: tune a section, ask for a change, add a file ──────
@@ -474,10 +573,17 @@ export class CourseAgent extends Agent<Env, CourseAgentState> {
     return this.app.overview();
   }
 
+  /** A release; learners get it without answer keys (people who may repair the course get all of it). */
   @callable()
   snapshot(version?: string) {
-    const { userId } = this.actor("learn");
-    return this.app.snapshot(version ?? this.app.myRelease(userId).version);
+    const identity = this.actor("learn");
+    const v = version ?? this.app.myRelease(identity.userId).version;
+    return this.seesAnswers(identity) ? this.app.snapshot(v) : this.app.learnerSnapshot(v);
+  }
+
+  /** Whether someone may see answer keys: whoever may repair the course (owners, editors, instructors, admins). */
+  private seesAnswers(identity: Identity): boolean {
+    return coursePermissions(this.access(identity)).includes("repair");
   }
 
   /** The release the caller is served: during a trial on real learners, half of learners get the trial. */
@@ -490,15 +596,15 @@ export class CourseAgent extends Agent<Env, CourseAgentState> {
   /** The questions the caller's next attempt at a lesson shows (drawn per attempt for lessons with an exam). */
   @callable()
   exam(lesson: string) {
-    const { userId } = this.actor("learn");
-    return this.app.exam(userId, String(lesson));
+    const identity = this.actor("learn");
+    return this.app.exam(identity.userId, String(lesson), !this.seesAnswers(identity));
   }
 
-  /** `item_ids`: the questions exam() returned, in the order answered. */
+  /** `item_ids`: the questions exam() returned, in the order answered; learners answer on the view without keys. */
   @callable()
   submitQuiz(lesson: string, answers: Response[], certainty: Certainty[], item_ids?: string[]): QuizResult {
-    const { userId } = this.actor("learn");
-    return this.app.submitQuiz(userId, String(lesson), answers, certainty, this.connectionId(), item_ids);
+    const identity = this.actor("learn");
+    return this.app.submitQuiz(identity.userId, String(lesson), answers, certainty, this.connectionId(), item_ids, !this.seesAnswers(identity));
   }
 
   /** An answer to a practice check after a section: its feedback, recorded as evidence. */
@@ -520,6 +626,54 @@ export class CourseAgent extends Agent<Env, CourseAgentState> {
   sourcePage(id: string, page: number) {
     const { userId } = this.actor("learn");
     return this.app.sourcePage(userId, id, page);
+  }
+
+  // ─── Original files, page images and figures (stream A) ──────────────
+
+  /** One chunk (base64, ≤ 512 KB decoded) of a source's original PDF; `total` is its chunk count. */
+  @callable()
+  addSourceFileChunk(id: string, seq: number, base64: string, total: number) {
+    this.actor("manage_course");
+    return this.app.addSourceFileChunk(id, seq, base64, total);
+  }
+
+  /** A chunk of any source's original, for the owner's viewer. */
+  @callable()
+  ownerSourceFileChunk(id: string, seq: number) {
+    this.actor("manage_course");
+    return this.app.ownerSourceFileChunk(id, seq);
+  }
+
+  /** A chunk of the original of a file citedSources lists. */
+  @callable()
+  sourceFileChunk(id: string, seq: number) {
+    const { userId } = this.actor("learn");
+    return this.app.sourceFileChunk(userId, id, seq);
+  }
+
+  /** The picture of one page (base64 JPEG or PNG, ≤ 150 KB), rendered by the owner's browser for the build to read. */
+  @callable()
+  addPageImage(id: string, page: number, base64: string, mime?: string) {
+    this.actor("manage_course");
+    return this.app.addPageImage(id, page, base64, mime ?? "image/jpeg");
+  }
+
+  /** A page's picture: any page for the owner, pages of cited files for learners. Null if there is none. */
+  @callable()
+  pageImage(id: string, page: number) {
+    const identity = this.actor("learn");
+    return this.mayManage(identity) ? this.app.ownerPageImage(id, page) : this.app.pageImage(identity.userId, id, page);
+  }
+
+  /** A figure the build found (`s1/p15/f1`): any for the owner, those on cited files for learners. */
+  @callable()
+  figure(id: string) {
+    const identity = this.actor("learn");
+    return this.mayManage(identity) ? this.app.ownerFigure(id) : this.app.figure(identity.userId, id);
+  }
+
+  private mayManage(identity: Identity): boolean {
+    return !isBuiltIn(this.name) && coursePermissions(this.access(identity)).includes("manage_course");
   }
 
   /** Time on a lesson, or an intervention shown or completed, reported by the learner's own browser. */

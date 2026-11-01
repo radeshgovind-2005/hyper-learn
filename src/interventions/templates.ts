@@ -60,10 +60,53 @@ export const StepThroughSchema = z.strictObject({
     .max(8),
 });
 
-export const InterventionSchema = z.discriminatedUnion("template", [ContrastSchema, PracticeSchema, StepThroughSchema]);
+/** A parameter of an explorer's formula: a slider from min to max. Names are short identifiers the formula uses. */
+const ParameterSchema = z.strictObject({
+  name: z.string().regex(/^[A-Za-z][A-Za-z0-9_]{0,11}$/, "a short name like N or p").describe("The name the formula uses, e.g. N"),
+  label: text(60).describe("What it is, e.g. 'Number of cores'"),
+  min: z.number(),
+  max: z.number(),
+  step: z.number().describe("Slider step, greater than 0, e.g. 1 for whole numbers"),
+  value: z.number().describe("Where the slider starts"),
+});
+
+/**
+ * A formula to play with, e.g. Amdahl's law: sliders for its parameters, a curve of the result over one
+ * of them, and the value at the sliders. The formula is data in a tiny language (src/interventions/expr.ts),
+ * evaluated by code, never run as code.
+ */
+export const ExplorerSchema = z.strictObject({
+  template: z.literal("explorer"),
+  targets: Slug,
+  title: text(120),
+  formula: text(200).describe("Arithmetic over the parameter names: + - * / ^, parentheses, min max log sqrt exp abs, e.g. 1 / ((1 - p) + p / N)"),
+  result_label: text(60).describe("What the formula gives, e.g. 'Speedup'"),
+  parameters: z.array(ParameterSchema).min(1).max(4),
+  plot: z.string().describe("The parameter on the curve's horizontal axis"),
+  takeaway: text(300).describe("What to notice when moving the sliders"),
+});
+
+/** Two cases side by side, one at a time behind a toggle, and the line that tells them apart. */
+export const CompareSchema = z.strictObject({
+  template: z.literal("compare"),
+  targets: Slug,
+  title: text(120),
+  cases: z
+    .array(
+      z.strictObject({
+        label: text(60),
+        points: z.array(text(200)).min(1).max(5),
+        figure: z.strictObject({ label: text(60), value: z.number(), unit: z.string().max(20) }).nullable().describe("One number for the bar under each case, e.g. latency 100 ns, or null"),
+      }),
+    )
+    .length(2),
+  takeaway: text(300),
+});
+
+export const InterventionSchema = z.discriminatedUnion("template", [ContrastSchema, PracticeSchema, StepThroughSchema, ExplorerSchema, CompareSchema]);
 export type Intervention = z.infer<typeof InterventionSchema>;
 export type Template = Intervention["template"];
-export const TEMPLATES = ["contrast", "practice", "step_through"] as const satisfies readonly Template[];
+export const TEMPLATES = ["contrast", "practice", "step_through", "explorer", "compare"] as const satisfies readonly Template[];
 
 /** Every question an intervention asks (to check leakage against the quiz and tags against the catalog). */
 export function interventionQuestions(intervention: Intervention): CheckQuestion[] {
@@ -73,6 +116,8 @@ export function interventionQuestions(intervention: Intervention): CheckQuestion
     case "practice":
       return intervention.questions;
     case "step_through":
+    case "explorer":
+    case "compare":
       return [];
   }
 }
@@ -87,6 +132,10 @@ export function interventionTexts(intervention: Intervention): string[] {
       return questions;
     case "step_through":
       return [intervention.title, ...intervention.frames.flatMap((f) => [f.caption, ...f.messages.map((m) => m.text)])];
+    case "explorer":
+      return [intervention.title, intervention.result_label, intervention.takeaway, ...intervention.parameters.map((p) => p.label)];
+    case "compare":
+      return [intervention.title, intervention.takeaway, ...intervention.cases.flatMap((c) => [c.label, ...c.points, ...(c.figure ? [c.figure.label, c.figure.unit] : [])])];
   }
 }
 

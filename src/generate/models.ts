@@ -90,6 +90,12 @@ export class ModelCalls {
     return this.maxChars - getSystemPrompt(agent).length;
   }
 
+  /** Counts a call made outside invoke (page vision, segmentation) against the same budget. */
+  charge(what: string) {
+    if (this.count >= this.maxCalls) throw new CallBudgetExceeded(`Stopped after ${this.count} model calls (the limit for one build), before a ${what} call`);
+    this.count++;
+  }
+
   async invoke<T>(model: Invokable<T>, agent: AgentName, user: string): Promise<T> {
     const system = getSystemPrompt(agent);
     if (system.length + user.length > this.maxChars) {

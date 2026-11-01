@@ -65,7 +65,9 @@ export function cannedSection(prompt: string): SectionDraft {
   const pages = [...prompt.matchAll(/<source id="([^"]+)" page="(\d+)">\n([\s\S]*?)\n<\/source>/g)];
   const blocks = pages.flatMap(([, source, page, text]) => {
     const first = sentences(text!).slice(0, 2).join(" ");
-    return first ? [{ markdown: first, cites: [{ source: source!, page: Number(page) }] }] : [];
+    // The quote: the first words of the page, as the writer is asked to copy them.
+    const quote = text!.split(/\s+/).slice(0, 8).join(" ");
+    return first ? [{ markdown: first, cites: [{ source: source!, page: Number(page), quote }] }] : [];
   });
   const claim = cut(sentences(pages[0]?.[3] ?? "").at(0) ?? `The section explains ${title}.`, 190);
   return {
@@ -74,7 +76,8 @@ export function cannedSection(prompt: string): SectionDraft {
       prompt: cut(`Which statement agrees with the section "${title}"?`, 290),
       options: [
         { text: claim, correct: true, feedback: "Right: this is what the section explains." },
-        { text: "The section says the opposite of this.", correct: false, feedback: "Not quite: reread the first paragraph." },
+        // As long as the right one, as the writer is told: the code checks reject answers given away by length.
+        { text: cut(`The section says the opposite of this: ${claim}`, 199), correct: false, feedback: "Not quite: reread the first paragraph." },
         { text: "The section does not discuss this topic.", correct: false, feedback: "It does: the first paragraph is about it." },
       ],
     },

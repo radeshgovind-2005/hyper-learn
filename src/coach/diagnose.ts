@@ -106,7 +106,7 @@ export function drawDiagnostic(snapshot: CourseSnapshot, lessonId: string, { see
 }
 
 /** The text of what the learner chose, for single and two-tier items (others: their grade is enough). */
-function chosen(item: QuizItem, response: Response): string {
+export function chosen(item: QuizItem, response: Response): string {
   if ((item.type === "single_choice" || item.type === "two_tier") && Array.isArray(item.options)) {
     const index = item.type === "two_tier" ? (response as number[])[0] : (response as number);
     return typeof index === "number" ? (item.options[index]?.text ?? "") : "";

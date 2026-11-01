@@ -5,6 +5,7 @@ import { seededRandom } from "../simulation/random.js";
 import type { LessonAssessment } from "./assess.js";
 import type { CoursePlan } from "./plan.js";
 import type { WrittenSection } from "./write.js";
+import type { Provenance } from "../media/contracts.js";
 
 // Step 6, first half: the snapshot is put together in code from the plan and the checked drafts.
 // Block ids follow the compiler's scheme (`<section>/<p|l|c|k><n>`), so releases treat generated
@@ -39,6 +40,7 @@ export function assembleSnapshot(
           kind: b.kind,
           markdown: b.markdown,
           cites: b.cites.map((c) => ({ ...c })),
+          ...(b.quotes && { quotes: b.quotes.map((q) => ({ ...q })) }),
           archived: false,
         }));
         // The check practises the first objective this section teaches.
@@ -51,6 +53,27 @@ export function assembleSnapshot(
     })),
     misconceptions: plan.lessons.flatMap((lesson) => assessments.get(lesson.id)?.misconceptions ?? []),
     objectives: plan.lessons.flatMap((lesson) => lesson.objectives.map((o) => ({ ...o, sections: [...o.sections] }))),
+  };
+}
+
+/**
+ * Gives every text block its provenance: the pages it cites and what the fact check said about its
+ * section ("unchecked" when it wasn't checked). Done on the final snapshot, after any rewrite.
+ */
+export function stampProvenance(snapshot: CourseSnapshot, verdicts: ReadonlyMap<string, Provenance["fact_check"]>): CourseSnapshot {
+  return {
+    ...snapshot,
+    lessons: snapshot.lessons.map((lesson) => ({
+      ...lesson,
+      sections: lesson.sections.map((section) => ({
+        ...section,
+        blocks: section.blocks.map((block) =>
+          block.kind === "check" || block.kind === "intervention"
+            ? block
+            : { ...block, provenance: { pages: (block.cites ?? []).map((c) => ({ ...c })), fact_check: verdicts.get(section.id) ?? "unchecked" } },
+        ),
+      })),
+    })),
   };
 }
 

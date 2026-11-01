@@ -1,5 +1,5 @@
 import { useAgent } from "agents/react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router";
 import { CoursePanel } from "./components/CoursePanel.js";
 import { CourseSwitcher } from "./components/CourseSwitcher.js";
@@ -7,10 +7,14 @@ import { AskForm, EditStatus } from "./components/EditPanel.js";
 import { Drawer } from "./components/Drawer.js";
 import { HistoryDrawer } from "./components/HistoryDrawer.js";
 import { LessonView } from "./components/LessonView.js";
+import { PersonalLayer, usePersonalBlocks } from "./components/PersonalLayer.js";
+import { TutorDock } from "./components/TutorDock.js";
 import { RepairDrawer } from "./components/RepairDrawer.js";
 import { Shell } from "./components/Shell.js";
 import { TuneButton } from "./components/TuneButton.js";
 import { type SourceTarget, SourceViewer } from "./components/SourceViewer.js";
+import { CopyLink } from "./components/CopyLink.js";
+import { hashOf, parseHash } from "./deeplink.js";
 import { coursePath, type Directory, FEATURED_COURSE, useDirectory, useSessionQuery } from "./directory.js";
 import { Coach } from "./pages/Coach.js";
 import { CreateCourse } from "./pages/CreateCourse.js";
@@ -18,7 +22,7 @@ import { JoinCourse } from "./pages/JoinCourse.js";
 import { LearnerDetail, Learners } from "./pages/Learners.js";
 import { MyProgress } from "./pages/MyProgress.js";
 import { Studio } from "./pages/Studio.js";
-import type { AgentState, Call, CitedSource, CourseSnapshot, LessonProgress, Me, Overview, ServedRelease } from "./types.js";
+import type { AgentState, Call, CitedSource, CourseSnapshot, LessonProgress, Me, Overview, ServedRelease, TutorAction } from "./types.js";
 
 type Route =
   | { page: "new" }
@@ -62,6 +66,7 @@ const START_LESSON: Record<string, string> = { [FEATURED_COURSE]: "agent-loop" }
 
 function CourseApp({ courseId, base, rest, directory }: { courseId: string; base: string; rest: string; directory: Directory }) {
   const navigate = useNavigate();
+  const { hash } = useLocation();
   const go = useCallback((path: string) => navigate(`${base}${path}` || "/"), [navigate, base]);
   const onProgressPage = rest === "/me";
   const onStudioPage = rest === "/studio";
@@ -92,6 +97,7 @@ function CourseApp({ courseId, base, rest, directory }: { courseId: string; base
     onStateUpdate: (state) => state.overview && setOverview(state.overview),
   });
   const call: Call = useCallback((method, args = []) => agent.call(method, args), [agent]);
+  const token = useCallback(async () => (await query()).token, [query]);
 
   const published = overview ? overview.live !== null : null;
   useEffect(() => {
@@ -165,15 +171,51 @@ function CourseApp({ courseId, base, rest, directory }: { courseId: string; base
   const refreshProgress = useCallback(() => void call<LessonProgress[]>("progress").then(setProgress), [call]);
   const closeDrawer = useCallback(() => setDrawer(null), []);
   const toggle = (name: Exclude<DrawerName, null>) => setDrawer((d) => (d === name ? null : name));
+  // Lessons and sections are in the URL's hash (`#<lesson>/<section>`), so a link opens them and Back
+  // returns to the previous one; the effect below follows the hash.
   const openLesson = (id: string) => {
     setChosenLesson(id);
-    if (rest !== "") go("");
+    navigate(`${base || "/"}${hashOf(id)}`);
   };
-  // After the lesson renders, bring the section into view (a "review §…" step).
   const openSection = (lesson: string, section: string) => {
-    openLesson(lesson);
-    setTimeout(() => document.getElementById(section)?.scrollIntoView({ behavior: "smooth", block: "start" }), 50);
+    setChosenLesson(lesson);
+    navigate(`${base || "/"}${hashOf(lesson, section)}`);
   };
+  const version = snapshot?.version;
+  useEffect(() => {
+    if (!snapshot || rest !== "") return;
+    const target = parseHash(hash, snapshot.lessons);
+    if (!target) return;
+    setChosenLesson(target.lesson);
+    // After the lesson renders, bring the section into view.
+    const section = target.section;
+    if (section) setTimeout(() => document.getElementById(section)?.scrollIntoView({ behavior: "smooth", block: "start" }), 50);
+    // Follows the hash, and the release once it loads (not every new snapshot object).
+  }, [hash, version, rest]);
+
+  // The tutor's personal blocks on the lesson in view, and what its answers ask the page to do.
+  const learningLive = Boolean(snapshot && published && viewVersion === null && rest === "");
+  const [personalVersion, setPersonalVersion] = useState(0);
+  const bumpPersonal = useCallback(() => setPersonalVersion((v) => v + 1), []);
+  const personal = usePersonalBlocks(call, lessonId, personalVersion, learningLive && Boolean(lessonId));
+  const onTutorAction = useCallback(
+    (action: TutorAction) => {
+      if (action.kind === "open_source") {
+        const source = cited.get(action.source);
+        if (source) openSource({ source, page: action.page, passage: "", owner: false });
+        return;
+      }
+      if (action.lesson !== lessonId) openLesson(action.lesson);
+      setTimeout(() => {
+        const element = document.getElementById(action.section);
+        element?.scrollIntoView({ behavior: "smooth", block: "start" });
+        element?.classList.add("tutor-highlight");
+        setTimeout(() => element?.classList.remove("tutor-highlight"), 2_500);
+      }, 80);
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [cited, openSource, lessonId],
+  );
 
   const running = status === "running";
   const waiting = status === "awaiting_approval";
@@ -295,8 +337,24 @@ function CourseApp({ courseId, base, rest, directory }: { courseId: string; base
           setChosenLesson(id);
           go("/coach");
         }}
-        {...(editable && { sectionTools: (section) => <TuneButton call={call} sectionId={section.id} busy={editBusy} onRequested={() => setDrawer("repair")} /> })}
+        sectionTools={(section) => (
+          <div className="section-links">
+            {section.title && <CopyLink sectionId={section.id} />}
+            {editable && <TuneButton call={call} sectionId={section.id} busy={editBusy} onRequested={() => setDrawer("repair")} />}
+          </div>
+        )}
         citations={citations}
+        {...(learningLive && {
+          sectionFooter: (section) => (
+            <PersonalLayer
+              call={call}
+              blocks={personal.blocks.filter((b) => b.section === section.id)}
+              sources={cited}
+              open={(s, page) => openSource({ source: s, page, passage: "", owner: false })}
+              onChanged={bumpPersonal}
+            />
+          ),
+        })}
       />
     );
   } else {
@@ -357,6 +415,12 @@ function CourseApp({ courseId, base, rest, directory }: { courseId: string; base
       }
     >
       {page}
+      {learningLive && lessonId && (
+        // Own socket, so a tutor turn isn't cut off when the page's socket is replaced (see TutorDock). Suspends while it gets its token.
+        <Suspense fallback={null}>
+          <TutorDock call={call} query={query} userId={userId} courseId={courseId} lessonId={lessonId} token={token} onAction={onTutorAction} onBlocks={bumpPersonal} />
+        </Suspense>
+      )}
     </Shell>
   );
 }

@@ -2,6 +2,7 @@ import type { QuizItem } from "../assessment/items.js";
 import { type CheckQuestion, CheckQuestionSchema, type Intervention, InterventionSchema } from "../interventions/templates.js";
 import { buildCourse } from "./validate.js";
 import { type Citation, type Course, type ExamConfig, ExamConfigSchema, type MisconceptionDef, type Objective, ObjectiveSchema } from "./schema.js";
+import type { Provenance } from "../media/contracts.js";
 
 // The course as a content graph: lessons contain sections, sections contain blocks. Compiled once
 // from the Markdown lessons into release v1.0.0; after that, releases (not the Markdown) are the
@@ -23,6 +24,10 @@ export interface TextBlock extends BlockBase {
   markdown: string;
   /** For generated content: the source pages this block is based on. */
   cites?: Citation[];
+  /** For generated content: its pages and what the fact check said (absent on blocks built before it was kept). */
+  provenance?: Provenance;
+  /** For generated content: words on a cited page this block rests on, each checked to be on that page. */
+  quotes?: Quote[];
 }
 
 /** A templated intervention aimed at one misconception. Shown to the learners who show that belief. */
@@ -43,6 +48,13 @@ export interface CheckBlock extends BlockBase {
 }
 
 export type Block = TextBlock | InterventionBlock | CheckBlock;
+
+/** Words copied from a cited page. */
+export interface Quote {
+  source: string;
+  page: number;
+  text: string;
+}
 
 export const isTextBlock = (block: Block): block is TextBlock => block.kind !== "intervention" && block.kind !== "check";
 
@@ -88,30 +100,56 @@ export const slugify = (text: string) =>
 
 export const KIND_PREFIX: Record<BlockKind, string> = { paragraph: "p", list: "l", code: "c", intervention: "i", check: "k" };
 
-/** Splits Markdown into blocks at blank lines, keeping fenced code blocks whole. */
+const LIST_LINE = /^([-*]|\d+\.)\s/;
+const TABLE_LINE = /^\s*\|/;
+
+/**
+ * Splits Markdown into blocks at blank lines, keeping fenced code and `$$` formulas whole. A list ends
+ * where an unindented line that isn't an item follows it (Markdown would fuse that line into the last
+ * item), and a table is a block of its own.
+ */
 export function splitBlocks(markdown: string): { kind: TextKind; markdown: string }[] {
   const blocks: { kind: TextKind; markdown: string }[] = [];
   let current: string[] = [];
   let inFence = false;
+  let inMath = false;
 
   const flush = () => {
     const text = current.join("\n").trim();
     current = [];
     if (!text) return;
-    const kind: TextKind = text.startsWith("```") ? "code" : /^([-*]|\d+\.)\s/.test(text) ? "list" : "paragraph";
+    const kind: TextKind = text.startsWith("```") ? "code" : LIST_LINE.test(text) ? "list" : "paragraph";
     blocks.push({ kind, markdown: text });
   };
 
   for (const line of markdown.split("\n")) {
-    if (line.trimStart().startsWith("```")) {
+    if (!inMath && line.trimStart().startsWith("```")) {
       if (!inFence) flush();
       current.push(line);
       inFence = !inFence;
       if (!inFence) flush();
       continue;
     }
-    if (!inFence && line.trim() === "") flush();
-    else current.push(line);
+    if (inFence) {
+      current.push(line);
+      continue;
+    }
+    // A display formula spans lines between `$$` lines; blank lines inside it don't split it.
+    if (line.trim() === "$$") inMath = !inMath;
+    if (inMath || line.trim() === "$$") {
+      current.push(line);
+      continue;
+    }
+    if (line.trim() === "") {
+      flush();
+      continue;
+    }
+    const first = current[0];
+    const startsTable = TABLE_LINE.test(line) && first !== undefined && !TABLE_LINE.test(first);
+    const leavesTable = !TABLE_LINE.test(line) && first !== undefined && TABLE_LINE.test(first);
+    const leavesList = first !== undefined && LIST_LINE.test(first) && !LIST_LINE.test(line) && !/^\s/.test(line);
+    if (startsTable || leavesTable || leavesList) flush();
+    current.push(line);
   }
   flush();
   return blocks;

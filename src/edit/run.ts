@@ -13,6 +13,7 @@ import { factCheckPrompt } from "../generate/review.js";
 import type { AssessmentDraft, SectionDraft } from "../generate/schemas.js";
 import { classifySource, digestSource } from "../generate/sources.js";
 import type { BuildInput } from "../generate/types.js";
+import type { Figure } from "../storage/media.js";
 import { sectionFromDraft, type WrittenSection, writerPrompt } from "../generate/write.js";
 import { applyChanges, type Change, ChangeError } from "../releases/changes.js";
 import type { EditModels } from "./models.js";
@@ -31,6 +32,8 @@ export interface EditContext {
   /** The course the changes apply to: the draft, or the live release. */
   snapshot: CourseSnapshot;
   sources: readonly Source[];
+  /** The figures on some pages (the "see" step's), so a rewritten section keeps its pictures. Absent: none. */
+  figuresOn?: (pages: readonly Citation[]) => Figure[];
 }
 
 export interface EditOptions {
@@ -206,17 +209,18 @@ export async function runEdit(request: EditRequest, ctx: EditContext, models: Ed
     const write = async (lesson: PlannedLesson, section: PlannedSection, request: string): Promise<{ written?: WrittenSection; draft?: SectionDraft; problems: string[] }> => {
       let draft: SectionDraft | undefined;
       let problems: string[] = [];
+      const figures = ctx.figuresOn?.(section.pages) ?? [];
       for (let attempt = 0; attempt < 2; attempt++) {
         const room = calls.room("writer");
         const fix = attempt > 0 ? retryText("writer", "fix", draft, problems, room) : "";
         try {
-          draft = await calls.invoke(models.writer, "writer", writerPrompt({ input, sources, lesson, section }, room, [request, fix].filter(Boolean).join("\n\n")));
+          draft = await calls.invoke(models.writer, "writer", writerPrompt({ input, sources, lesson, section, figures }, room, [request, fix].filter(Boolean).join("\n\n")));
         } catch (error) {
           if (error instanceof CallBudgetExceeded) throw error;
           problems = [`the writer's call failed: ${message(error)}`];
           continue;
         }
-        const result = sectionFromDraft(draft, section);
+        const result = sectionFromDraft(draft, section, figures);
         if (result.section) return { written: result.section, draft, problems: [] };
         problems = result.problems;
       }
@@ -230,9 +234,10 @@ export async function runEdit(request: EditRequest, ctx: EditContext, models: Ed
       if (verdict.supported) return { written: done.written, doubts: [] };
       const claims = verdict.unsupported.length > 0 ? verdict.unsupported : ["(the fact checker named no claim)"];
       const room = calls.room("writer");
+      const figures = ctx.figuresOn?.(section.pages) ?? [];
       try {
-        const draft = await calls.invoke(models.writer, "writer", writerPrompt({ input, sources, lesson, section }, room, retryText("writer", "revise", done.draft, claims, room)));
-        const result = sectionFromDraft(draft, section);
+        const draft = await calls.invoke(models.writer, "writer", writerPrompt({ input, sources, lesson, section, figures }, room, retryText("writer", "revise", done.draft, claims, room)));
+        const result = sectionFromDraft(draft, section, figures);
         if (result.section) {
           const again = await check(result.section);
           return { written: result.section, doubts: again.supported ? [] : again.unsupported };

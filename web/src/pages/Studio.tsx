@@ -4,7 +4,7 @@ import { AskForm, EditStatus } from "../components/EditPanel.js";
 import { type Citations, LessonView } from "../components/LessonView.js";
 import type { SourceTarget } from "../components/SourceViewer.js";
 import { TuneButton } from "../components/TuneButton.js";
-import { ACCEPTED, chunkPages, readFile } from "../files.js";
+import { ACCEPTED, chunkPages, readFile, uploadOriginal, uploadPageImages } from "../files.js";
 import { AudienceField } from "./CreateCourse.js";
 import type { BuildState, BuildStep, Call, CourseDetails, CourseSnapshot, Member, ModelSettings, Overview, OwnerSourceSummary, SourceRole, SourceSummary } from "../types.js";
 
@@ -153,6 +153,40 @@ function AddToCourse({ call, source, busy }: { call: Call; source: SourceSummary
   );
 }
 
+/**
+ * For a PDF added before originals were kept: the owner picks the same file again, and only its bytes go
+ * up. Its page count must match, so citations keep pointing at the same pages.
+ */
+function AddOriginal({ call, source, onAdded }: { call: Call; source: OwnerSourceSummary; onAdded: () => void }) {
+  const input = useRef<HTMLInputElement>(null);
+  const [status, setStatus] = useState<string | null>(null);
+  const { error, run } = useAction();
+  const pick = (file: File | undefined) =>
+    file &&
+    void run(async () => {
+      setStatus("Reading…");
+      try {
+        const read = await readFile(file);
+        if (!read.bytes) throw new Error("Pick the PDF");
+        if (read.pages.length !== source.pages) throw new Error(`${file.name} has ${read.pages.length} pages; ${source.name} has ${source.pages}. Pick the same file.`);
+        await uploadOriginal(call, source.id, read.bytes, (sent, of) => setStatus(`Uploading ${sent} of ${of}…`));
+        await uploadPageImages(call, source.id, read.bytes, (page, of) => setStatus(`Picturing page ${page} of ${of}…`));
+        onAdded();
+      } finally {
+        setStatus(null);
+      }
+    });
+  return (
+    <>
+      <button className="btn quiet sm" type="button" disabled={status !== null} onClick={() => input.current?.click()} title="Add the original PDF to see pages, not only their text">
+        {status ?? "Add the original PDF to see pages"}
+      </button>
+      <input ref={input} type="file" accept=".pdf" hidden onChange={(e) => { pick(e.target.files?.[0]); e.target.value = ""; }} />
+      {error && <span className="small error-text">{error}</span>}
+    </>
+  );
+}
+
 /** Roles learners never see, whatever the owner's switch says (the server enforces it). */
 const NEVER_SHOWN: ReadonlySet<SourceRole> = new Set(["assessment", "brief"]);
 
@@ -192,6 +226,18 @@ function Sources({
         update(file.name, { status: "Uploading…" });
         let summary = await call<SourceSummary>("addSource", [{ name: read.name, pages: chunks[0] }]);
         for (const chunk of chunks.slice(1)) summary = await call<SourceSummary>("appendPages", [summary.id, chunk]);
+        // The original PDF goes up after its text: without it the course still builds, shown as text.
+        if (read.bytes) {
+          try {
+            await uploadOriginal(call, summary.id, read.bytes, (sent, of) => update(file.name, { status: `Uploading the original (${sent} of ${of})…` }));
+            // Pictures of the pages with figures, for the build to read ("see").
+            await uploadPageImages(call, summary.id, read.bytes, (page, of) => update(file.name, { status: `Picturing pages with figures (${page} of ${of})…` }));
+          } catch (e) {
+            onChange();
+            update(file.name, { status: "Added as text only", error: message(e) });
+            continue;
+          }
+        }
         setUploads((list) => list.filter((u) => u.name !== file.name));
         onChange();
       } catch (e) {
@@ -266,6 +312,7 @@ function Sources({
                   Learners can open
                 </label>
               )}
+              {!s.file && /\.pdf$/i.test(s.name) && <AddOriginal call={call} source={s} onAdded={onChange} />}
               <button className="btn quiet sm" type="button" onClick={() => onView(s)} aria-label={`View ${s.name}`}>
                 View
               </button>
@@ -404,6 +451,7 @@ function ModelKey({ call, settings, onChange }: { call: Call; settings: ModelSet
 const STAGE_LABEL: Record<string, string> = {
   classify: "Sort files",
   digest: "Read",
+  see: "Figures",
   plan: "Plan",
   write: "Write",
   assess: "Questions",
@@ -719,7 +767,7 @@ export function Studio({
   // The owner's preview shows chips for every cited file, opened with ownerSourcePage.
   const citations = useMemo<Citations>(
     () => ({
-      sources: new Map(sources.map((s) => [s.id, { id: s.id, name: s.name, pages: s.pages }])),
+      sources: new Map(sources.map((s) => [s.id, { id: s.id, name: s.name, pages: s.pages, ...(s.file && { file: s.file }) }])),
       open: (source, page, passage) => onOpenSource({ source, page, passage, owner: true }),
     }),
     [sources, onOpenSource],
@@ -777,7 +825,7 @@ export function Studio({
           sources={sources}
           locked={locked}
           onChange={loadSources}
-          onView={(s) => onOpenSource({ source: { id: s.id, name: s.name, pages: s.pages }, page: 1, owner: true })}
+          onView={(s) => onOpenSource({ source: { id: s.id, name: s.name, pages: s.pages, ...(s.file && { file: s.file }) }, page: 1, owner: true })}
           unused={unused}
           editBusy={editBusy}
         />

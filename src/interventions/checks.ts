@@ -1,5 +1,6 @@
 import type { QuizItem } from "../assessment/items.js";
 import type { Course } from "../course/schema.js";
+import { evaluate, FormulaError, parseFormula } from "./expr.js";
 import { type Intervention, interventionQuestions, interventionTexts } from "./templates.js";
 
 // Code checks an intervention must pass before review and before any release can include it.
@@ -59,6 +60,61 @@ export function quizTexts(item: QuizItem): { prompts: string[]; answers: string[
   }
 }
 
+/** Above this an explorer's result is a runaway (an exponent gone wrong), not a curve to read. */
+export const MAX_RESULT = 1e9;
+/** Points of the explorer's curve that are checked (and drawn). */
+export const CURVE_POINTS = 41;
+
+/**
+ * An explorer or a compare widget as data: the explorer's parameters are sane ranges, its formula parses
+ * using only them, and it gives a finite, bounded result across the whole curve with the other sliders at
+ * either end and in the middle. Compare cases are two different things with sane numbers.
+ */
+export function widgetProblems(intervention: Intervention): string[] {
+  const problems: string[] = [];
+  if (intervention.template === "explorer") {
+    const names = intervention.parameters.map((p) => p.name);
+    if (new Set(names).size !== names.length) problems.push("two parameters share a name");
+    if (!names.includes(intervention.plot)) problems.push(`plot "${intervention.plot}" isn't one of the parameters (${names.join(", ")})`);
+    for (const p of intervention.parameters) {
+      if (![p.min, p.max, p.step, p.value].every(Number.isFinite)) problems.push(`parameter ${p.name}: every number must be finite`);
+      else if (!(p.min < p.max)) problems.push(`parameter ${p.name}: min must be below max`);
+      else if (!(p.step > 0) || (p.max - p.min) / p.step > 1000) problems.push(`parameter ${p.name}: the step must be positive, with at most 1000 steps from min to max`);
+      else if (p.value < p.min || p.value > p.max) problems.push(`parameter ${p.name}: the starting value must be between min and max`);
+    }
+    if (problems.length > 0) return problems;
+    let tree;
+    try {
+      tree = parseFormula(intervention.formula, names);
+    } catch (error) {
+      return [`formula: ${error instanceof FormulaError ? error.message : "it can't be read"}`];
+    }
+    const plot = intervention.parameters.find((p) => p.name === intervention.plot)!;
+    const others = intervention.parameters.filter((p) => p !== plot);
+    // Every combination of the other sliders at min, start and max (at most 27), across the curve.
+    let settings: Record<string, number>[] = [{}];
+    for (const p of others) settings = settings.flatMap((s) => [p.min, p.value, p.max].map((v) => ({ ...s, [p.name]: v })));
+    for (const setting of settings) {
+      for (let i = 0; i < CURVE_POINTS; i++) {
+        const x = plot.min + ((plot.max - plot.min) * i) / (CURVE_POINTS - 1);
+        const y = evaluate(tree, { ...setting, [plot.name]: x });
+        if (!Number.isFinite(y) || Math.abs(y) > MAX_RESULT) {
+          const at = Object.entries({ ...setting, [plot.name]: x }).map(([k, v]) => `${k}=${Number(v.toPrecision(4))}`).join(", ");
+          return [`formula: at ${at} it gives ${Number.isNaN(y) ? "no number" : Math.abs(y) === Infinity ? "infinity" : "a runaway value"}; keep it finite over every slider range`];
+        }
+      }
+    }
+  }
+  if (intervention.template === "compare") {
+    const [a, b] = intervention.cases;
+    if (a && b && a.label.trim().toLowerCase() === b.label.trim().toLowerCase()) problems.push("the two cases need different labels");
+    for (const c of intervention.cases) {
+      if (c.figure && (!Number.isFinite(c.figure.value) || c.figure.value < 0 || c.figure.value > MAX_RESULT)) problems.push(`case "${c.label}": its number must be finite and not negative`);
+    }
+  }
+  return problems;
+}
+
 export interface InterventionContext {
   course: Course;
   /** The lesson the intervention will be attached to. */
@@ -105,6 +161,8 @@ export function checkIntervention(intervention: Intervention, { course, lessonId
   if (questions.length > 0 && !questions.some((q) => q.options.some((o) => !o.correct && o.misconception === intervention.targets))) {
     problems.push(`no wrong option expresses "${intervention.targets}", so the questions don't test the belief`);
   }
+
+  problems.push(...widgetProblems(intervention));
 
   if (intervention.template === "step_through") {
     intervention.frames.forEach((frame, i) => {

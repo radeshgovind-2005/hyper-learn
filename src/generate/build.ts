@@ -2,7 +2,8 @@ import { type AgentName, renderTemplate } from "../agents.js";
 import { type CourseSnapshot, courseFromSnapshot } from "../course/compile.js";
 import { type Source, SourceSchema } from "../course/sources.js";
 import type { StructuredFactory } from "../models.js";
-import { assembleSnapshot, shuffleOptions } from "./assemble.js";
+import { assembleSnapshot, shuffleOptions, stampProvenance } from "./assemble.js";
+import type { Provenance } from "../media/contracts.js";
 import { assessmentFromDraft, examinerPrompt, type LessonAssessment, mergeDrafts, problemsByPart } from "./assess.js";
 import { assessmentSentences, routeValidationError, studioChecks } from "./checks.js";
 import { type BuilderModels, CallBudgetExceeded, createBuilderModels, ModelCalls } from "./models.js";
@@ -12,11 +13,14 @@ import { factCheckPrompt } from "./review.js";
 import type { AssessmentDraft, SectionDraft } from "./schemas.js";
 import { classifySource, digestSource, type SourceDigest } from "./sources.js";
 import { stressTest } from "./stress.js";
+import { figuresOn, type PageSeer, seePages } from "./see.js";
+import type { Figure } from "../storage/media.js";
 import type { BuildInput, BuildReport, BuildResult, BuildStep } from "./types.js";
 import { sectionFromDraft, type WrittenSection, writerPrompt } from "./write.js";
 
-// Course generation: owner's documents in, a validated v1.0.0 snapshot out. Classify → digest → plan →
-// write → assess → validate (fix rounds) → review grounding → stress test. Each step's model output is
+// Course generation: owner's documents in, a validated v1.0.0 snapshot out. Classify → digest → see
+// (figures on page pictures, when there are any) → plan → write → assess → validate (fix rounds) →
+// review grounding → stress test. Each step's model output is
 // checked in code; problems go back to the step that produced them a bounded number of times, and a
 // course that still breaks a rule is not returned. No state is kept between calls (see types.ts).
 
@@ -40,6 +44,8 @@ export interface BuildOptions {
   stress?: boolean;
   /** Model calls in flight at once (default 4). */
   concurrency?: number;
+  /** Looks at page pictures for figures ("see"); absent: the course is written from page text only. */
+  seer?: PageSeer;
 }
 
 /** What a build step produced, kept for the next round: its value if it passed, its raw draft for a fix. */
@@ -125,6 +131,22 @@ export async function buildCourse(input: BuildInput, models: BuilderModels, opti
       return fail(["No key ideas could be read from the teaching material (are the pages empty or images only?)."]);
     }
     const evaluated = digests.filter((d) => d.source.role !== "material");
+
+    // 2b. See: figures, tables and equations on the pictures of material pages. Never fatal.
+    let figures: Figure[] = [];
+    if (options.seer && options.seer.pages.length > 0) {
+      const material = new Set(sources.filter((s) => s.role === "material").map((s) => s.id));
+      const seen = await seePages(material, options.seer, calls, concurrency);
+      figures = seen.figures;
+      const kinds = ["table", "chart", "figure", "equation"].map((k) => [k, figures.filter((f) => f.kind === k).length] as const).filter(([, n]) => n > 0);
+      step(
+        "see",
+        `Looked at ${seen.pages} page picture(s): ${figures.length} figure(s)`,
+        seen.failures.length > 0 && figures.length === 0 && seen.pages > 0 ? "rejected" : "ok",
+        [`${seen.visionCalls} vision call(s) (Muse Spark), ${seen.samCalls} segmentation call(s) (SAM 3.1).`, kinds.length > 0 ? `Found ${kinds.map(([k, n]) => `${n} ${k}(s)`).join(", ")}.` : "", ...seen.failures.slice(0, 5).map((f) => `Not read: ${f}`)].filter(Boolean).join("\n"),
+      );
+      if (seen.failures.length > 0) warn(`${seen.failures.length} page picture(s) couldn't be read, so those pages are used as text only`);
+    }
     // A two-page handout can't make three lessons: never ask for more lessons than there are material pages.
     const materialPages = sources.filter((s) => s.role === "material").reduce((n, s) => n + s.pages.filter((p) => p.trim()).length, 0);
     if (materialPages < limits.minLessons) {
@@ -166,15 +188,19 @@ export async function buildCourse(input: BuildInput, models: BuilderModels, opti
       const previous = sectionUnits.get(section.id);
       const extra = retry && retryText("writer", retry.template, previous?.draft, retry.problems, room);
       let unit: Unit<WrittenSection, SectionDraft>;
+      let quotesDropped = 0;
       try {
-        const draft = await calls.invoke(models.writer, "writer", writerPrompt({ input, sources, lesson, section }, room, extra));
-        const result = sectionFromDraft(draft, section);
+        const shown = figuresOn(figures, section.pages);
+        const draft = await calls.invoke(models.writer, "writer", writerPrompt({ input, sources, lesson, section, figures: shown }, room, extra));
+        const result = sectionFromDraft(draft, section, shown, sources);
+        quotesDropped = result.dropped_quotes ?? 0;
         unit = { ...(result.section && { value: result.section }), draft, problems: result.problems, warnings: [] };
       } catch (error) {
         if (error instanceof CallBudgetExceeded) throw error;
         unit = { problems: [`the writer's call failed: ${message(error)}`], warnings: [] };
       }
-      step("write", `${unit.value ? "Wrote" : "Rejected"} ${section.id}`, unit.value ? "ok" : "rejected", unit.problems.length > 0 ? bullets(unit.problems) : undefined);
+      const dropped = unit.value && quotesDropped > 0 ? `${quotesDropped} quote(s) not found on their page were left out.` : undefined;
+      step("write", `${unit.value ? "Wrote" : "Rejected"} ${section.id}`, unit.value ? "ok" : "rejected", unit.problems.length > 0 ? bullets(unit.problems) : dropped);
       return unit;
     };
     await mapLimit(allSections, concurrency, async ({ lesson, section }) => {
@@ -299,7 +325,9 @@ export async function buildCourse(input: BuildInput, models: BuilderModels, opti
     }
     for (const unit of lessonUnits.values()) unit.warnings.forEach(warn);
 
-    // 7. Review grounding with a model; a section it doubts is rewritten once.
+    // 7. Review grounding with a model; a section it doubts is rewritten once. Each section's verdict is
+    // kept for its blocks' provenance chips.
+    const verdicts = new Map<string, Provenance["fact_check"]>();
     if (options.review !== false) {
       const before = new Map(written());
       const rewritten: string[] = [];
@@ -316,9 +344,11 @@ export async function buildCourse(input: BuildInput, models: BuilderModels, opti
           return;
         }
         if (verdict.supported) {
+          verdicts.set(section.id, "supported");
           step("review", `Grounded: ${section.id}`);
           return;
         }
+        verdicts.set(section.id, "doubted");
         const claims = verdict.unsupported.length > 0 ? verdict.unsupported : ["(the fact checker named no claim)"];
         const unit = await writeSection(lesson, section, { template: "revise", problems: claims });
         if (!unit.value) {
@@ -333,21 +363,37 @@ export async function buildCourse(input: BuildInput, models: BuilderModels, opti
           if (error instanceof CallBudgetExceeded) throw error;
           return undefined;
         });
-        if (again?.supported) step("review", `Rewritten and grounded: ${section.id}`, "ok", bullets(claims));
-        else {
+        if (again?.supported) {
+          verdicts.set(section.id, "supported");
+          step("review", `Rewritten and grounded: ${section.id}`, "ok", bullets(claims));
+        } else {
           warn(`Section ${section.id} may state things its pages don't support, even after a rewrite: ${(again?.unsupported ?? claims).join("; ")}`);
           step("review", `Weak grounding: ${section.id}`, "rejected", bullets(again?.unsupported ?? claims));
         }
       });
-      if (rewritten.length > 0) {
-        const candidate = assemble();
-        if (gate(candidate).length === 0) snapshot = candidate;
-        else {
-          // A rewrite broke a whole-course rule: go back to the validated text for those sections.
-          for (const id of rewritten) sectionUnits.set(id, { value: before.get(id)!, problems: [], warnings: [] });
-          warn(`Rewrites after the fact check broke validation, so ${rewritten.join(", ")} keep their first text`);
+      // A rewrite may break a whole-course rule (a practice question now gives its answer away by length,
+      // say). Only the rewrites the problems name go back to their validated first text; if the problems name
+      // none of them, all do. The rest keep their grounded rewrite.
+      let kept = [...rewritten];
+      const undone: string[] = [];
+      const undo = (ids: readonly string[]) => {
+        for (const id of ids) {
+          sectionUnits.set(id, { value: before.get(id)!, problems: [], warnings: [] });
+          verdicts.set(id, "doubted"); // the first text, which the fact check doubted
         }
+        undone.push(...ids);
+        kept = kept.filter((id) => !ids.includes(id));
+      };
+      for (let round = 0; kept.length > 0; round++) {
+        const found = gate(assemble());
+        if (found.length === 0) {
+          snapshot = assemble();
+          break;
+        }
+        const named = kept.filter((id) => found.some((p) => p.section === id || (!p.section && p.lesson !== undefined && id.startsWith(`${p.lesson}/`))));
+        undo(named.length > 0 && round < 2 ? named : kept);
       }
+      if (undone.length > 0) warn(`Rewrites after the fact check broke validation, so ${undone.join(", ")} keep their first text`);
     }
 
     // 8. Stress test.
@@ -365,7 +411,7 @@ export async function buildCourse(input: BuildInput, models: BuilderModels, opti
     const items = snapshot.lessons.reduce((n, l) => n + l.quiz.length, 0);
     step("done", `Built ${snapshot.lessons.length} lessons, ${sectionCount} sections, ${items} questions`, "ok", `${calls.count} model call(s).`);
     report.model_calls = calls.count;
-    return { ok: true, snapshot: shuffleOptions(snapshot), report };
+    return { ok: true, snapshot: shuffleOptions(stampProvenance(snapshot, verdicts)), report, ...(figures.length > 0 && { figures }) };
   } catch (error) {
     return fail([error instanceof CallBudgetExceeded ? error.message : `Generation stopped: ${message(error)}`]);
   }
