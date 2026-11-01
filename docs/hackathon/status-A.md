@@ -10,12 +10,12 @@ One line per item: `todo | doing | done | cut`, the commit, and what stream B ca
 | A3 page viewer | done | c377c57 | `SourceViewer` shows the real page; same `SourceTarget` as before |
 | A4 deep links | done | abd6b64 | `#<lesson>/<section>` = the section id; `web/src/deeplink.ts` (`hashOf`, `parseHash`) for the dock's `go_to_section` |
 | A5 extraction damage, `Markdown.tsx` | done | ce8c34e | **`<Markdown markdown call />`** is ready for personal blocks (tables, KaTeX, `fig:`/`gen:` via `AssetImage`, raw HTML shown as text). `gen:` calls `generatedImage(id)` and accepts `{ mime, base64 }` or `{ url }` |
-| A6 assessment integrity | done | (this commit) | Learners get `learnerSnapshot` / `exam(…, view)`: no keys; ordering/matching/Parsons shuffled by a per-course salt and mapped back in `submitQuiz(…, view)`. **`coachState()` still sends keys** (src/coach is B's): use `learnerItem` from `src/assessment/view.ts` there |
-| A7 "see" step, figures | todo | | |
-| A8 provenance chip | todo | | |
-| A9 `explorer` / `compare` widgets | todo | | |
-| A10 quote-level citations (stretch) | todo | | |
-| A11 demo course | todo | | |
+| A6 assessment integrity | done | fd4342c | Learners get `learnerSnapshot` / `exam(…, view)`: no keys; ordering/matching/Parsons shuffled by a per-course salt and mapped back in `submitQuiz(…, view)`. **`coachState()` still sends keys** (src/coach is B's): use `learnerItem` from `src/assessment/view.ts` there |
+| A7 "see" step, figures | done | d673802 | **`CourseService.pageImages(learner)`** is the `PageImages` for the tutor; `figure(id)` / `pageImage(source, page)` callables; figures are `fig:s1/p15/f1` boxes on page pictures |
+| A8 provenance chip | done | a066418 | **`<ProvenanceChip provenance sources open />`**; `made_for` shows "Made for you" |
+| A9 `explorer` / `compare` widgets | done | 1c34090 | `InterventionSchema` accepts both; also run `widgetProblems()` (src/interventions/checks.ts) before accepting one |
+| A10 quote-level citations (stretch) | done | 152fb9a | `SectionDraftSchema` cites now carry `quote` (nullable); your writer calls get it for free |
+| A11 demo course | done (material); live build is J8 | 8e61d62 | `pilot.md`: Eijkhout's *Art of HPC* slides, CC BY 4.0 |
 
 ## Shared files edited (outside A's list)
 
@@ -28,3 +28,8 @@ One line per item: `todo | doing | done | cut`, the commit, and what stream B ca
 - `src/assessment/view.ts` (new), `src/assessment/view.test.ts` (new).
 - `package.json`: `katex`; `npm test` also runs `web/src/**/*.test.ts`.
 - `docs/engineering/scaling-audit.md`: item 8 marked fixed for `snapshot()`/`exam()`.
+- `src/app/courses.ts`, `worker/builder.ts`: `CourseBuilder` takes an optional 4th argument, `BuildExtras` (`seer`).
+- `src/generate/types.ts`: build stage `"see"`; `BuildResult.figures`.
+- `src/course/compile.ts` (A's): `TextBlock.provenance`, `TextBlock.quotes` (optional).
+- `src/interventions/templates.ts` (A's): two templates; `src/releases/changes.ts` and `src/simulation/learners.ts`: their names and default efficacy.
+- `src/generate/schemas.ts` (A's): `SectionDraftSchema` cites have `quote`.
