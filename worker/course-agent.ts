@@ -552,6 +552,31 @@ export class CourseAgent extends Agent<Env, CourseAgentState> {
     return this.app.sourceFileChunk(userId, id, seq);
   }
 
+  /** The picture of one page (base64 JPEG or PNG, ≤ 150 KB), rendered by the owner's browser for the build to read. */
+  @callable()
+  addPageImage(id: string, page: number, base64: string, mime?: string) {
+    this.actor("manage_course");
+    return this.app.addPageImage(id, page, base64, mime ?? "image/jpeg");
+  }
+
+  /** A page's picture: any page for the owner, pages of cited files for learners. Null if there is none. */
+  @callable()
+  pageImage(id: string, page: number) {
+    const identity = this.actor("learn");
+    return this.mayManage(identity) ? this.app.ownerPageImage(id, page) : this.app.pageImage(identity.userId, id, page);
+  }
+
+  /** A figure the build found (`s1/p15/f1`): any for the owner, those on cited files for learners. */
+  @callable()
+  figure(id: string) {
+    const identity = this.actor("learn");
+    return this.mayManage(identity) ? this.app.ownerFigure(id) : this.app.figure(identity.userId, id);
+  }
+
+  private mayManage(identity: Identity): boolean {
+    return !isBuiltIn(this.name) && coursePermissions(this.access(identity)).includes("manage_course");
+  }
+
   /** Time on a lesson, or an intervention shown or completed, reported by the learner's own browser. */
   @callable()
   track(event: unknown) {

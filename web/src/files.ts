@@ -153,3 +153,76 @@ export function fetchOriginal(call: Call, method: "sourceFileChunk" | "ownerSour
   }
   return pending;
 }
+
+// ─── Pictures of pages with figures (stream A) ────────────────────────
+
+/** The server's caps on a page picture (MEDIA_LIMITS): ≤ 150 KB, and a course keeps at most 300. */
+const PAGE_IMAGE_BYTES = 150 * 1024;
+const PAGE_IMAGE_WIDTH = 1200;
+
+/**
+ * Whether a page likely holds a figure, table or equation worth looking at: it paints an image, draws a
+ * fair number of shapes (charts, diagrams, table cells), or has little text (a picture slide).
+ */
+function looksLikeFigure(ops: { fnArray: number[] }, OPS: Record<string, number>, textChars: number): boolean {
+  const images = new Set([OPS.paintImageXObject, OPS.paintInlineImageXObject, OPS.paintImageMaskXObject]);
+  const shapes = new Set([OPS.constructPath, OPS.rectangle]);
+  let imageOps = 0;
+  let shapeOps = 0;
+  for (const fn of ops.fnArray) {
+    if (images.has(fn)) imageOps++;
+    else if (shapes.has(fn)) shapeOps++;
+  }
+  return imageOps > 0 || shapeOps >= 10 || (textChars < 200 && ops.fnArray.length > 0);
+}
+
+/** A canvas as JPEG, as small as it must be: lower quality first, then a smaller picture. */
+async function jpegUnder(canvas: HTMLCanvasElement, maxBytes: number): Promise<Blob | null> {
+  for (const quality of [0.8, 0.65, 0.5, 0.4]) {
+    const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/jpeg", quality));
+    if (blob && blob.size <= maxBytes) return blob;
+  }
+  return null;
+}
+
+/**
+ * Renders the pages of a PDF that look like they hold figures (≤ 1200 px wide, JPEG ≤ 150 KB) and sends
+ * each to the server (addPageImage), for the build to read and the tutor to look at. Stops quietly when
+ * the course has as many pictures as it may keep. Returns how many pages were sent.
+ */
+export async function uploadPageImages(call: Call, sourceId: string, bytes: Uint8Array, onProgress?: (page: number, of: number) => void): Promise<number> {
+  const pdfjs = await loadPdfjs();
+  const task = pdfjs.getDocument({ data: bytes.slice() });
+  const pdf = await task.promise;
+  let sent = 0;
+  try {
+    for (let n = 1; n <= pdf.numPages; n++) {
+      onProgress?.(n, pdf.numPages);
+      const page = await pdf.getPage(n);
+      const [ops, text] = await Promise.all([page.getOperatorList(), page.getTextContent()]);
+      const chars = text.items.reduce((sum, item) => sum + ("str" in item ? item.str.length : 0), 0);
+      if (!looksLikeFigure(ops, pdfjs.OPS as unknown as Record<string, number>, chars)) continue;
+      let scale = PAGE_IMAGE_WIDTH / page.getViewport({ scale: 1 }).width;
+      let blob: Blob | null = null;
+      for (let tries = 0; tries < 3 && !blob; tries++, scale *= 0.75) {
+        const viewport = page.getViewport({ scale });
+        const canvas = document.createElement("canvas");
+        canvas.width = Math.floor(viewport.width);
+        canvas.height = Math.floor(viewport.height);
+        await page.render({ canvas, viewport }).promise;
+        blob = await jpegUnder(canvas, PAGE_IMAGE_BYTES);
+      }
+      if (!blob) continue;
+      try {
+        await call("addPageImage", [sourceId, n, toBase64(new Uint8Array(await blob.arrayBuffer())), "image/jpeg"]);
+        sent++;
+      } catch (e) {
+        if (e instanceof Error && /at most \d+ page pictures/.test(e.message)) break;
+        throw e;
+      }
+    }
+  } finally {
+    await task.destroy();
+  }
+  return sent;
+}

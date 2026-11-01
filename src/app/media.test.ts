@@ -141,3 +141,93 @@ describe("original files", () => {
     assert.equal(s.sourceList().find((x) => x.id === "s3")!.file!.size, 10 * KB);
   });
 });
+
+const JPEG = (bytes: number) => Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.alloc(Math.max(0, bytes - 4), 7)]).toString("base64");
+
+/** A course whose fake build reads page pictures through the injected reader and returns their figures. */
+async function seeingCourse() {
+  const seen: { pages: number; read: number } = { pages: 0, read: 0 };
+  const builder: CourseBuilder = async (_input, _structured, onStep, extras) => {
+    const figures = [];
+    for (const { source, page } of extras?.seer?.pages ?? []) {
+      seen.pages++;
+      const image = await extras!.seer!.image(source, page);
+      const read = await extras!.seer!.read(image!);
+      seen.read++;
+      figures.push(...read.map((f, i) => ({ id: `${source}/p${page}/f${i + 1}`, source, page, kind: f.kind, caption: f.caption, box: f.box, table_markdown: null, latex: null, teaches: f.teaches })));
+    }
+    onStep({ stage: "see", title: `Looked at ${seen.pages}`, status: "ok", at: NOW });
+    return { ok: true, snapshot: citedSnapshot(), report: { steps: [], model_calls: 0, warnings: [] }, figures };
+  };
+  const s = new CourseService(sqlite(), {
+    course: "studio",
+    builder,
+    now: () => NOW,
+    ownerModels: {
+      secret: "test-only-secret-0123456789abcdefghijkl",
+      config: { ...modelConfigFromEnv({ MODEL_BASE_URL: "https://models.example.com/v1" }), apiKey: "" },
+      choices: ["muse-spark-1.3"],
+    },
+    pageReader: (config) => {
+      assert.equal(config.apiKey, "sk-meta-secret-123", "the owner's key, opened for the build");
+      return { read: async () => [{ kind: "chart", caption: "Stem growth", box: { x1: 0.1, y1: 0.1, x2: 0.9, y2: 0.8 }, sam_prompt: "chart", table_markdown: null, latex: null, teaches: "It grows." }] };
+    },
+  });
+  s.initialise({ id: "c-abcdefghijkl", title: "Bramble Clocks", description: "", owner: ada });
+  s.addSource({ name: "Bramble-Lec01.pdf", role: "material", pages: ["Stems grow.", "Notches mark hours."] });
+  s.addSource({ name: "Bramble-Lec02.pdf", role: "material", pages: ["Prune side shoots."] });
+  await s.setModelKey("sk-meta-secret-123", "muse-spark-1.3");
+  return { s, seen };
+}
+
+describe("page pictures and figures", () => {
+  it("takes a JPEG or PNG of a real page, within 150 KB and 300 per course", async () => {
+    const { s } = await seeingCourse();
+    assert.deepEqual(s.addPageImage("s1", 2, JPEG(1000)), { pages: 1 });
+    s.addPageImage("s1", 2, JPEG(2000)); // again: replaces, doesn't add
+    assert.equal(s.ownerPageImage("s1", 2)!.base64, JPEG(2000));
+    assert.equal(s.ownerPageImage("s1", 1), null);
+    assert.throws(() => s.addPageImage("s1", 3, JPEG(10)), /pages 1 to 2/);
+    assert.throws(() => s.addPageImage("s1", 1, JPEG(MEDIA_LIMITS.pageImageBytes + 1)), /at most 150 KB/);
+    assert.throws(() => s.addPageImage("s1", 1, Buffer.from("%PDF-1.7").toString("base64")), /isn't a JPEG/);
+    assert.throws(() => s.addPageImage("s1", 1, JPEG(10), "image/gif"), /JPEG or a PNG/);
+    assert.throws(() => s.addPageImage("s9", 1, JPEG(10)), /No source/);
+    for (let i = 0; i < MEDIA_LIMITS.pageImages - 1; i++) {
+      const { id } = i % 50 === 0 ? s.addSource({ name: `x${i}.pdf`, pages: Array.from({ length: 50 }, () => "p") }) : { id: s.sourceList().at(-1)!.id };
+      s.addPageImage(id, (i % 50) + 1, JPEG(10));
+    }
+    assert.throws(() => s.addPageImage("s1", 1, JPEG(10)), /at most 300 page pictures/);
+    s.addPageImage("s1", 2, JPEG(10)); // replacing one at the cap is fine
+  });
+
+  it("a build reads the pictures with the owner's key, and learners get the figures of cited files only", async () => {
+    const { s, seen } = await seeingCourse();
+    s.addPageImage("s1", 1, JPEG(100));
+    s.addPageImage("s2", 1, JPEG(100));
+    await s.continueBuild(s.beginBuild());
+    assert.equal(s.buildState()!.status, "done");
+    assert.deepEqual(seen, { pages: 2, read: 2 });
+    s.publish();
+    assert.equal(s.ownerFigure("s2/p1/f1").caption, "Stem growth");
+    // s1 is cited by the course; s2 isn't.
+    assert.deepEqual(s.figure("user_bob", "s1/p1/f1").box, { x1: 0.1, y1: 0.1, x2: 0.9, y2: 0.8 });
+    assert.throws(() => s.figure("user_bob", "s2/p1/f1"), /isn't shared with learners/);
+    assert.throws(() => s.figure("user_bob", "s1/p9/f1"), /isn't shared with learners/);
+    assert.equal(s.pageImage("user_bob", "s1", 1)!.mime, "image/jpeg");
+    assert.throws(() => s.pageImage("user_bob", "s2", 1), /isn't shared/);
+    // The tutor's view (JOIN.md §2): the same rule, and null instead of an error.
+    const pages = s.pageImages("user_bob");
+    assert.equal((await pages.get("s1", 1))!.base64, JPEG(100));
+    assert.equal(await pages.get("s2", 1), null);
+    assert.equal(await pages.get("s1", 2), null);
+  });
+
+  it("removing a source removes its pictures and figures", async () => {
+    const { s } = await seeingCourse();
+    s.addPageImage("s2", 1, JPEG(100));
+    await s.continueBuild(s.beginBuild());
+    assert.ok(s.ownerFigure("s2/p1/f1"));
+    s.removeSource("s2");
+    assert.throws(() => s.ownerFigure("s2/p1/f1"), /No figure/);
+  });
+});

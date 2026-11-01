@@ -30,6 +30,11 @@ import { type LearnerEvent, type Sql, SqlEventLog, SqlMeta, SqlProfiles, SqlRele
 import { type Member, SqlMembers, SqlSharedRepairs, SqlSources, type SourceSummary } from "../storage/studio.js";
 import { base64Size, type FileChunk, MEDIA_LIMITS, SqlMedia, type StoredFile } from "../storage/media.js";
 import { fromLearnerResponse, learnerItem, learnerSnapshot } from "../assessment/view.js";
+import type { PageImage, PageImages } from "../media/contracts.js";
+import { type Figure } from "../storage/media.js";
+import type { PageSeer } from "../generate/see.js";
+import { readPage, type VisionConfig } from "../meta/vision.js";
+import { segment } from "../meta/sam.js";
 import type { Identity as Person } from "../auth/identity.js";
 import { COURSE_ROLES, type CourseRole } from "./access.js";
 import { builtInCourse, type CoachRepairer, type CourseBuilder, type CourseDefinition, type CourseEditor, FEATURED_COURSE, isStudioId } from "./courses.js";
@@ -412,6 +417,8 @@ export interface ServiceOptions {
   repairer?: CoachRepairer;
   /** A studio course's owner-key settings (ignored for built-in courses, which use `models`). */
   ownerModels?: OwnerModelSettings;
+  /** How a build reads page pictures (Spark vision and SAM on the owner's key); tests pass fakes. */
+  pageReader?: (config: VisionConfig) => Pick<PageSeer, "read" | "segment">;
   /**
    * The course this object holds: a built-in definition, or "studio" for a course created in the studio,
    * whose definition is in this object's storage. Default: the featured course (Node tools and tests).
@@ -1862,6 +1869,87 @@ export class CourseService {
     return this.chunkOf(id, seq);
   }
 
+  // ─── Page pictures and figures (stream A) ─────────────────────────
+
+  /**
+   * Stores the picture of one page (JPEG or PNG, base64, at most 150 KB; at most 300 per course), which a
+   * build reads for figures and the tutor can look at. Rendered by the owner's browser; sending a page
+   * again replaces its picture. Allowed in any state, like the original file.
+   */
+  addPageImage(id: unknown, page: unknown, base64: unknown, mime: unknown = "image/jpeg"): { pages: number } {
+    this.studio();
+    const source = typeof id === "string" ? this.sources.get(id) : undefined;
+    if (!source) throw new Error(`No source "${String(id)}"`);
+    if (typeof page !== "number" || !Number.isInteger(page) || page < 1 || page > source.pages.length) throw new Error(`"${source.name}" has pages 1 to ${source.pages.length}`);
+    if (mime !== "image/jpeg" && mime !== "image/png") throw new Error("A page picture is a JPEG or a PNG");
+    const size = typeof base64 === "string" ? base64Size(base64) : null;
+    if (size === null || size === 0) throw new Error("Send the picture as base64");
+    if (size > MEDIA_LIMITS.pageImageBytes) throw new Error(`A page picture can be at most ${MEDIA_LIMITS.pageImageBytes / 1024} KB`);
+    // The first bytes must say what the mime says: a picture, not something posing as one.
+    if (!(base64 as string).startsWith(mime === "image/jpeg" ? "/9j/" : "iVBORw0KGgo")) throw new Error(`That isn't a ${mime === "image/jpeg" ? "JPEG" : "PNG"}`);
+    if (!this.media.hasPageImage(source.id, page) && this.media.pageImageCount() >= MEDIA_LIMITS.pageImages) {
+      throw new Error(`A course can keep at most ${MEDIA_LIMITS.pageImages} page pictures`);
+    }
+    this.media.putPageImage(source.id, page, mime, base64 as string, size);
+    return { pages: this.media.pageImageCount() };
+  }
+
+  private imageOf(id: string, page: unknown): PageImage | null {
+    if (typeof page !== "number" || !Number.isInteger(page) || page < 1) throw new Error("page is a page number from 1");
+    const image = this.media.pageImage(id, page);
+    return image ? { mime: image.mime as PageImage["mime"], base64: image.base64 } : null;
+  }
+
+  /** The picture of any page of any source, for the owner (null if there is none). */
+  ownerPageImage(id: unknown, page: unknown): PageImage | null {
+    this.studio();
+    if (typeof id !== "string" || !this.sources.get(id)) throw new Error(`No source "${String(id)}"`);
+    return this.imageOf(id, page);
+  }
+
+  /** The picture of a page of a file the learner may open (see citedSources); null if there is none. */
+  pageImage(learner: string, id: unknown, page: unknown): PageImage | null {
+    if (this.fixed) throw new Error("This course has no source files");
+    if (typeof id !== "string" || !this.citedSources(learner).some((s) => s.id === id)) throw new Error("This file isn't shared with learners");
+    return this.imageOf(id, page);
+  }
+
+  /** Pages as pictures for one learner (the tutor's `look_at_page`): only files their release cites. */
+  pageImages(learner: string): PageImages {
+    return {
+      get: async (sourceId, page) => {
+        try {
+          return this.pageImage(learner, sourceId, page);
+        } catch {
+          return null;
+        }
+      },
+    };
+  }
+
+  /** A figure the build found, for the owner. */
+  ownerFigure(id: unknown): Figure {
+    this.studio();
+    const figure = typeof id === "string" ? this.media.figure(id) : undefined;
+    if (!figure) throw new Error(`No figure "${String(id)}"`);
+    return figure;
+  }
+
+  /** A figure on a page of a file the learner may open (see citedSources). */
+  figure(learner: string, id: unknown): Figure {
+    if (this.fixed) throw new Error("This course has no figures");
+    const figure = typeof id === "string" ? this.media.figure(id) : undefined;
+    if (!figure || !this.citedSources(learner).some((s) => s.id === figure.source)) throw new Error("This figure isn't shared with learners");
+    return figure;
+  }
+
+  /** A build's figures replace the previous build's, page by page: every page with a picture is reread. */
+  private storeFigures(figures: readonly Figure[]) {
+    for (const { source, page } of this.media.pagesWithImages()) {
+      this.media.setFigures(source, page, figures.filter((f) => f.source === source && f.page === page));
+    }
+  }
+
   // ─── The owner's model key (studio courses) ───────────────────────
 
   /** What the owner's settings page shows. Never the key. */
@@ -1915,6 +2003,12 @@ export class CourseService {
 
   /** Models with the owner's key, opened just for this use. */
   private async ownerProvider(): Promise<ModelProvider> {
+    const { owner, apiKey, model } = await this.ownerKey();
+    return new ModelProvider({ ...owner.config, apiKey, models: { reasoning: model, fast: model } });
+  }
+
+  /** The owner's key, opened, with the Worker's model settings and the owner's chosen model. */
+  private async ownerKey() {
     const record = this.studio();
     const owner = this.options.ownerModels;
     const stored = this.meta.get<StoredModelKey>("model_key");
@@ -1923,7 +2017,28 @@ export class CourseService {
     if (!owner.choices.includes(stored.model)) throw new Error(`${stored.model} is no longer offered; pick another model`);
     const apiKey = await openSecret(stored.sealed, owner.secret, record.id);
     this.secrets.add(apiKey);
-    return new ModelProvider({ ...owner.config, apiKey, models: { reasoning: stored.model, fast: stored.model } });
+    return { owner, apiKey, model: stored.model };
+  }
+
+  /**
+   * What a build looks at pages with: the stored page pictures, read by Spark vision and SAM on the owner's
+   * key (each call with a 60 s timeout and 2 retries); undefined when no page has a picture.
+   */
+  private async pageSeer(): Promise<PageSeer | undefined> {
+    const pages = this.media.pagesWithImages();
+    if (pages.length === 0) return undefined;
+    const { owner, apiKey, model } = await this.ownerKey();
+    const config: VisionConfig = { baseURL: owner.config.baseURL, apiKey, model, timeoutMs: 60_000, retries: 2 };
+    const reader = this.options.pageReader?.(config) ?? { read: (image: PageImage) => readPage(config, image), segment: (image: PageImage, prompt: string) => segment(config, image, prompt) };
+    return {
+      pages,
+      image: async (source, page) => {
+        const image = this.media.pageImage(source, page);
+        return image ? { mime: image.mime as PageImage["mime"], base64: image.base64 } : null;
+      },
+      read: reader.read,
+      ...(reader.segment && { segment: reader.segment }),
+    };
   }
 
   /** Keys opened in this instance, so an error message that quotes one never reaches state. */
@@ -1988,11 +2103,17 @@ export class CourseService {
         audience: record.audience,
         sources: this.sources.all(),
       };
-      const result = await this.options.builder!(input, provider.structured, (step) => {
-        build.steps.push({ ...step, ...(step.detail && { detail: this.redact(step.detail) }) });
-        this.meta.set("build", build);
-        onUpdate?.();
-      });
+      const seer = await this.pageSeer();
+      const result = await this.options.builder!(
+        input,
+        provider.structured,
+        (step) => {
+          build.steps.push({ ...step, ...(step.detail && { detail: this.redact(step.detail) }) });
+          this.meta.set("build", build);
+          onUpdate?.();
+        },
+        { ...(seer && { seer }) },
+      );
       const report = { warnings: result.report.warnings, model_calls: result.report.model_calls };
       if (!result.ok) {
         this.endBuild("failed", { ...report, problems: result.problems }, onUpdate);
@@ -2000,6 +2121,7 @@ export class CourseService {
         // Code sets what identifies the release; the generator only supplies content.
         const snapshot = { ...result.snapshot, course_id: record.id, version: "1.0.0" };
         courseFromSnapshot(snapshot); // throws if the course isn't valid
+        this.storeFigures(result.figures ?? []);
         this.setDraft(snapshot);
         this.endBuild("done", report, onUpdate);
       }

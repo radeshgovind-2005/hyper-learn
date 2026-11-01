@@ -6,6 +6,7 @@ import type { PlannedLesson, PlannedSection } from "./plan.js";
 import { audienceLine, fitParts, languageLine, pageLabel, type Part } from "./prompt.js";
 import type { SectionDraft } from "./schemas.js";
 import type { BuildInput } from "./types.js";
+import type { Figure } from "../storage/media.js";
 
 // Step 4: each section is written from its planned pages only. Code checks that every block cites
 // one of those pages, sanitizes the Markdown (the web app renders it as HTML), and turns the
@@ -88,10 +89,18 @@ export interface WriterContext {
   sources: readonly Source[];
   lesson: PlannedLesson;
   section: PlannedSection;
+  /** Figures on the section's pages (the "see" step); the writer may show these and no others. */
+  figures?: readonly Figure[];
+}
+
+/** What vision read from a page's picture that its text loses: tables as Markdown, equations as LaTeX. */
+function readFromPicture(figures: readonly Figure[]): string {
+  const parts = figures.flatMap((f) => (f.table_markdown ? [`${f.caption}:\n${f.table_markdown}`] : f.latex ? [`${f.caption}: $$ ${f.latex} $$`] : []));
+  return parts.length > 0 ? `\n\nRead from the page's picture:\n${parts.join("\n\n")}` : "";
 }
 
 /** The writer's user message: the section's place in the lesson, its objectives, and its pages (shortened to fit). */
-export function writerPrompt({ input, sources, lesson, section }: WriterContext, room: number, retry?: string): string {
+export function writerPrompt({ input, sources, lesson, section, figures = [] }: WriterContext, room: number, retry?: string): string {
   const objectives = lesson.objectives.filter((o) => o.sections.includes(section.id)).map((o) => `- ${o.statement}`);
   const others = lesson.sections.filter((s) => s.id !== section.id).map((s) => `"${s.title}"`);
   const header = [
@@ -103,11 +112,15 @@ export function writerPrompt({ input, sources, lesson, section }: WriterContext,
     languageLine(input.language),
     audienceLine(input.audience),
     `Cite only these pages: ${section.pages.map(pageLabel).join(", ")}.`,
+    figures.length > 0 &&
+      `Figures on these pages. Where one helps, show it on a line of its own as ![caption](fig:ID), and cite its page; use no other ids:\n${figures
+        .map((f) => `- fig:${f.id} (${f.kind}, ${f.source} p.${f.page}): ${f.caption}${f.teaches ? ` It shows: ${f.teaches}` : ""}`)
+        .join("\n")}`,
   ]
     .filter(Boolean)
     .join("\n");
   const pages: Part[] = section.pages.map((ref) => ({
-    text: citedPage(sources, ref) ?? "",
+    text: (citedPage(sources, ref) ?? "") + readFromPicture(figures.filter((f) => f.source === ref.source && f.page === ref.page)),
     elastic: true,
     before: `<source id="${ref.source}" page="${ref.page}">\n`,
     after: "\n</source>",
@@ -115,14 +128,24 @@ export function writerPrompt({ input, sources, lesson, section }: WriterContext,
   return fitParts([{ text: header }, ...pages, ...(retry ? [{ text: retry }] : [])], room);
 }
 
-/** Checks a section draft against its planned pages and builds the section, or lists what to fix. */
-export function sectionFromDraft(draft: SectionDraft, section: PlannedSection): { section?: WrittenSection; problems: string[] } {
+const FIGURE_REF = /!\[[^\]]*\]\(\s*((?:fig|gen):[^)\s]*)/g;
+
+/**
+ * Checks a section draft against its planned pages and builds the section, or lists what to fix. A
+ * picture must be one of `figures` (those on the section's pages); any other id is sent back.
+ */
+export function sectionFromDraft(draft: SectionDraft, section: PlannedSection, figures: readonly Figure[] = []): { section?: WrittenSection; problems: string[] } {
   const problems: string[] = [];
   const allowed = section.pages.map(pageLabel);
   const blocks: WrittenBlock[] = [];
+  const shown = new Set(figures.map((f) => `fig:${f.id}`));
+  const ids = figures.map((f) => `fig:${f.id}`).join(", ") || "none";
 
   draft.blocks.forEach((block, i) => {
-    const markdown = sanitizeMarkdown(block.markdown);
+    for (const [, ref] of block.markdown.matchAll(FIGURE_REF)) {
+      if (!shown.has(ref!)) problems.push(`block ${i + 1} shows ${ref}, which is not a figure on this section's pages (you may use: ${ids})`);
+    }
+    const markdown = sanitizeMarkdown(block.markdown, (ref) => shown.has(ref));
     if (!markdown) return;
     const cites: Citation[] = [];
     for (const ref of block.cites) {

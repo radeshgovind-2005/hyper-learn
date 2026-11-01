@@ -12,11 +12,14 @@ import { factCheckPrompt } from "./review.js";
 import type { AssessmentDraft, SectionDraft } from "./schemas.js";
 import { classifySource, digestSource, type SourceDigest } from "./sources.js";
 import { stressTest } from "./stress.js";
+import { figuresOn, type PageSeer, seePages } from "./see.js";
+import type { Figure } from "../storage/media.js";
 import type { BuildInput, BuildReport, BuildResult, BuildStep } from "./types.js";
 import { sectionFromDraft, type WrittenSection, writerPrompt } from "./write.js";
 
-// Course generation: owner's documents in, a validated v1.0.0 snapshot out. Classify → digest → plan →
-// write → assess → validate (fix rounds) → review grounding → stress test. Each step's model output is
+// Course generation: owner's documents in, a validated v1.0.0 snapshot out. Classify → digest → see
+// (figures on page pictures, when there are any) → plan → write → assess → validate (fix rounds) →
+// review grounding → stress test. Each step's model output is
 // checked in code; problems go back to the step that produced them a bounded number of times, and a
 // course that still breaks a rule is not returned. No state is kept between calls (see types.ts).
 
@@ -40,6 +43,8 @@ export interface BuildOptions {
   stress?: boolean;
   /** Model calls in flight at once (default 4). */
   concurrency?: number;
+  /** Looks at page pictures for figures ("see"); absent: the course is written from page text only. */
+  seer?: PageSeer;
 }
 
 /** What a build step produced, kept for the next round: its value if it passed, its raw draft for a fix. */
@@ -125,6 +130,22 @@ export async function buildCourse(input: BuildInput, models: BuilderModels, opti
       return fail(["No key ideas could be read from the teaching material (are the pages empty or images only?)."]);
     }
     const evaluated = digests.filter((d) => d.source.role !== "material");
+
+    // 2b. See: figures, tables and equations on the pictures of material pages. Never fatal.
+    let figures: Figure[] = [];
+    if (options.seer && options.seer.pages.length > 0) {
+      const material = new Set(sources.filter((s) => s.role === "material").map((s) => s.id));
+      const seen = await seePages(material, options.seer, calls, concurrency);
+      figures = seen.figures;
+      const kinds = ["table", "chart", "figure", "equation"].map((k) => [k, figures.filter((f) => f.kind === k).length] as const).filter(([, n]) => n > 0);
+      step(
+        "see",
+        `Looked at ${seen.pages} page picture(s): ${figures.length} figure(s)`,
+        seen.failures.length > 0 && figures.length === 0 && seen.pages > 0 ? "rejected" : "ok",
+        [`${seen.visionCalls} vision call(s) (Muse Spark), ${seen.samCalls} segmentation call(s) (SAM 3.1).`, kinds.length > 0 ? `Found ${kinds.map(([k, n]) => `${n} ${k}(s)`).join(", ")}.` : "", ...seen.failures.slice(0, 5).map((f) => `Not read: ${f}`)].filter(Boolean).join("\n"),
+      );
+      if (seen.failures.length > 0) warn(`${seen.failures.length} page picture(s) couldn't be read, so those pages are used as text only`);
+    }
     // A two-page handout can't make three lessons: never ask for more lessons than there are material pages.
     const materialPages = sources.filter((s) => s.role === "material").reduce((n, s) => n + s.pages.filter((p) => p.trim()).length, 0);
     if (materialPages < limits.minLessons) {
@@ -167,8 +188,9 @@ export async function buildCourse(input: BuildInput, models: BuilderModels, opti
       const extra = retry && retryText("writer", retry.template, previous?.draft, retry.problems, room);
       let unit: Unit<WrittenSection, SectionDraft>;
       try {
-        const draft = await calls.invoke(models.writer, "writer", writerPrompt({ input, sources, lesson, section }, room, extra));
-        const result = sectionFromDraft(draft, section);
+        const shown = figuresOn(figures, section.pages);
+        const draft = await calls.invoke(models.writer, "writer", writerPrompt({ input, sources, lesson, section, figures: shown }, room, extra));
+        const result = sectionFromDraft(draft, section, shown);
         unit = { ...(result.section && { value: result.section }), draft, problems: result.problems, warnings: [] };
       } catch (error) {
         if (error instanceof CallBudgetExceeded) throw error;
@@ -365,7 +387,7 @@ export async function buildCourse(input: BuildInput, models: BuilderModels, opti
     const items = snapshot.lessons.reduce((n, l) => n + l.quiz.length, 0);
     step("done", `Built ${snapshot.lessons.length} lessons, ${sectionCount} sections, ${items} questions`, "ok", `${calls.count} model call(s).`);
     report.model_calls = calls.count;
-    return { ok: true, snapshot: shuffleOptions(snapshot), report };
+    return { ok: true, snapshot: shuffleOptions(snapshot), report, ...(figures.length > 0 && { figures }) };
   } catch (error) {
     return fail([error instanceof CallBudgetExceeded ? error.message : `Generation stopped: ${message(error)}`]);
   }

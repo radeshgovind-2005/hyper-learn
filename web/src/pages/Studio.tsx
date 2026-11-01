@@ -4,7 +4,7 @@ import { AskForm, EditStatus } from "../components/EditPanel.js";
 import { type Citations, LessonView } from "../components/LessonView.js";
 import type { SourceTarget } from "../components/SourceViewer.js";
 import { TuneButton } from "../components/TuneButton.js";
-import { ACCEPTED, chunkPages, readFile, uploadOriginal } from "../files.js";
+import { ACCEPTED, chunkPages, readFile, uploadOriginal, uploadPageImages } from "../files.js";
 import { AudienceField } from "./CreateCourse.js";
 import type { BuildState, BuildStep, Call, CourseDetails, CourseSnapshot, Member, ModelSettings, Overview, OwnerSourceSummary, SourceRole, SourceSummary } from "../types.js";
 
@@ -170,6 +170,7 @@ function AddOriginal({ call, source, onAdded }: { call: Call; source: OwnerSourc
         if (!read.bytes) throw new Error("Pick the PDF");
         if (read.pages.length !== source.pages) throw new Error(`${file.name} has ${read.pages.length} pages; ${source.name} has ${source.pages}. Pick the same file.`);
         await uploadOriginal(call, source.id, read.bytes, (sent, of) => setStatus(`Uploading ${sent} of ${of}…`));
+        await uploadPageImages(call, source.id, read.bytes, (page, of) => setStatus(`Picturing page ${page} of ${of}…`));
         onAdded();
       } finally {
         setStatus(null);
@@ -229,6 +230,8 @@ function Sources({
         if (read.bytes) {
           try {
             await uploadOriginal(call, summary.id, read.bytes, (sent, of) => update(file.name, { status: `Uploading the original (${sent} of ${of})…` }));
+            // Pictures of the pages with figures, for the build to read ("see").
+            await uploadPageImages(call, summary.id, read.bytes, (page, of) => update(file.name, { status: `Picturing pages with figures (${page} of ${of})…` }));
           } catch (e) {
             onChange();
             update(file.name, { status: "Added as text only", error: message(e) });

@@ -5,4 +5,5 @@ export { cannedBuilderModels } from "./canned.js";
 export { studioChecks, type StudioProblem } from "./checks.js";
 export { formatReport } from "./report.js";
 export { stressTest, type StressResult } from "./stress.js";
+export { type PageSeer, seePages } from "./see.js";
 export type { BuildInput, BuildReport, BuildResult, BuildStep } from "./types.js";
