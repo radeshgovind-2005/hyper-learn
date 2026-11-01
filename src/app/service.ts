@@ -638,6 +638,7 @@ export class CourseService {
     this.meta.set("run", null);
     this.releases.reset(this.startingSnapshot(scenario), this.now);
     this.learnerViews.clear(); // v1.0.0 may now be another scenario's
+    this.citedByRelease.clear();
     this.events.clear();
     this.profiles.clearStates();
     this.sharedRepairs.clear();
@@ -1797,15 +1798,7 @@ export class CourseService {
    */
   citedSources(learner: string): CitedSource[] {
     if (this.fixed) return []; // built-in courses are written by hand, not from uploaded files
-    const snapshot = this.servedRelease(learner).snapshot;
-    const cited = new Set<string>();
-    for (const lesson of snapshot.lessons.filter((l) => !l.archived)) {
-      for (const section of lesson.sections.filter((s) => !s.archived)) {
-        for (const block of section.blocks) {
-          if (!block.archived && isTextBlock(block)) for (const c of block.cites ?? []) cited.add(c.source);
-        }
-      }
-    }
+    const cited = this.citedIn(this.servedRelease(learner).snapshot);
     const hidden = this.hiddenSources();
     const files = this.media.files();
     return this.sources
@@ -1813,6 +1806,29 @@ export class CourseService {
       .filter((s) => cited.has(s.id) && !hidden.has(s.id) && !(s.role && NEVER_SHOWN.has(s.role)))
       .map((s) => ({ id: s.id, name: s.name, pages: s.pages, ...(files.has(s.id) && { file: files.get(s.id)! }) }));
   }
+
+  /**
+   * The sources a release's live blocks cite. Release content never changes, so this is worked out once
+   * per version: learners' file, page and figure reads each ask (src/app/service.ts, stream A).
+   */
+  private citedIn(snapshot: CourseSnapshot): ReadonlySet<string> {
+    let cited = this.citedByRelease.get(snapshot.version);
+    if (!cited) {
+      const found = new Set<string>();
+      for (const lesson of snapshot.lessons.filter((l) => !l.archived)) {
+        for (const section of lesson.sections.filter((s) => !s.archived)) {
+          for (const block of section.blocks) {
+            if (!block.archived && isTextBlock(block)) for (const c of block.cites ?? []) found.add(c.source);
+          }
+        }
+      }
+      if (this.citedByRelease.size >= 8) this.citedByRelease.delete(this.citedByRelease.keys().next().value!);
+      this.citedByRelease.set(snapshot.version, (cited = found));
+    }
+    return cited;
+  }
+
+  private readonly citedByRelease = new Map<string, ReadonlySet<string>>();
 
   /** A page of a file the learner may open (see citedSources): any page of it, not only the cited ones. */
   sourcePage(learner: string, id: unknown, page: unknown): SourcePage {
