@@ -12,3 +12,8 @@
 @media (prefers-color-scheme: dark) {
   .pdf-frame { border-color: var(--line-strong); }
 }
+
+/* Under a section's title: "Copy link", and "Tune" for people who may edit. */
+.section-links { display: flex; flex-wrap: wrap; align-items: flex-start; gap: var(--s1); margin: calc(-1 * var(--s2)) 0 var(--s3); }
+.section-links .section-tools { margin: 0; }
+.copy-link { color: var(--muted); }

@@ -11,6 +11,8 @@ import { RepairDrawer } from "./components/RepairDrawer.js";
 import { Shell } from "./components/Shell.js";
 import { TuneButton } from "./components/TuneButton.js";
 import { type SourceTarget, SourceViewer } from "./components/SourceViewer.js";
+import { CopyLink } from "./components/CopyLink.js";
+import { hashOf, parseHash } from "./deeplink.js";
 import { coursePath, type Directory, FEATURED_COURSE, useDirectory, useSessionQuery } from "./directory.js";
 import { Coach } from "./pages/Coach.js";
 import { CreateCourse } from "./pages/CreateCourse.js";
@@ -62,6 +64,7 @@ const START_LESSON: Record<string, string> = { [FEATURED_COURSE]: "agent-loop" }
 
 function CourseApp({ courseId, base, rest, directory }: { courseId: string; base: string; rest: string; directory: Directory }) {
   const navigate = useNavigate();
+  const { hash } = useLocation();
   const go = useCallback((path: string) => navigate(`${base}${path}` || "/"), [navigate, base]);
   const onProgressPage = rest === "/me";
   const onStudioPage = rest === "/studio";
@@ -165,15 +168,27 @@ function CourseApp({ courseId, base, rest, directory }: { courseId: string; base
   const refreshProgress = useCallback(() => void call<LessonProgress[]>("progress").then(setProgress), [call]);
   const closeDrawer = useCallback(() => setDrawer(null), []);
   const toggle = (name: Exclude<DrawerName, null>) => setDrawer((d) => (d === name ? null : name));
+  // Lessons and sections are in the URL's hash (`#<lesson>/<section>`), so a link opens them and Back
+  // returns to the previous one; the effect below follows the hash.
   const openLesson = (id: string) => {
     setChosenLesson(id);
-    if (rest !== "") go("");
+    navigate(`${base || "/"}${hashOf(id)}`);
   };
-  // After the lesson renders, bring the section into view (a "review §…" step).
   const openSection = (lesson: string, section: string) => {
-    openLesson(lesson);
-    setTimeout(() => document.getElementById(section)?.scrollIntoView({ behavior: "smooth", block: "start" }), 50);
+    setChosenLesson(lesson);
+    navigate(`${base || "/"}${hashOf(lesson, section)}`);
   };
+  const version = snapshot?.version;
+  useEffect(() => {
+    if (!snapshot || rest !== "") return;
+    const target = parseHash(hash, snapshot.lessons);
+    if (!target) return;
+    setChosenLesson(target.lesson);
+    // After the lesson renders, bring the section into view.
+    const section = target.section;
+    if (section) setTimeout(() => document.getElementById(section)?.scrollIntoView({ behavior: "smooth", block: "start" }), 50);
+    // Follows the hash, and the release once it loads (not every new snapshot object).
+  }, [hash, version, rest]);
 
   const running = status === "running";
   const waiting = status === "awaiting_approval";
@@ -295,7 +310,12 @@ function CourseApp({ courseId, base, rest, directory }: { courseId: string; base
           setChosenLesson(id);
           go("/coach");
         }}
-        {...(editable && { sectionTools: (section) => <TuneButton call={call} sectionId={section.id} busy={editBusy} onRequested={() => setDrawer("repair")} /> })}
+        sectionTools={(section) => (
+          <div className="section-links">
+            {section.title && <CopyLink sectionId={section.id} />}
+            {editable && <TuneButton call={call} sectionId={section.id} busy={editBusy} onRequested={() => setDrawer("repair")} />}
+          </div>
+        )}
         citations={citations}
       />
     );
