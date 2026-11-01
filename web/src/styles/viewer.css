@@ -1,0 +1,14 @@
+/* Stream A: the real page viewer, figures and provenance chips. Uses the tokens in styles.css. */
+
+.viewer-bar { flex-wrap: wrap; gap: var(--s2); }
+.viewer-bar .zoom { gap: var(--s1); }
+
+.pdf-frame { width: 100%; overflow: auto; max-height: calc(100vh - 220px); border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface-2); }
+.pdf-page { position: relative; margin: 0 auto; background: #fff; }
+.pdf-page canvas { display: block; }
+/* Highlighter yellow over the page: multiply keeps the text under it readable on light and dark slides. */
+.pdf-mark { position: absolute; background: rgba(255, 213, 0, 0.45); mix-blend-mode: multiply; border-radius: 2px; pointer-events: none; scroll-margin: var(--s7); }
+
+@media (prefers-color-scheme: dark) {
+  .pdf-frame { border-color: var(--line-strong); }
+}

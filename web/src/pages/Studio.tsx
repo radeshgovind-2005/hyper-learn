@@ -763,7 +763,7 @@ export function Studio({
   // The owner's preview shows chips for every cited file, opened with ownerSourcePage.
   const citations = useMemo<Citations>(
     () => ({
-      sources: new Map(sources.map((s) => [s.id, { id: s.id, name: s.name, pages: s.pages }])),
+      sources: new Map(sources.map((s) => [s.id, { id: s.id, name: s.name, pages: s.pages, ...(s.file && { file: s.file }) }])),
       open: (source, page, passage) => onOpenSource({ source, page, passage, owner: true }),
     }),
     [sources, onOpenSource],
@@ -821,7 +821,7 @@ export function Studio({
           sources={sources}
           locked={locked}
           onChange={loadSources}
-          onView={(s) => onOpenSource({ source: { id: s.id, name: s.name, pages: s.pages }, page: 1, owner: true })}
+          onView={(s) => onOpenSource({ source: { id: s.id, name: s.name, pages: s.pages, ...(s.file && { file: s.file }) }, page: 1, owner: true })}
           unused={unused}
           editBusy={editBusy}
         />

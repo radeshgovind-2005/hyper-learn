@@ -49,3 +49,28 @@ export function shortName(name: string, max = 28): string {
   const base = name.replace(/\.[a-z0-9]{1,5}$/i, "");
   return base.length > max ? `${base.slice(0, max - 1)}…` : base;
 }
+
+/** A piece of text on a rendered PDF page, as pdf.js gives it (getTextContent). */
+export interface TextItem {
+  str: string;
+  hasEOL?: boolean;
+}
+
+/**
+ * The text items of a PDF page that hold the passage best matching `block`, by index: the page's text is
+ * joined from its items the way the upload extracts it (an item, then a line break where the item ends a
+ * line), findPassage picks the pieces, and every item that overlaps them is marked.
+ */
+export function markItems(items: readonly TextItem[], block: string | undefined): number[] {
+  let text = "";
+  const spans = items.map((item) => {
+    const start = text.length;
+    text += item.str + (item.hasEOL ? "\n" : "");
+    return [start, start + item.str.length] as const;
+  });
+  const { pieces: parts, marked } = findPassage(text, block);
+  if (!marked) return [];
+  const from = parts.slice(0, marked[0]).join("").length;
+  const to = from + parts.slice(marked[0], marked[1] + 1).join("").length;
+  return spans.flatMap(([start, end], i) => (end > start && start < to && end > from ? [i] : []));
+}
