@@ -44,3 +44,25 @@
 .prov-check.doubted { color: var(--amber); }
 .prov-made { color: var(--violet); font-weight: 600; }
 .prov-check::before, .prov-made + .prov-file::before { content: "·"; margin-right: var(--s2); color: var(--muted); }
+
+/* Widgets (Interventions.tsx): the formula explorer and the side-by-side comparison. */
+.widget { border: 1px solid var(--line); border-radius: var(--radius); padding: var(--s4); background: var(--canvas); }
+.widget h4 { margin: 0 0 var(--s3); }
+.explorer-body { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr); gap: var(--s4); align-items: start; }
+@media (max-width: 640px) { .explorer-body { grid-template-columns: 1fr; } }
+.sliders { display: grid; gap: var(--s3); }
+.slider { display: grid; gap: var(--s1); }
+.slider input[type="range"] { width: 100%; accent-color: var(--blue); }
+.readout { font-size: var(--t-lg); }
+.curve { width: 100%; height: auto; overflow: visible; }
+.curve .axis { stroke: var(--line-strong); stroke-width: 1; }
+.curve .line { fill: none; stroke: var(--blue); stroke-width: 2.5; stroke-linejoin: round; }
+.curve .dot { fill: var(--blue); stroke: var(--canvas); stroke-width: 2; }
+.curve .tick { font-size: 11px; fill: var(--muted); }
+.takeaway { margin: var(--s3) 0 0; font-size: var(--t-sm); color: var(--ink-2); }
+.compare .toggle { gap: var(--s2); margin-bottom: var(--s3); }
+.case-points { margin: 0 0 var(--s3); padding-left: var(--s5); }
+.bars { display: grid; gap: var(--s2); }
+.bar-row { display: grid; grid-template-columns: 5em 1fr auto; align-items: center; gap: var(--s2); opacity: 0.6; }
+.bar-row.on { opacity: 1; }
+.bar { height: 10px; border-radius: 5px; background: var(--blue); }

@@ -8,7 +8,7 @@ import { ProvenanceChip } from "./ProvenanceChip.js";
 import { QuizFlow } from "./Quiz.js";
 import { plainPreview, type RailItem, SectionRail } from "./SectionRail.js";
 
-const TEMPLATE_NAME = { contrast: "Contrast card", practice: "Practice set", step_through: "Step-through player" } as const;
+const TEMPLATE_NAME = { contrast: "Contrast card", practice: "Practice set", step_through: "Step-through player", explorer: "Formula explorer", compare: "Side by side" } as const;
 
 type CheckBlock = Extract<Block, { kind: "check" }>;
 type TextBlock = Extract<Block, { markdown: string }>;
