@@ -451,6 +451,7 @@ function ModelKey({ call, settings, onChange }: { call: Call; settings: ModelSet
 const STAGE_LABEL: Record<string, string> = {
   classify: "Sort files",
   digest: "Read",
+  see: "Figures",
   plan: "Plan",
   write: "Write",
   assess: "Questions",
