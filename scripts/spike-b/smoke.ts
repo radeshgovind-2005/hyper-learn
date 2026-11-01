@@ -170,9 +170,39 @@ async function voice(wavPath: string) {
   });
 }
 
+/** Three learners: "Explain differently" on one section, then "Quiz me on this", answered right: the bandit's counts and a promotion. */
+async function promote() {
+  const id = readFileSync(ID_FILE, "utf8").trim();
+  for (const who of ["smoke_q1", "smoke_q2", "smoke_q3"]) {
+    await join(id, who);
+    const c = client("course-agent", id, who);
+    await ready(c);
+    const snapshot = await c.call<{ lessons: { id: string; sections: { id: string; title: string }[]; quiz: { prompt: string; options?: { text: string; correct: boolean }[] }[] }[] }>("snapshot", []);
+    const lesson = snapshot.lessons[1]!;
+    const section = lesson.sections[1]!;
+    await turn(c, { lesson: lesson.id, section: section.id, text: "Explain this section differently.", shortcut: "explain" });
+    await waitBlocks(c, lesson.id);
+    const quiz = await turn(c, { lesson: lesson.id, section: section.id, text: "Quiz me on this section.", shortcut: "quiz" });
+    if (!quiz.ask) {
+      console.log("  (no question asked)");
+      continue;
+    }
+    // A smoke test may look the key up in the learner's snapshot (stream A removes it from there); checks fall back to option 0.
+    const item = snapshot.lessons.flatMap((l) => l.quiz).find((q) => q.prompt === quiz.ask!.prompt);
+    const right = item?.options?.findIndex((o) => o.correct) ?? -1;
+    console.log("  answer:", JSON.stringify(await c.call("answerAsk", [quiz.ask.id, right >= 0 ? right : 0])));
+    c.close();
+  }
+  const owner = client("course-agent", id, OWNER);
+  await ready(owner);
+  for (const r of await owner.call<{ label: string; learners: number; fixed: number; repaired: number; promote: unknown }[]>("coachInsights", [])) console.log(`insight: ${r.label.slice(0, 60)} · ${r.learners} learners · fixed ${r.fixed}/${r.repaired} · promote ${JSON.stringify(r.promote)}`);
+  owner.close();
+}
+
 const stage = process.argv[2];
 if (stage === "setup") await setup();
 else if (stage === "tutor") await tutor();
 else if (stage === "voice") await voice(process.argv[3]!);
+else if (stage === "promote") await promote();
 else console.log("stage: setup | tutor | voice <wav>");
 process.exit(0);

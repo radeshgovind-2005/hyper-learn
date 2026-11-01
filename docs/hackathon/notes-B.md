@@ -35,6 +35,11 @@ Branch `hackathon/b-tutor` from `origin/main`, built 2026-11-01. `npm run typech
   insights and the learner timeline include it without a new event kind.
 - **`interact` takes the widget spec as a JSON string** (validated with `InterventionSchema` and the leak
   checks), so the tool schema works whatever the API does with unions.
+- **The dock's shortcuts are answered in code, without a model call**: "Explain differently" / "Give me an
+  example" start a rewrite of the section in view at once (smaller steps / worked example), "Quiz me on this"
+  puts a question up at once. With the model in charge, Spark asked a question instead of rewriting, and once
+  built a widget instead of asking. Shortcut rewrites are shared (no words of the learner's own), so the second
+  learner on a section gets one instantly.
 - **Low reasoning effort for tutor steps**: about 25% faster per step (B0), and the slow parts are tools.
 - **Built-in courses**: the tutor runs there only with `TUTOR_FEATURED=on` (it would spend the Worker's key for
   every signed-in person), and never rewrites there (no owner writer).
@@ -51,6 +56,10 @@ Branch `hackathon/b-tutor` from `origin/main`, built 2026-11-01. `npm run typech
   and a contrast widget in parallel. The rewrite was ready in **~30 s** (worked example, every block citing p.2,
   fact-checked), the diagram in about the same time.
 - Before low reasoning effort, a similar turn took 54–75 s (6 calls, one refused widget).
+- Three more learners pressed "Explain differently" then "Quiz me on this" on one section and answered right:
+  the first rewrite took 45 s, the other two were the shared one (instant); the owner's insights then offered
+  "Promote to the course (3/3 fixed)", and pressing it produced a ready edit proposal through the existing
+  harness (old blocks archived, a smaller-steps version inserted) in about 20 s.
 - Voice through workerd: partial words while speaking; final transcript **206 ms after release**; no token → 401.
 - Muse Wonder: 5–6 s per check; it passed a true claim and caught both errors in a false one.
 - The course build itself (3 pages of original NUMA notes): 3.5 min, 3 lessons, 45 questions.
@@ -63,8 +72,8 @@ Branch `hackathon/b-tutor` from `origin/main`, built 2026-11-01. `npm run typech
   `LessonView`, `TutorDock` and `PersonalLayer` against workerd with the dev bypass (desktop and 375 px). The
   `App.tsx` wiring compiles and builds but was not seen in a browser. The microphone path in a real browser is
   untested (the relay was tested with recorded speech through workerd).
-- **The Promote button and suggestions list** (Studio → coach insights) were not seen in a browser; the
-  service paths are tested.
+- **The Promote button** was seen and pressed in the harness (as the owner); inside the real Studio page it was
+  not seen. The suggestions list wasn't exercised live (no turn called `suggest_for_everyone`).
 - Personal blocks use a private `PersonalMarkdown` and a small provenance line until the join (J4b, J4c).
 - Image pieces carry the image id; they don't put `![…](gen:…)` into Markdown, so the sanitiser change (J4d) is
   only needed if the writer is later allowed to place pictures inline.

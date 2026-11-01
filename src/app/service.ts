@@ -1384,6 +1384,34 @@ export class CourseService {
       return { reply, actions: [], blocks: [], model_calls: 0 };
     }
 
+    // Shortcuts are explicit requests, so code answers them without a model call: a question, or a rewrite.
+    if (input.shortcut) {
+      const section = inView?.section ?? lesson.sections.find((x) => !x.archived && x.title);
+      if (!section) throw new Error("This lesson has no section to work on");
+      const reply = (text: string, extra: Partial<TutorTurnResult>): TutorTurnResult => {
+        record(text);
+        return { reply: text, actions: [], blocks: [], model_calls: 0, ...extra };
+      };
+      try {
+        if (input.shortcut === "quiz") {
+          onEvent?.({ type: "step", label: "Writing a question for you" });
+          const ask = this.askLearner(learner, release, lesson.id, section.id, pending);
+          return reply(`Here's a question on "${section.title}". Answer it and I'll take it from there.`, { ask });
+        }
+        if (this.fixed || !this.options.repairer) throw new Refused("Personal rewrites need a course built from its own pages; ask me about it instead");
+        onEvent?.({ type: "step", label: "Rewriting the section for you" });
+        const block = this.startPersonal(learner, release, section.id, { kind: "rewrite", note: "", shortcut: input.shortcut });
+        const what = input.shortcut === "example" ? "a worked example" : "smaller steps";
+        return reply(`I'm writing "${section.title}" for you as ${what}, from the course's own pages. It appears under that section in about half a minute.`, {
+          blocks: [block],
+          actions: [{ kind: "go_to_section", lesson: lesson.id, section: section.id }],
+        });
+      } catch (error) {
+        if (error instanceof Refused) return reply(error.message, {});
+        throw error;
+      }
+    }
+
     const cited = this.citedSources(learner);
     const allowed = new Set(cited.map((s) => s.id));
     const pageText = (source: string, page: number) => {

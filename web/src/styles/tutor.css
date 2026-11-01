@@ -128,3 +128,7 @@
 .storyboard-narration { margin: 0; color: var(--ink-2); }
 .storyboard-controls { margin-top: var(--s3); }
 .storyboard-sound { display: inline-flex; align-items: center; gap: var(--s1); margin-left: auto; }
+
+/* ─── Owner insights: a row with "Promote to the course" wraps its buttons under the label ── */
+.coach-insights li:has(.btn.primary) { flex-wrap: wrap; }
+.coach-insights li:has(.btn.primary) > .grow { flex: 1 1 100%; }

@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import type { Call, TutorSuggestion } from "../types.js";
+import "../styles/tutor.css";
 
 // What learners keep asking the study coach to repair, and whether the personal lessons worked. One
 // click turns a pattern into an owner edit for everyone (the same "Ask for a change" engine).

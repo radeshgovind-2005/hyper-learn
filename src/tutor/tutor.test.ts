@@ -361,10 +361,13 @@ describe("tutor: generated pictures (B5)", () => {
         }),
       },
     });
-    const { model } = scripted([uses(call("rewrite_for_me", { section: section.id, note: "" }), call("draw_it", { section: section.id, description: "notches" })), says("ok")]);
+    // "Explain differently" starts the rewrite in code; then the learner asks for a picture.
+    const rewritten = await s.tutorTurn("user_bob", { lesson: lesson.id, section: section.id, text: "Explain differently", shortcut: "explain" });
+    assert.equal(rewritten.model_calls, 0);
+    const { model } = scripted([uses(call("draw_it", { section: section.id, description: "notches" })), says("ok")]);
     (s as unknown as { options: { tutor: TutorOptions } }).options.tutor.model = () => model;
-    const turn = await s.tutorTurn("user_bob", { lesson: lesson.id, section: section.id, text: "Explain differently", shortcut: "explain" });
-    for (const b of turn.blocks) await s.continuePersonal("user_bob", b.id);
+    const drawn = await s.tutorTurn("user_bob", { lesson: lesson.id, section: section.id, text: "draw the notches" });
+    for (const b of [...rewritten.blocks, ...drawn.blocks]) await s.continuePersonal("user_bob", b.id);
     const blocks = s.personalBlocks("user_bob", lesson.id);
     assert.equal(blocks.find((b) => b.kind === "rewrite")!.status, "ready");
     assert.equal(blocks.find((b) => b.kind === "diagram")!.status, "failed");
@@ -452,6 +455,20 @@ describe("tutor: the open-weights switch (B7)", () => {
   });
 });
 
+describe("tutor: the dock's shortcuts", () => {
+  it("answers them in code: a rewrite of the section in view, or a question on it, with no model call", async () => {
+    const { model, seen } = scripted([says("unused")]);
+    const { s, lesson, section } = await course({ model });
+    const example = await s.tutorTurn("user_bob", { lesson: lesson.id, section: section.id, text: "Give me an example", shortcut: "example" });
+    assert.equal(example.model_calls, 0);
+    assert.deepEqual(example.actions, [{ kind: "go_to_section", lesson: lesson.id, section: section.id }]);
+    assert.equal(example.blocks[0]!.kind, "rewrite");
+    const quiz = await s.tutorTurn("user_bob", { lesson: lesson.id, section: section.id, text: "Quiz me", shortcut: "quiz" });
+    assert.ok(quiz.ask);
+    assert.equal(seen.length, 0);
+  });
+});
+
 describe("tutor: where it runs", () => {
   it("is off on a built-in course unless the Worker opts in, and never rewrites there", async () => {
     const off = new CourseService(sqlite());
@@ -461,7 +478,10 @@ describe("tutor: where it runs", () => {
     const { model, seen } = scripted([uses(call("rewrite_for_me", { section: lesson.sections[0]!.id, note: "x" })), says("ok")]);
     const on = new CourseService(sqlite(), { agentsAvailable: true, tutor: { model: () => model, meta: { baseURL: "https://api.example.com/v1", apiKey: "k" } } });
     assert.equal(on.tutorInfo("user_bob").available, true);
-    const turn = await on.tutorTurn("user_bob", { lesson: lesson.id, text: "explain", shortcut: "explain" });
+    const shortcut = await on.tutorTurn("user_bob", { lesson: lesson.id, text: "explain", shortcut: "explain" });
+    assert.deepEqual(shortcut.blocks, []);
+    assert.match(shortcut.reply, /Personal rewrites need a course built from its own pages/);
+    const turn = await on.tutorTurn("user_bob", { lesson: lesson.id, text: "rewrite it for me" });
     assert.deepEqual(turn.blocks, []);
     assert.match(toolMessages(seen[1]!)[0]!.content, /Personal rewrites need a course built from its own pages/);
   });
