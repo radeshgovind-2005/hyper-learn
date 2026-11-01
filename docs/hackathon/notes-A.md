@@ -97,8 +97,43 @@ links, `sectionTools`); `web/src/components/LessonView.tsx` (`BlockView`, `Check
 
 ## The 60-second demo
 
-(Filled in after the workerd smoke run below.)
+1. **Studio, new course** → drop `hpc_scaling.pdf`. The file row says "Uploading the original…", then
+   "Picturing pages with figures…". (Set the model key first.)
+2. **Build.** The log shows *Figures: Looked at 30 page picture(s): 34 figure(s)* (Muse Spark vision + SAM 3.1).
+3. **Open a lesson.** A real slide figure, cropped, with its caption; a table rendered as a table; a formula
+   rendered by KaTeX. Under each block, one chip: "hpc_scaling p.12 · fact-checked ✓".
+4. **Click the chip's page.** The drawer shows the **actual slide**, the quoted words outlined in yellow (or, for a
+   figure, the figure's box). Previous / Next / zoom / Text.
+5. **Copy link** on a section title → paste in a new tab → it lands on that section.
+6. **Devtools** (as a learner): `snapshot` has no `"correct"`, no feedback; the exam neither.
 
-## Smoke run in workerd
+## Smoke run in workerd (2026-11-01)
 
-(Filled in below.)
+`wrangler dev` on :8787 from a worktree pinned to the commit under test, `--persist-to` a scratch directory,
+`AUTH_DEV_BYPASS` and `KEY_ENCRYPTION_SECRET` on the command line only (`.dev.vars` untouched), the real Meta key
+set through `scripts/smoke-call.mts` (read from `.env`, never printed). The browser was signed in with Clerk as an
+admin; a dev learner joined with an invite.
+
+**Course 1: `ComPar-Lec01.pdf`** (24 slides; private material, used only locally), at commit a066418 (A8):
+
+- Upload: 879,502 bytes stored in 2 chunks; 24 page pictures (before the "≥ 60 shapes" tweak).
+- Build: done in 10.6 minutes, 120 model calls. *Figures:* 24 vision calls, 12 SAM calls; 3 tables, 4 charts,
+  2 figures, 3 equations. 5 lessons, 17 sections, 85 questions.
+- Validation round 1 sent 9 practice questions back for giving their answer away by length (A6); one fix round
+  cleared them.
+- Lessons: 9 figure blocks (the p.7 trend chart, the p.11 power formula, the p.13 Xeon/i9 diagrams, the three p.15
+  memory-hierarchy cards), 3 Markdown tables (one from vision's reading of p.15), 3 blocks with KaTeX.
+- Found and fixed from this run: all 11 rewrites after the fact check were thrown away because one lesson's
+  rewritten checks broke the length rule, so 50 of 76 blocks showed "check doubted" (fixed in c89fc73: only the
+  offending rewrites are undone). The figure crop of a tall card filled the screen (capped), the yellow highlight
+  was invisible on dark slides (`multiply`), a figure block's chip highlighted a guess (it now outlines the
+  figure's box), and the fallback highlight ignored numbers (fixed). All checked again in the browser.
+- As a learner (dev user who joined with an invite): `snapshot` 213 KB with no `"correct"` and no `"feedback"`
+  (the owner's copy has both); `exam` has no `"correct"`; `figure` and `sourceFileChunk` work for the cited file;
+  `addPageImage` is refused ("Your role in this course (learner) can't do that").
+- Deep link `/c/<id>#applications-and-parallel-hardware-platf/multicore-cpu-gpu-and-cluster-memory-hie` landed on
+  the section.
+
+**Course 2: `hpc_scaling.pdf`** (56 slides, CC BY 4.0; the demo material), at the latest commit:
+
+(results below)
