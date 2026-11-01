@@ -3,7 +3,7 @@ import type { TextItem as PdfTextItem } from "pdfjs-dist/types/src/display/api.j
 import { useEffect, useMemo, useRef, useState } from "react";
 import { fetchOriginal, loadPdfjs } from "../files.js";
 import { findPassage, markItems } from "../passage.js";
-import type { Call, CitedSource, SourcePage } from "../types.js";
+import type { Call, CitedSource, Figure, SourcePage } from "../types.js";
 import "../styles/viewer.css";
 
 /** A source page to open: from a lesson's citation chip, or from the studio's file list. */
@@ -41,7 +41,12 @@ interface Mark {
   top: number;
   width: number;
   height: number;
+  /** A figure's outline rather than highlighted text. */
+  box?: boolean;
 }
+
+/** The figure a block that is only a picture shows (`![…](fig:s1/p15/f1)`): the viewer outlines it on the page. */
+const FIGURE_BLOCK = /^\s*!\[[^\]]*\]\(fig:([a-z0-9][a-z0-9/_-]{0,79})\)\s*$/;
 
 /** The real page on a canvas, with the cited lines marked in yellow over it. */
 function PdfPage({ call, target, page, zoom, onError }: { call: Call; target: SourceTarget; page: number; zoom: number; onError: (message: string) => void }) {
@@ -80,10 +85,19 @@ function PdfPage({ call, target, page, zoom, onError }: { call: Call; target: So
         const render = pdfPage.render({ canvas: el, viewport, ...(ratio !== 1 && { transform: [ratio, 0, 0, ratio, 0, 0] }) });
         task = render;
         // Only the cited page is marked: on the others a match would be a guess about a different passage.
-        const content = page === target.page && target.passage ? await pdfPage.getTextContent() : null;
+        const figureId = page === target.page ? FIGURE_BLOCK.exec(target.passage ?? "")?.[1] : undefined;
+        const content = page === target.page && target.passage && !figureId ? await pdfPage.getTextContent() : null;
+        const figure = figureId ? await call<Figure>("figure", [figureId]).catch(() => null) : null;
         await render.promise;
         if (!current) return;
         setSize({ width: viewport.width, height: viewport.height });
+        if (figure && figure.source === target.source.id && figure.page === page) {
+          // A figure's box is in fractions of its page picture, which has the page's shape.
+          const { x1, y1, x2, y2 } = figure.box;
+          setMarks([{ left: x1 * viewport.width, top: y1 * viewport.height, width: (x2 - x1) * viewport.width, height: (y2 - y1) * viewport.height, box: true }]);
+          setLoading(false);
+          return;
+        }
         const pdfjs = await loadPdfjs();
         const items = (content?.items ?? []).filter((item): item is PdfTextItem => "str" in item);
         setMarks(
@@ -114,7 +128,7 @@ function PdfPage({ call, target, page, zoom, onError }: { call: Call; target: So
       <div className="pdf-page" style={size ? { width: size.width, height: size.height } : undefined}>
         <canvas ref={canvas} style={size ? { width: size.width, height: size.height } : undefined} aria-label={`Page ${page} of ${target.source.name}`} role="img" />
         {marks.map((m, i) => (
-          <div key={i} ref={i === 0 ? firstMark : undefined} className="pdf-mark" style={{ left: m.left, top: m.top, width: m.width, height: m.height }} />
+          <div key={i} ref={i === 0 ? firstMark : undefined} className={`pdf-mark ${m.box ? "box" : ""}`} style={{ left: m.left, top: m.top, width: m.width, height: m.height }} />
         ))}
       </div>
       {loading && <div className="small muted pdf-loading">Loading the page…</div>}

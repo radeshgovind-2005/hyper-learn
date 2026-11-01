@@ -6,8 +6,9 @@
 .pdf-frame { width: 100%; overflow: auto; max-height: calc(100vh - 220px); border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface-2); }
 .pdf-page { position: relative; margin: 0 auto; background: #fff; }
 .pdf-page canvas { display: block; }
-/* Highlighter yellow over the page: multiply keeps the text under it readable on light and dark slides. */
-.pdf-mark { position: absolute; background: rgba(255, 213, 0, 0.45); mix-blend-mode: multiply; border-radius: 2px; pointer-events: none; scroll-margin: var(--s7); }
+/* Highlighter yellow over the page, with an edge so it shows on dark slides too; a figure gets an outline. */
+.pdf-mark { position: absolute; background: rgba(255, 214, 0, 0.32); box-shadow: 0 0 0 2px rgba(255, 196, 0, 0.95); border-radius: 2px; pointer-events: none; scroll-margin: var(--s7); }
+.pdf-mark.box { background: rgba(255, 214, 0, 0.12); box-shadow: 0 0 0 3px rgba(255, 196, 0, 0.95); }
 
 @media (prefers-color-scheme: dark) {
   .pdf-frame { border-color: var(--line-strong); }
@@ -29,7 +30,7 @@
 /* Figures in lessons (AssetImage.tsx): a crop of the source page, or a whole image. */
 .asset { margin: var(--s4) 0; }
 .asset img { max-width: 100%; display: block; border-radius: var(--radius-sm); }
-.asset-crop { position: relative; overflow: hidden; width: 100%; max-width: 640px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: #fff; }
+.asset-crop { position: relative; overflow: hidden; width: 100%; border: 1px solid var(--line); border-radius: var(--radius-sm); background: #fff; }
 .asset-crop img { position: absolute; max-width: none; border-radius: 0; }
 .asset figcaption { font-size: var(--t-sm); color: var(--muted); margin-top: var(--s2); }
 .asset-alt { display: block; font-style: italic; color: var(--muted); margin: var(--s3) 0; }

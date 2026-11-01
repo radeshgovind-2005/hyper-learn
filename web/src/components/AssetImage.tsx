@@ -79,7 +79,8 @@ export function AssetImage({ call, kind, id, alt }: { call: Call | undefined; ki
   const h = Math.max(0.01, box.y2 - box.y1);
   return (
     <figure className="asset">
-      <div className="asset-crop" style={{ aspectRatio: `${w * loaded.aspect} / ${h}` }} role="img" aria-label={caption}>
+      {/* At most 640 px wide and 420 px tall, so a tall, narrow figure doesn't fill the screen. */}
+      <div className="asset-crop" style={{ aspectRatio: `${w * loaded.aspect} / ${h}`, maxWidth: `${Math.min(640, 420 * ((w * loaded.aspect) / h))}px` }} role="img" aria-label={caption}>
         <img src={loaded.src} alt="" style={{ width: `${100 / w}%`, height: `${100 / h}%`, left: `${(-box.x1 / w) * 100}%`, top: `${(-box.y1 / h) * 100}%` }} />
       </div>
       {caption && <figcaption>{caption}</figcaption>}
