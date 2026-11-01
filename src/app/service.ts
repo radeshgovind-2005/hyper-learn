@@ -1735,6 +1735,12 @@ export class CourseService {
     if (bytes > MAX_IMAGE_BYTES) throw new Error(`The picture came back too large (${Math.round(bytes / 1000)} KB; the limit is ${MAX_IMAGE_BYTES / 1000} KB)`);
     const id = hash.slice(0, 16);
     this.tutor.putImage({ id, learner, prompt_hash: hash, mime: image.mime, data: image.base64, bytes, at: this.now() });
+    // Once a day: pictures older than the retention window that no live block shows are dropped.
+    const today = this.now().slice(0, 10);
+    if (this.meta.get<string>("images_pruned") !== today) {
+      this.meta.set("images_pruned", today);
+      this.tutor.pruneImages(new Date(Date.parse(this.now()) - RETAIN_DETAIL_DAYS * 86_400_000).toISOString());
+    }
     return id;
   }
 

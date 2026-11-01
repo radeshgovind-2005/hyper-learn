@@ -57,6 +57,8 @@ export interface SuggestionRow {
 export const KEEP_TUTOR_MESSAGES = 80;
 /** Longest summary row: it is a reminder for the model, not a transcript. */
 const MAX_SUMMARY_CHARS = 1_200;
+/** Archived personal blocks kept per learner, section and kind (undo history); older ones are deleted. */
+export const KEEP_ARCHIVED_BLOCKS = 5;
 
 export class SqlTutor {
   constructor(private readonly sql: Sql) {
@@ -154,6 +156,10 @@ export class SqlTutor {
   /** Adds a live block, archiving the learner's live block of the same kind on that section. */
   putPersonal(row: Omit<PersonalRow, "live">) {
     this.sql`UPDATE hl_personal_blocks SET live = 0 WHERE learner = ${row.learner} AND section = ${row.section} AND kind = ${row.kind} AND live = 1`;
+    // Retention: the archive of one learner's section grows with each rewrite; only the last few stay.
+    this.sql`DELETE FROM hl_personal_blocks WHERE id IN (
+      SELECT id FROM hl_personal_blocks WHERE learner = ${row.learner} AND section = ${row.section} AND kind = ${row.kind} AND live = 0
+      ORDER BY at DESC, id DESC LIMIT -1 OFFSET ${KEEP_ARCHIVED_BLOCKS})`;
     this.sql`INSERT INTO hl_personal_blocks (id, learner, lesson, section, kind, status, job, pieces, provenance, approach, release, problems, at, live)
       VALUES (${row.id}, ${row.learner}, ${row.lesson}, ${row.section}, ${row.kind}, ${row.status}, ${row.job}, ${row.pieces}, ${row.provenance}, ${row.approach}, ${row.release}, ${row.problems}, ${row.at}, 1)`;
   }
@@ -218,6 +224,18 @@ export class SqlTutor {
   /** Images this learner generated since `since` (cache hits are free and not counted). */
   imagesSince(learner: string, since: string): number {
     return this.sql<{ n: number }>`SELECT COUNT(*) AS n FROM hl_generated_images WHERE learner = ${learner} AND at >= ${since}`[0]!.n;
+  }
+
+  /**
+   * Retention for pictures (each up to 400 KB): those made before `before` that no live block shows are
+   * deleted. One statement, run at most once a day on a write that already happens.
+   */
+  pruneImages(before: string): number {
+    const old = this.sql<{ n: number }>`SELECT COUNT(*) AS n FROM hl_generated_images WHERE at < ${before}`[0]!.n;
+    if (old === 0) return 0;
+    this.sql`DELETE FROM hl_generated_images WHERE at < ${before} AND NOT EXISTS (
+      SELECT 1 FROM hl_personal_blocks p WHERE p.live = 1 AND p.pieces LIKE '%"' || hl_generated_images.id || '"%')`;
+    return old - this.sql<{ n: number }>`SELECT COUNT(*) AS n FROM hl_generated_images WHERE at < ${before}`[0]!.n;
   }
 
   putImage(row: ImageRow) {
