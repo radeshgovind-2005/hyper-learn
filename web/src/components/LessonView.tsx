@@ -269,6 +269,8 @@ export function LessonView(props: {
   sectionTools?: (section: { id: string; title: string }) => ReactNode;
   /** Chips that open the source pages text blocks cite; absent: none (the featured course cites nothing). */
   citations?: Citations;
+  /** Shown under each section's blocks (the learner's personal "Made for you" blocks). */
+  sectionFooter?: (section: { id: string; title: string }) => ReactNode;
 }) {
   const { snapshot, parent, lessonId, mode, call } = props;
   const viewingHistory = mode === "history";
@@ -399,6 +401,7 @@ export function LessonView(props: {
                   citations={props.citations}
                 />
               ))}
+            {!viewingHistory && props.sectionFooter?.(section)}
           </section>
         ))}
 

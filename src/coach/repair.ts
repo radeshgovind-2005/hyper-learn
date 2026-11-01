@@ -44,6 +44,10 @@ export interface RepairInput {
   note?: string;
   /** Their wrong answers on this target, from the diagnostic or the last re-check. */
   wrong: DiagnosisResult["wrong"];
+  /** Write from these sections' pages instead of the target's (the tutor rewrites the section in view). */
+  sections?: readonly string[];
+  /** One more line for the writer about where the learner is (the tutor: the section they are reading). */
+  focus?: string;
 }
 
 export interface PersonalSection {
@@ -116,7 +120,7 @@ export async function writeRepair(input: RepairInput, models: Pick<BuilderModels
     const lessons = plannedLessons(snapshot);
     const lesson = lessons.find((l) => l.id === target.lesson);
     if (!lesson) return { ok: false, problems: [`No lesson "${target.lesson}"`], model_calls: 0 };
-    const pages = pagesFor(snapshot, sectionsFor(snapshot, target));
+    const pages = pagesFor(snapshot, input.sections ?? sectionsFor(snapshot, target));
     if (pages.length === 0) return { ok: false, problems: ["This part of the course cites no pages to write from"], model_calls: 0 };
     const { title, what } = describe(snapshot, target);
     const section: PlannedSection = { id: `${lesson.id}/for-you`, title, pages };
@@ -124,6 +128,7 @@ export async function writeRepair(input: RepairInput, models: Pick<BuilderModels
     const request = [
       "WRITE A SHORT PERSONAL LESSON FOR ONE LEARNER WHO IS STUCK (3 or 4 blocks, under 250 words in all).",
       what,
+      input.focus,
       HOW[input.approach],
       input.note?.trim() && `In their own words, what confuses them: "${input.note.trim().slice(0, 500)}"`,
       wrong.length > 0 && `Their wrong answers:\n${wrong.join("\n")}`,

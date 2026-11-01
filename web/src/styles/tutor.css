@@ -1,0 +1,134 @@
+/* Stream B: the "Ask Muse" dock, personal "Made for you" blocks, generated pictures and the storyboard.
+   Uses the app's tokens (web/src/styles.css); nothing here restyles shared classes. */
+
+/* ─── The dock: sticks to the bottom of the lesson column, so it never covers the sidebar or a drawer ── */
+.main:has(.tutor-dock) .lesson { padding-bottom: 168px; }
+.tutor-dock {
+  position: sticky;
+  bottom: 0;
+  z-index: 5;
+  max-width: 760px;
+  margin: 0 auto;
+  padding: 0 var(--s4) var(--s4);
+  pointer-events: none;
+}
+.tutor-dock > * { pointer-events: auto; }
+.tutor-bar {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--s2);
+  background: var(--canvas);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow);
+  padding: var(--s2) var(--s2) var(--s2) var(--s3);
+}
+.tutor-input {
+  flex: 1;
+  min-width: 0;
+  resize: none;
+  border: 0;
+  outline: none;
+  background: transparent;
+  padding: 6px 0;
+  max-height: 120px;
+  line-height: 1.5;
+  overflow-y: auto;
+  scrollbar-width: none;
+}
+.tutor-input::placeholder { color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tutor-bar .icon-btn { flex: none; }
+.tutor-plus { font-size: 20px; line-height: 1; }
+.tutor-mic.on { background: var(--red-soft); color: var(--red); animation: tutor-pulse 1.4s ease-in-out infinite; }
+@keyframes tutor-pulse { 50% { box-shadow: 0 0 0 6px rgba(201, 48, 44, 0.12); } }
+.tutor-menu-wrap { position: relative; z-index: 2; }
+.tutor-menu {
+  position: absolute;
+  bottom: calc(100% + var(--s2));
+  left: 0;
+  min-width: 220px;
+  background: var(--canvas);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow);
+  padding: var(--s1);
+  display: flex;
+  flex-direction: column;
+}
+.tutor-menu button { text-align: left; background: none; border: 0; padding: var(--s2) var(--s3); border-radius: 8px; }
+.tutor-menu button:hover:not(:disabled) { background: var(--surface); }
+.tutor-voice-note { margin: var(--s1) var(--s3) 0; }
+
+.tutor-panel {
+  background: var(--canvas);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  margin-bottom: var(--s2);
+  display: flex;
+  flex-direction: column;
+  max-height: min(52vh, 480px);
+}
+.tutor-panel-head { display: flex; align-items: center; gap: var(--s3); padding: var(--s2) var(--s2) var(--s2) var(--s4); border-bottom: 1px solid var(--line); }
+.tutor-panel-head .grow { flex: 1; }
+.tutor-log { overflow-y: auto; padding: var(--s3) var(--s4); display: flex; flex-direction: column; gap: var(--s2); }
+.tutor-msg { padding: var(--s2) var(--s3); border-radius: var(--radius-sm); max-width: 92%; white-space: pre-wrap; font-size: var(--t-md); }
+.tutor-msg.user { align-self: flex-end; background: var(--blue); color: #fff; }
+.tutor-msg.assistant { align-self: flex-start; background: var(--surface-2); }
+.tutor-steps { display: flex; align-items: center; gap: var(--s2); font-size: var(--t-sm); color: var(--ink-2); }
+.tutor-step-list { margin: var(--s1) 0 0; padding-left: 20px; }
+.tutor-ask { background: var(--violet-soft); border-radius: var(--radius-sm); padding: var(--s3) var(--s4); }
+.tutor-ask .prompt { font-weight: 600; margin-top: var(--s1); }
+.tutor-ask .option { background: var(--canvas); }
+
+@media (max-width: 640px) {
+  .tutor-dock { padding: 0 var(--s4) var(--s3); }
+  .tutor-panel { max-height: 46vh; }
+  .tutor-panel-head .small { display: none; }
+}
+
+/* A section the dock sent the learner to. */
+.section.tutor-highlight > h2 { background: linear-gradient(transparent 60%, var(--violet-soft) 60%); transition: background 0.3s var(--ease); }
+
+/* ─── Personal blocks: only this learner sees them ── */
+.personal-layer { display: flex; flex-direction: column; gap: var(--s4); margin: var(--s2) 0 var(--s5); }
+.personal {
+  border: 1px solid #d9d0fb;
+  border-left: 4px solid var(--violet);
+  border-radius: var(--radius);
+  background: #fcfbff;
+  padding: var(--s3) var(--s4) var(--s4);
+  animation: personal-in 0.4s var(--ease);
+}
+@keyframes personal-in { from { opacity: 0; transform: translateY(6px); } }
+.personal-head { display: flex; align-items: center; gap: var(--s2); margin-bottom: var(--s3); }
+.personal-head .grow { flex: 1; }
+.personal-kind { font-size: var(--t-sm); font-weight: 600; color: var(--violet); }
+.personal-running { display: flex; align-items: center; gap: var(--s2); color: var(--ink-2); }
+.personal-failed { color: var(--red); }
+.personal .prose p:last-child { margin-bottom: var(--s2); }
+.personal .personal-check { background: var(--canvas); margin: var(--s3) 0 0; }
+.provenance { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); margin-top: var(--s3); color: var(--ink-2); }
+.provenance-chips { display: inline-flex; gap: var(--s2); align-items: center; }
+
+/* ─── Generated pictures ── */
+.gen-figure { margin: var(--s2) 0 0; }
+.gen-figure figcaption { margin-top: var(--s1); }
+.gen-image { display: block; width: 100%; height: auto; border-radius: var(--radius-sm); border: 1px solid var(--line); background: var(--canvas); }
+.gen-image.loading { aspect-ratio: 3 / 2; background: linear-gradient(90deg, var(--surface) 0%, var(--surface-2) 50%, var(--surface) 100%); background-size: 200% 100%; animation: gen-shimmer 1.4s linear infinite; }
+.gen-image.missing { padding: var(--s4); text-align: center; }
+@keyframes gen-shimmer { to { background-position: -200% 0; } }
+
+/* ─── Storyboard ── */
+.storyboard { border: 1px solid var(--line); border-radius: var(--radius); padding: var(--s3); background: var(--canvas); }
+.storyboard-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: var(--s2); }
+.storyboard-frame { display: flex; flex-direction: column; gap: var(--s2); }
+.storyboard-card { aspect-ratio: 3 / 2; display: grid; place-items: center; text-align: center; padding: var(--s5); border-radius: var(--radius-sm); background: var(--violet-soft); color: var(--violet); font-size: var(--t-xl); font-weight: 600; }
+.storyboard-caption { font-weight: 600; }
+.storyboard-narration { margin: 0; color: var(--ink-2); }
+.storyboard-controls { margin-top: var(--s3); }
+.storyboard-sound { display: inline-flex; align-items: center; gap: var(--s1); margin-left: auto; }
+
+/* ─── Owner insights: a row with "Promote to the course" wraps its buttons under the label ── */
+.coach-insights li:has(.btn.primary) { flex-wrap: wrap; }
+.coach-insights li:has(.btn.primary) > .grow { flex: 1 1 100%; }

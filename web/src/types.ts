@@ -68,3 +68,13 @@ export type Call = <T>(method: string, args?: unknown[]) => Promise<T>;
 // ─── stream A ───
 export type { Figure, StoredFile, FileChunk } from "../../src/storage/media.js";
 export type { PageImage, Provenance } from "../../src/media/contracts.js";
+
+// ─── stream B ───
+export type { PersonalBlock, PublicPiece, StoryFrame, TutorAsk, TutorEvent, TutorTurnResult } from "../../src/tutor/types.js";
+export type { TutorAction } from "../../src/media/contracts.js";
+export type TutorInfo = ReturnType<CourseService["tutorInfo"]>;
+export type TutorSuggestion = ReturnType<CourseService["tutorSuggestions"]>[number];
+export type CoachInsightRow = ReturnType<CourseService["coachInsights"]>[number];
+
+/** Calls a streaming method on the course's Durable Object: chunks as they come, then the final one. */
+export type StreamCall = (method: string, args: unknown[], stream: { onChunk: (chunk: unknown) => void; onDone: (final: unknown) => void; onError: (error: string) => void }) => void;

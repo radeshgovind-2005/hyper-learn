@@ -30,7 +30,7 @@ import { type LearnerEvent, type Sql, SqlEventLog, SqlMeta, SqlProfiles, SqlRele
 import { type Member, SqlMembers, SqlSharedRepairs, SqlSources, type SourceSummary } from "../storage/studio.js";
 import { base64Size, type FileChunk, MEDIA_LIMITS, SqlMedia, type StoredFile } from "../storage/media.js";
 import { fromLearnerResponse, learnerItem, learnerSnapshot } from "../assessment/view.js";
-import type { PageImage, PageImages } from "../media/contracts.js";
+import type { PageImage } from "../media/contracts.js";
 import { type Figure } from "../storage/media.js";
 import type { PageSeer } from "../generate/see.js";
 import { readPage, type VisionConfig } from "../meta/vision.js";
@@ -38,8 +38,24 @@ import { segment } from "../meta/sam.js";
 import type { Identity as Person } from "../auth/identity.js";
 import { COURSE_ROLES, type CourseRole } from "./access.js";
 import { builtInCourse, type CoachRepairer, type CourseBuilder, type CourseDefinition, type CourseEditor, FEATURED_COURSE, isStudioId } from "./courses.js";
-import { type DiagnosisResult, drawDiagnostic, scoreDiagnostic, type Target, targetKey } from "../coach/diagnose.js";
+import { chosen, type DiagnosisResult, drawDiagnostic, scoreDiagnostic, type Target, targetKey } from "../coach/diagnose.js";
 import { type Approach, approachFor, type PersonalSection, recheckItems, sectionsFor } from "../coach/repair.js";
+import { chooseApproach } from "../coach/bandit.js";
+import { PROMOTE_AFTER, promotionFor, promotionRequest } from "../coach/promote.js";
+import { getSystemPrompt } from "../agents.js";
+import { noPageImages, type PageImages, type Provenance } from "../media/contracts.js";
+import type { MetaClientConfig } from "../meta/client.js";
+import { base64Bytes, type ImageMaker, imagePrompt, MAX_IMAGE_BYTES, metaImageMaker, plainText, promptHash } from "../meta/image.js";
+import type { Invokable } from "../models.js";
+import { type PersonalKind, SqlTutor } from "../storage/tutor.js";
+import { runTurn } from "../tutor/loop.js";
+import { chatTutorModel } from "../tutor/model.js";
+import { answerGuard, type Evidence, madeFor, pagesOf, piecesFromRepair, quotesPending, targetForSection, toPersonalBlock, verdictOf, widgetProblems } from "../tutor/personal.js";
+import { contextMessage } from "../tutor/prompt.js";
+import { type StoryboardDraft, storyboardModel, writeStoryboard } from "../tutor/storyboard.js";
+import { liveLesson, liveSection, Refused, sectionText, type TutorWorld } from "../tutor/tools.js";
+import type { PersonalBlockRef, PersonalPiece, TutorAsk, TutorEvent, TutorInput, TutorModel, TutorTurnResult } from "../tutor/types.js";
+import type { Verifier } from "../tutor/verify.js";
 import type { Audience, BuildStep } from "../generate/types.js";
 import { bumpVersion, initialRelease } from "../releases/release.js";
 import { EDIT_PRESETS, type EditProposal, type EditRequest } from "../edit/types.js";
@@ -261,6 +277,8 @@ export interface OwnerModelSettings {
   config: ModelConfig;
   /** Models an owner may pick (MODEL_CHOICES). */
   choices: readonly string[];
+  /** Base URLs for choices that aren't at config.baseURL (the open-weights model); the Worker's settings, never the owner's. */
+  endpoints?: Readonly<Record<string, string>>;
 }
 
 /** Limits on what an owner uploads, enforced here whatever the UI does. */
@@ -355,6 +373,74 @@ export const RETAIN_DETAIL_DAYS = 30;
 /** Personal repair lessons one learner may ask for in a day: each costs the owner a few model calls. */
 export const MAX_REPAIRS_PER_DAY = 8;
 
+/** Questions one learner may ask the tutor in a day: each is a few model calls on the course's key. */
+export const MAX_TUTOR_TURNS_PER_DAY = 60;
+/** Messages of the conversation the tutor sees each turn (12 exchanges); older ones reach it as a summary. */
+export const TUTOR_WINDOW_MESSAGES = 24;
+/** Generated pictures one learner may get in a day (cache hits are free). */
+export const MAX_IMAGES_PER_DAY = 10;
+/** One recording, and one learner's recordings in a day. */
+export const MAX_RECORDING_SECONDS = 60;
+export const MAX_VOICE_SECONDS_PER_DAY = 20 * 60;
+/** Tutor questions remembered per learner: the last few are what the next turns use. */
+const MAX_TUTOR_ASKS = 10;
+
+/** A question the tutor put to a learner: a quiz item from the lesson (not in their next exam) or a practice check. */
+interface TutorAskState {
+  id: string;
+  lesson: string;
+  section?: string;
+  release: string;
+  source: { kind: "item"; lesson: string; item_id: string } | { kind: "check"; block_id: string };
+  prompt: string;
+  options: string[];
+  status: "open" | "answered";
+  correct?: boolean;
+  chose?: string;
+  belief?: string;
+  target?: Target;
+  at: string;
+}
+
+/** One learner's tutor state (meta `tutor:<learner>`): open and recent questions and the day's allowances. */
+interface TutorState {
+  asks: TutorAskState[];
+  turns_today: { date: string; count: number };
+  voice_today: { date: string; seconds: number; active_until?: string };
+}
+
+/** What a personal block is to make (stored on the row, so a restart knows what failed). */
+type PersonalJob =
+  | { kind: "rewrite"; note: string; shortcut?: TutorInput["shortcut"] }
+  | { kind: "diagram"; description: string }
+  | { kind: "widget"; spec: unknown }
+  | { kind: "storyboard" };
+
+const TutorInputSchema = z.strictObject({
+  lesson: z.string().min(1).max(200),
+  section: z.string().min(1).max(200).optional(),
+  text: z.string().trim().min(1, "Say what you're stuck on").max(1_000, "Keep it under 1,000 characters"),
+  shortcut: z.enum(["explain", "example", "quiz"]).optional(),
+});
+
+/** The tutor's parts the Worker (or a test) passes in; each has a working default except `meta` on built-in courses. */
+export interface TutorOptions {
+  /** The model a turn runs on (default: the course's reasoning model with tools). */
+  model?: (provider: ModelProvider) => TutorModel;
+  /** Image generation (default: Muse Image with the course's key). */
+  images?: (config: MetaClientConfig) => ImageMaker;
+  /** The storyboard writer (default: the course's model with structured output). */
+  storyboard?: (provider: ModelProvider) => Invokable<StoryboardDraft>;
+  /** Source pages as pictures for a learner (stream A's; default: none, the tutor reads page text). */
+  pageImages?: (learner: string) => PageImages;
+  /** An independent second fact check of a personal rewrite (Muse Wonder), if configured. */
+  verifier?: Verifier;
+  /** Meta's API for images and voice on built-in courses (studio courses use their owner's key). */
+  meta?: MetaClientConfig;
+  /** The bandit's randomness (tests seed it). */
+  random?: () => number;
+}
+
 /** An owner's edit request, from asking to applying (studio courses). */
 export interface EditState {
   id: string;
@@ -415,6 +501,8 @@ export interface ServiceOptions {
   editor?: CourseEditor;
   /** Writes a learner's personal repair lesson (the Worker passes src/coach's; tests canned models). */
   repairer?: CoachRepairer;
+  /** The tutor in the lesson page ("Ask Muse"): its model, images and page pictures. */
+  tutor?: TutorOptions;
   /** A studio course's owner-key settings (ignored for built-in courses, which use `models`). */
   ownerModels?: OwnerModelSettings;
   /** How a build reads page pictures (Spark vision and SAM on the owner's key); tests pass fakes. */
@@ -471,6 +559,7 @@ export class CourseService {
   private readonly sharedRepairs: SqlSharedRepairs;
   /** Original files, page images and figures of a studio course's sources. */
   private readonly media: SqlMedia;
+  private readonly tutor: SqlTutor;
   private readonly meta: SqlMeta;
   private readonly saver: PersistentMemorySaver;
   private readonly now: () => string;
@@ -495,6 +584,8 @@ export class CourseService {
     this.sources = new SqlSources(sql);
     this.sharedRepairs = new SqlSharedRepairs(sql);
     this.media = new SqlMedia(sql);
+    this.tutor = new SqlTutor(sql);
+    this.tutor.failRunning("The server restarted while this was being made; ask Muse again");
     this.saver = new PersistentMemorySaver(new SqlThreadStore(sql));
     // Builds and runs live in this instance's memory, so one still marked running at start was cut off by a restart.
     if (this.record()?.status === "building") this.endBuild("failed", { problems: ["The build was interrupted (the server restarted); build again"] });
@@ -933,6 +1024,8 @@ export class CourseService {
   deleteMyData(learner: string) {
     this.profiles.delete(learner);
     this.meta.set(`coach:${learner}`, null);
+    this.meta.set(`tutor:${learner}`, null);
+    this.tutor.deleteLearner(learner);
     return { deleted: this.events.deleteLearner(learner) };
   }
 
@@ -1054,7 +1147,9 @@ export class CourseService {
     if (target.kind === "ready") throw new Error("Nothing to repair: take the exam");
     const attempt = again && state.repair && targetKey(state.repair.target) === targetKey(target) ? state.repair.attempt + 1 : 0;
     const release = this.servedRelease(learner);
-    const base = { id: this.newId(), target, approach: approachFor(target, attempt), attempt, release: release.version, started_at: this.now() };
+    // A first try is chosen by what has worked for others on this target; a retry moves along the fixed order.
+    const approach = attempt === 0 ? this.chooseApproach(target, 0) : [0, 1, 2].map((k) => approachFor(target, attempt + k)).find((a) => a !== state.repair?.approach)!;
+    const base = { id: this.newId(), target, approach, attempt, release: release.version, started_at: this.now() };
 
     const write = Boolean(this.options.repairer && this.record() && this.agentsAvailable());
     // Without the learner's own words the lesson is the same for everyone with this target: reuse it.
@@ -1149,6 +1244,8 @@ export class CourseService {
     state.seen = [...new Set([...state.seen, ...repair.recheck.map((q) => q.item_id)])];
     if (fixed && !state.fixed.includes(key)) state.fixed.push(key);
     this.saveCoach(learner, state);
+    this.fillOutcomes();
+    this.tutor.countOutcome(key, repair.approach, fixed);
     this.events.append({
       learner,
       kind: "coach",
@@ -1178,7 +1275,7 @@ export class CourseService {
       if (!key || !d.target || d.target.kind === "ready") continue;
       const row = byKey.get(key) ?? { target: d.target, learners: new Set<string>(), repaired: 0, fixed: 0, approaches: {} };
       row.learners.add(learner);
-      if (d.type === "recheck") {
+      if (d.type === "recheck" || d.type === "tutor_outcome") {
         row.repaired++;
         if (d.fixed) row.fixed++;
         const a = (row.approaches[d.approach ?? "?"] ??= { tried: 0, fixed: 0 });
@@ -1188,9 +1285,615 @@ export class CourseService {
       byKey.set(key, row);
     }
     const live = this.releases.live().snapshot;
+    // The bandit's counts (coach re-checks and tutor follow-ups), one read: they grow with targets, not learners.
+    this.fillOutcomes();
+    const outcomes = new Map<string, { approach: string; shown: number; fixed: number }[]>();
+    for (const o of this.tutor.allOutcomes()) outcomes.set(o.target_key, [...(outcomes.get(o.target_key) ?? []), o]);
     return [...byKey]
-      .map(([key, r]) => ({ key, target: r.target, label: this.targetLabel(live, r.target), learners: r.learners.size, repaired: r.repaired, fixed: r.fixed, approaches: r.approaches }))
+      .map(([key, r]) => ({
+        key,
+        target: r.target,
+        label: this.targetLabel(live, r.target),
+        learners: r.learners.size,
+        repaired: r.repaired,
+        fixed: r.fixed,
+        approaches: r.approaches,
+        /** An approach that fixed enough learners on this target to propose it for everyone. */
+        promote: promotionFor(live, r.target, outcomes.get(key) ?? []),
+      }))
       .sort((a, b) => b.learners - a.learners || b.repaired - a.repaired);
+  }
+
+  // ─── Tutor ("Ask Muse"): a bounded tool loop in the lesson page, and the personal blocks it makes ──
+  // Personal state never goes into the shared overview: the dock and the page ask for it.
+
+  private tutorState(learner: string): TutorState {
+    return this.meta.get<TutorState>(`tutor:${learner}`) ?? { asks: [], turns_today: { date: "", count: 0 }, voice_today: { date: "", seconds: 0 } };
+  }
+
+  private saveTutorState(learner: string, state: TutorState) {
+    this.meta.set(`tutor:${learner}`, state);
+  }
+
+  /** Whether the tutor can run here: a published course with a model (a studio course's owner key, or the Worker's). */
+  tutorAvailable(): boolean {
+    if (!this.published()) return false;
+    return this.fixed ? Boolean(this.options.agentsAvailable && this.options.tutor?.meta) : Boolean(this.record() && this.agentsAvailable() && this.options.repairer);
+  }
+
+  /** What the dock needs to show itself: whether it works here, turns left today, and this lesson's conversation. */
+  tutorInfo(learner: string, lesson?: unknown) {
+    this.requirePublished();
+    const state = this.tutorState(learner);
+    const today = this.now().slice(0, 10);
+    const history = typeof lesson === "string" && lesson.length <= 200 ? this.tutor.window(learner, lesson, TUTOR_WINDOW_MESSAGES).messages.map((m) => ({ role: m.role, text: m.text })) : [];
+    return {
+      available: this.tutorAvailable(),
+      turns_left: MAX_TUTOR_TURNS_PER_DAY - (state.turns_today.date === today ? state.turns_today.count : 0),
+      model: this.fixed ? (this.options.models?.models.reasoning ?? null) : (this.meta.get<StoredModelKey>("model_key")?.model ?? null),
+      history,
+    };
+  }
+
+  /** The model for a turn: the owner's key on a studio course, the Worker's on a built-in one. */
+  private async tutorProvider(): Promise<ModelProvider> {
+    return this.fixed ? (this.options.models ?? defaultModels()) : this.ownerProvider();
+  }
+
+  /** Meta's API settings for images and voice (the same key as the course's models). Server-side only. */
+  async metaConfig(): Promise<MetaClientConfig> {
+    if (this.fixed) {
+      const meta = this.options.tutor?.meta;
+      if (!meta) throw new Error("No model key on this server");
+      return meta;
+    }
+    if (!this.agentsAvailable()) throw new Error(this.whyNoModels());
+    const { apiKey, model, baseURL, onMeta } = await this.ownerKey();
+    // Images and voice are Meta's; a course on another endpoint (open weights) has a key for that endpoint only.
+    if (!onMeta) throw new Error(`Pictures and voice need a Meta model key; this course runs on ${model}`);
+    return { baseURL, apiKey };
+  }
+
+  /** The questions waiting for this learner on a lesson (their next exam draw): never shown, hinted at or answered by the tutor. */
+  private pendingItems(learner: string, release: Release, lesson: string): QuizItem[] {
+    try {
+      return this.draw(learner, release, lesson).items;
+    } catch {
+      return [];
+    }
+  }
+
+  /** What the learner recently got wrong on a lesson, and what they said, one line each and without answers. */
+  private missedOn(learner: string, lesson: string, state: TutorState): string[] {
+    const lines: string[] = [];
+    const last = this.events.forLearner(learner).filter((e) => e.kind === "answer" && e.lesson === lesson).at(-1);
+    const snapshot = last && this.releases.get(last.release)?.snapshot;
+    if (last && snapshot) {
+      const data = last.data as { items?: { item_id: string; grade: Grade }[]; responses?: Response[]; certainty?: number[] };
+      const quiz = snapshot.lessons.find((l) => l.id === lesson)?.quiz ?? [];
+      (data.items ?? []).forEach((r, i) => {
+        if (r.grade.correct) return;
+        const item = quiz.find((q) => q.id === r.item_id);
+        if (!item) return;
+        const choice = data.responses?.[i] !== undefined ? chosen(item, data.responses[i]!) : "";
+        const belief = r.grade.errors.map((e) => e.misconception && snapshot.misconceptions.find((m) => m.id === e.misconception)?.belief).find(Boolean);
+        const sure = data.certainty?.[i] === 3 ? " (they were sure)" : "";
+        lines.push(`On the quiz they missed "${item.prompt}"${choice ? `, choosing "${choice}"${sure}` : ""}${belief ? `; that fits the mix-up "${belief}"` : ""}`);
+      });
+    }
+    for (const ask of state.asks.filter((a) => a.lesson === lesson && a.status === "answered").slice(-3)) {
+      lines.push(`Your question "${ask.prompt}": they chose "${ask.chose}", which is ${ask.correct ? "right" : "wrong"}${ask.belief ? `; that fits the mix-up "${ask.belief}"` : ""}`);
+    }
+    return lines.slice(-8);
+  }
+
+  /** Whether something already showed what the learner is missing on a lesson: an answered question, a failed quiz, a diagnosis. */
+  private knowsWhatsMissing(learner: string, lesson: string, state: TutorState): boolean {
+    if (state.asks.some((a) => a.lesson === lesson && a.status === "answered")) return true;
+    const last = this.events.forLearner(learner).filter((e) => e.kind === "answer" && e.lesson === lesson).at(-1);
+    if (last && !(last.data as { passed?: boolean }).passed) return true;
+    const d = this.coach(learner).diagnosis;
+    return Boolean(d?.status === "done" && d.lesson === lesson);
+  }
+
+  /**
+   * One tutor turn for a learner in a lesson: a bounded tool loop on the course's model, over the release
+   * they are served. Streams step names and reply text through `onEvent`. Personal blocks it starts are
+   * returned as running; the caller continues them in the background (continuePersonal).
+   */
+  async tutorTurn(learner: string, raw: unknown, onEvent?: (event: TutorEvent) => void): Promise<TutorTurnResult> {
+    this.requirePublished();
+    const parsed = TutorInputSchema.safeParse(raw);
+    if (!parsed.success) throw new Error(firstIssue(parsed.error));
+    const input = parsed.data;
+    if (!this.tutorAvailable()) throw new Error("Muse isn't available in this course yet (it needs a model key)");
+    const release = this.servedRelease(learner);
+    const snapshot = release.snapshot;
+    const lesson = liveLesson(snapshot, input.lesson);
+    if (!lesson) throw new Error(`No lesson "${input.lesson}"`);
+    const inView = input.section ? liveSection(snapshot, input.section) : undefined;
+    if (input.section && inView?.lesson.id !== lesson.id) throw new Error(`No section "${input.section}" in this lesson`);
+
+    // The daily quota is taken before any model call, and saved before the first await.
+    const state = this.tutorState(learner);
+    const today = this.now().slice(0, 10);
+    const used = state.turns_today.date === today ? state.turns_today.count : 0;
+    if (used >= MAX_TUTOR_TURNS_PER_DAY) throw new Error(`That's ${MAX_TUTOR_TURNS_PER_DAY} questions to Muse today; the lessons and the study coach are still here`);
+    state.turns_today = { date: today, count: used + 1 };
+    this.saveTutorState(learner, state);
+
+    const pending = this.pendingItems(learner, release, lesson.id);
+    const record = (reply: string) => {
+      const at = this.now();
+      this.tutor.append(learner, lesson.id, "user", input.text, at);
+      this.tutor.append(learner, lesson.id, "assistant", reply, at);
+    };
+    // Code, not the prompt: a question copied from the learner's own quiz is not answered.
+    if (quotesPending(input.text, pending)) {
+      const reply = "That looks like a question from your quiz, so I won't answer it for you. Tell me which idea behind it is confusing and we'll work on that.";
+      record(reply);
+      return { reply, actions: [], blocks: [], model_calls: 0 };
+    }
+
+    // Shortcuts are explicit requests, so code answers them without a model call: a question, or a rewrite.
+    if (input.shortcut) {
+      const section = inView?.section ?? lesson.sections.find((x) => !x.archived && x.title);
+      if (!section) throw new Error("This lesson has no section to work on");
+      const reply = (text: string, extra: Partial<TutorTurnResult>): TutorTurnResult => {
+        record(text);
+        return { reply: text, actions: [], blocks: [], model_calls: 0, ...extra };
+      };
+      try {
+        if (input.shortcut === "quiz") {
+          onEvent?.({ type: "step", label: "Writing a question for you" });
+          const ask = this.askLearner(learner, release, lesson.id, section.id, pending);
+          return reply(`Here's a question on "${section.title}". Answer it and I'll take it from there.`, { ask });
+        }
+        if (this.fixed || !this.options.repairer) throw new Refused("Personal rewrites need a course built from its own pages; ask me about it instead");
+        onEvent?.({ type: "step", label: "Rewriting the section for you" });
+        const block = this.startPersonal(learner, release, section.id, { kind: "rewrite", note: "", shortcut: input.shortcut });
+        const what = input.shortcut === "example" ? "a worked example" : "smaller steps";
+        return reply(`I'm writing "${section.title}" for you as ${what}, from the course's own pages. It appears under that section in about half a minute.`, {
+          blocks: [block],
+          actions: [{ kind: "go_to_section", lesson: lesson.id, section: section.id }],
+        });
+      } catch (error) {
+        if (error instanceof Refused) return reply(error.message, {});
+        throw error;
+      }
+    }
+
+    const cited = this.citedSources(learner);
+    const allowed = new Set(cited.map((s) => s.id));
+    const pageText = (source: string, page: number) => {
+      if (!allowed.has(source)) throw new Refused("That file isn't shared with learners");
+      return this.pageOf(this.sources.get(source)!, page).text;
+    };
+    const pages = inView
+      ? [...new Map(inView.section.blocks.flatMap((b) => (!b.archived && isTextBlock(b) ? (b.cites ?? []) : [])).map((c) => [`${c.source}:${c.page}`, c])).values()]
+          .filter((c) => allowed.has(c.source))
+          .slice(0, 4)
+          .flatMap((cite) => {
+            try {
+              return [{ cite, text: pageText(cite.source, cite.page) }];
+            } catch {
+              return [];
+            }
+          })
+      : [];
+    const window = this.tutor.window(learner, lesson.id, TUTOR_WINDOW_MESSAGES);
+    const context = contextMessage({
+      courseTitle: this.courseInfo().title,
+      snapshot,
+      lesson: lesson.id,
+      ...(inView && { section: inView.section.id }),
+      cited,
+      pages,
+      missed: this.missedOn(learner, lesson.id, state),
+      summary: window.summary,
+    });
+    const personalWords = input.shortcut ? "" : input.text;
+    const world: TutorWorld = {
+      snapshot,
+      lesson: lesson.id,
+      cited,
+      readPage: pageText,
+      pageImages: this.options.tutor?.pageImages?.(learner) ?? noPageImages,
+      ask: (section) => this.askLearner(learner, release, lesson.id, section, pending),
+      rewrite: (section, note) => {
+        if (this.fixed || !this.options.repairer) throw new Refused("Personal rewrites need a course built from its own pages; explain from the section instead");
+        if (quotesPending(note, pending)) throw new Refused("That note quotes the learner's quiz; rewrite around the idea, not the question");
+        if (!input.shortcut && !this.knowsWhatsMissing(learner, lesson.id, this.tutorState(learner))) {
+          throw new Refused("Nothing yet shows what the learner is missing here: ask a diagnostic question first (ask_me)");
+        }
+        return this.startPersonal(learner, release, section, { kind: "rewrite", note: input.shortcut ? "" : note || personalWords, ...(input.shortcut && { shortcut: input.shortcut }) });
+      },
+      draw: (section, description) => this.startPersonal(learner, release, section, { kind: "diagram", description }, personalWords),
+      interact: (section, spec) => this.startPersonal(learner, release, section, { kind: "widget", spec }, personalWords),
+      storyboard: (section) => this.startPersonal(learner, release, section, { kind: "storyboard" }, personalWords),
+      suggest: (section, why) => {
+        this.tutor.suggest({ lesson: lesson.id, section, why: plainText(why, 500), learner, approach: null, at: this.now() });
+      },
+    };
+
+    const provider = await this.tutorProvider();
+    const model = this.options.tutor?.model?.(provider) ?? chatTutorModel(provider.chat("reasoning"));
+    const result = await runTurn({
+      model,
+      world,
+      system: getSystemPrompt("tutor"),
+      context,
+      history: window.messages.filter((m) => m.role !== "summary").map((m) => ({ role: m.role as "user" | "assistant", text: m.text })),
+      text: input.text,
+      ...(onEvent && { onEvent: (e: TutorEvent) => onEvent(e.type === "text" ? e : { ...e, label: this.redact(e.label) }) }),
+      guard: answerGuard(pending),
+    });
+    const reply = this.redact(result.reply);
+    record(reply);
+    return { ...result, reply, ...(result.stopped && { stopped: this.redact(result.stopped) }) };
+  }
+
+  /** ask_me: one question from the lesson the learner hasn't faced in their next exam, without its answer. */
+  private askLearner(learner: string, release: Release, lesson: string, section: string | undefined, pending: readonly QuizItem[]): TutorAsk {
+    const state = this.tutorState(learner);
+    if (state.asks.some((a) => a.status === "open" && a.lesson === lesson && a.release === release.version)) {
+      // One open question at a time: the learner answers it first.
+      const open = state.asks.find((a) => a.status === "open" && a.lesson === lesson)!;
+      return { id: open.id, lesson, prompt: open.prompt, options: open.options };
+    }
+    const waiting = new Set(pending.map((i) => i.id));
+    const asked = state.asks.map((a) => (a.source.kind === "item" ? a.source.item_id : a.source.block_id));
+    const coach = this.coach(learner);
+    const drawn = drawDiagnostic(release.snapshot, lesson, { seen: [...coach.seen, ...asked], seed: examSeed(learner, lesson, "tutor", state.asks.length, release.version) });
+    // Prefer a question on the section's own objective, then one from this lesson.
+    const onSection = new Set((release.snapshot.objectives ?? []).filter((o) => section && o.sections.includes(section)).map((o) => o.id));
+    const rank = (q: (typeof drawn)[number]) => (q.item.objective && onSection.has(q.item.objective) ? 2 : 0) + (q.lesson === lesson ? 1 : 0);
+    const pool = [...drawn.map((q) => q), ...liveLesson(release.snapshot, lesson)!.quiz.filter((i) => !i.pilot).map((item) => ({ lesson, item }))];
+    const candidate = pool
+      .filter((q) => q.item.type === "single_choice" && !waiting.has(q.item.id) && !asked.includes(q.item.id))
+      .sort((a, b) => rank(b) - rank(a))[0];
+    let ask: TutorAskState;
+    const base = { id: this.newId(), lesson, ...(section && { section }), release: release.version, status: "open" as const, at: this.now() };
+    if (candidate && candidate.item.type === "single_choice") {
+      ask = { ...base, source: { kind: "item", lesson: candidate.lesson, item_id: candidate.item.id }, prompt: candidate.item.prompt, options: candidate.item.options.map((o) => o.text) };
+    } else {
+      // No unseen question outside the exam: a practice check from the section (or the lesson) instead.
+      const lessonNode = liveLesson(release.snapshot, lesson)!;
+      const sections = section ? lessonNode.sections.filter((s) => s.id === section) : lessonNode.sections;
+      const check = [...sections, ...lessonNode.sections]
+        .flatMap((s) => (s.archived ? [] : s.blocks))
+        .find((b): b is Extract<typeof b, { kind: "check" }> => b.kind === "check" && !b.archived && !asked.includes(b.id));
+      if (!check) throw new Refused("There is no question left to ask on this lesson; explain from the section instead");
+      ask = { ...base, source: { kind: "check", block_id: check.id }, prompt: check.check.prompt, options: check.check.options.map((o) => o.text) };
+    }
+    state.asks = [...state.asks.filter((a) => !(a.status === "open" && a.lesson === lesson)), ask].slice(-MAX_TUTOR_ASKS);
+    this.saveTutorState(learner, state);
+    return { id: ask.id, lesson, prompt: ask.prompt, options: ask.options };
+  }
+
+  /** The learner's answer to the tutor's question: graded in code, remembered for the next turn, never scored. */
+  answerAsk(learner: string, id: unknown, option: unknown) {
+    this.requirePublished();
+    const state = this.tutorState(learner);
+    const ask = state.asks.find((a) => a.id === id);
+    if (!ask || ask.status !== "open") throw new Error("That question is over; ask Muse again");
+    if (typeof option !== "number" || !Number.isInteger(option) || option < 0 || option >= ask.options.length) throw new Error("Pick one of the options");
+    const snapshot = this.releases.get(ask.release)?.snapshot;
+    if (!snapshot) throw new Error("That version of the course is gone; ask Muse again");
+    let correct: boolean;
+    let misconception: string | undefined;
+    let objective: string | undefined;
+    let feedback: string | undefined;
+    if (ask.source.kind === "item") {
+      const source = ask.source;
+      const item = snapshot.lessons.find((l) => l.id === source.lesson)?.quiz.find((q) => q.id === source.item_id);
+      if (!item) throw new Error("That question is no longer in the course; ask Muse again");
+      const grade = gradeItem(item, option, source.lesson);
+      correct = grade.correct;
+      misconception = grade.errors.find((e) => e.misconception)?.misconception;
+      objective = item.objective;
+      // Diagnostic questions count as seen, so the exam prefers others.
+      const coach = this.coach(learner);
+      coach.seen = [...new Set([...coach.seen, item.id])];
+      this.saveCoach(learner, coach);
+    } else {
+      const source = ask.source;
+      const block = snapshot.lessons.flatMap((l) => l.sections.flatMap((s) => s.blocks)).find((b) => b.id === source.block_id);
+      if (!block || block.kind !== "check") throw new Error("That question is no longer in the course; ask Muse again");
+      const picked = block.check.options[option]!;
+      correct = picked.correct;
+      misconception = picked.misconception ?? undefined;
+      objective = block.objective;
+      feedback = picked.feedback;
+    }
+    const belief = misconception ? snapshot.misconceptions.find((m) => m.id === misconception) : undefined;
+    const target: Target | undefined = correct
+      ? undefined
+      : belief
+        ? { kind: "misconception", id: belief.id, lesson: belief.lesson, why: `Your answer followed a common mix-up: "${belief.belief}"` }
+        : objective
+          ? { kind: "objective", id: objective, lesson: ask.lesson, why: "Your answer to Muse's question" }
+          : undefined;
+    Object.assign(ask, { status: "answered", correct, chose: ask.options[option], ...(belief && { belief: belief.belief }), ...(target && { target }) });
+    this.saveTutorState(learner, state);
+
+    // A personal rewrite on this lesson, then a question on the same target: the bandit's outcome for its approach.
+    const key = target ? targetKey(target) : undefined;
+    for (const row of this.tutor.livePersonal(learner, ask.lesson)) {
+      if (row.kind !== "rewrite" || row.status !== "ready" || !row.approach) continue;
+      const job = JSON.parse(row.job) as PersonalJob & { target?: Target; counted?: boolean };
+      if (job.counted || !job.target) continue;
+      // A question on the rewritten section, on the rewrite's objective, or showing its mix-up, says whether it worked.
+      const onIt = ask.section === row.section || (key !== undefined && targetKey(job.target) === key) || (job.target.kind === "objective" && job.target.id === objective);
+      if (!onIt) continue;
+      this.fillOutcomes();
+      this.tutor.countOutcome(targetKey(job.target), row.approach, correct);
+      this.tutor.setJob(row.id, JSON.stringify({ ...job, counted: true }));
+      this.events.append({
+        learner,
+        kind: "coach",
+        lesson: ask.lesson,
+        release: ask.release,
+        data: { type: "tutor_outcome", target: job.target, target_key: targetKey(job.target), approach: row.approach, fixed: correct },
+        at: this.now(),
+      });
+    }
+    this.events.append({
+      learner,
+      kind: "coach",
+      lesson: ask.lesson,
+      release: ask.release,
+      data: { type: "tutor_ask", correct, ...(target && { target, target_key: targetKey(target) }) },
+      at: this.now(),
+    });
+    return { correct, ...(feedback && { feedback }) };
+  }
+
+  /** Bandit counts for courses that had coach re-checks before the table existed: filled once from the coach events. */
+  private fillOutcomes() {
+    if (this.meta.get<boolean>("coach_targets_filled")) return;
+    if (this.tutor.outcomesEmpty()) {
+      for (const e of this.events.ofKind("coach")) {
+        const d = e.data as { type?: string; target_key?: string; approach?: string; fixed?: boolean };
+        if (d.type === "recheck" && d.target_key && d.approach) this.tutor.countOutcome(d.target_key, d.approach, Boolean(d.fixed));
+      }
+    }
+    this.meta.set("coach_targets_filled", true);
+  }
+
+  /** The approach for a target's next personal lesson: by outcomes once there are enough, else the fixed order. */
+  private chooseApproach(target: Target, attempt: number): Approach {
+    this.fillOutcomes();
+    return chooseApproach(target, attempt, this.tutor.outcomes(targetKey(target)), this.options.tutor?.random).approach;
+  }
+
+  /**
+   * Starts a personal block under a section for one learner. A widget is ready at once; a rewrite, a
+   * diagram or a storyboard is stored as running and written by continuePersonal in the background. A
+   * rewrite with no words of the learner's own reuses one written for someone with the same need.
+   */
+  private startPersonal(learner: string, release: Release, sectionId: string, job: PersonalJob, words = ""): PersonalBlockRef {
+    const found = liveSection(release.snapshot, sectionId);
+    if (!found) throw new Refused(`No section "${sectionId}"`);
+    const { lesson, section } = found;
+    const today = this.now().slice(0, 10);
+    const row = { id: this.newId().replace(/-/g, "").slice(0, 16), learner, lesson: lesson.id, section: section.id, release: release.version, at: this.now(), problems: null };
+    const ref = (kind: PersonalKind, status: "running" | "ready"): PersonalBlockRef => ({ id: row.id, section: section.id, kind, status });
+    const state = this.tutorState(learner);
+    const evidence: Evidence = {};
+    const lastAsk = state.asks.filter((a) => a.lesson === lesson.id && a.status === "answered").at(-1);
+    if (lastAsk && !lastAsk.correct) evidence.wrong = { prompt: lastAsk.prompt, chose: lastAsk.chose ?? "" };
+    if (words && !/^I answered: /.test(words)) evidence.note = words;
+
+    if (job.kind === "widget") {
+      const quiz = this.releases.live().snapshot.lessons.flatMap((l) => l.quiz);
+      const { widget, problems } = widgetProblems(job.spec, quiz);
+      if (!widget) throw new Refused(`The widget isn't valid: ${problems.join("; ")}`);
+      const provenance: Provenance = { pages: [], fact_check: "unchecked", made_for: madeFor(evidence) };
+      this.tutor.putPersonal({ ...row, kind: "widget", status: "ready", job: JSON.stringify({ kind: "widget" }), pieces: JSON.stringify([{ kind: "widget", intervention: widget }]), provenance: JSON.stringify(provenance), approach: null });
+      return ref("widget", "ready");
+    }
+    if (job.kind === "diagram" || job.kind === "storyboard") {
+      if (this.tutor.imagesSince(learner, today) >= MAX_IMAGES_PER_DAY) throw new Refused(`The learner has had ${MAX_IMAGES_PER_DAY} generated pictures today`);
+      const kind = job.kind;
+      this.tutor.putPersonal({ ...row, kind, status: "running", job: JSON.stringify({ ...job, evidence }), pieces: "[]", provenance: null, approach: null });
+      return ref(kind, "running");
+    }
+
+    // A rewrite: the target the evidence names (or the section's own), the approach code picks.
+    const named = lastAsk?.target ?? (this.coach(learner).diagnosis?.lesson === lesson.id ? this.coach(learner).diagnosis?.result?.priority : undefined);
+    const target = targetForSection(release.snapshot, lesson.id, section.id, named);
+    const attempt = this.tutor.countPersonal(learner, section.id, "rewrite");
+    const approach: Approach = job.shortcut === "example" ? "worked_example" : job.shortcut === "explain" ? "smaller_steps" : this.chooseApproach(target, attempt);
+    if (job.note) evidence.note = job.note;
+    // Recorded once per rewrite: the owner's insights show what learners keep needing, from the tutor too.
+    this.events.append({ learner, kind: "coach", lesson: lesson.id, release: release.version, data: { type: "tutor_rewrite", target, target_key: targetKey(target), approach }, at: this.now() });
+    const sharedKey = `tutor|${release.version}|${section.id}|${approach}`;
+    if (!job.note) {
+      const shared = this.sharedRepairs.take<{ pieces: PersonalPiece[]; provenance: Provenance }>(sharedKey);
+      if (shared) {
+        const provenance: Provenance = { ...shared.provenance, made_for: madeFor(evidence) };
+        this.tutor.putPersonal({ ...row, kind: "rewrite", status: "ready", job: JSON.stringify({ ...job, target, approach, shared: true }), pieces: JSON.stringify(shared.pieces), provenance: JSON.stringify(provenance), approach });
+        return ref("rewrite", "ready");
+      }
+    }
+    // The coach's daily allowance of personal lessons covers these too.
+    const coach = this.coach(learner);
+    const usedToday = coach.repairs_today.date === today ? coach.repairs_today.count : 0;
+    if (usedToday >= MAX_REPAIRS_PER_DAY) throw new Refused(`The learner has had ${MAX_REPAIRS_PER_DAY} personal lessons today`);
+    coach.repairs_today = { date: today, count: usedToday + 1 };
+    this.saveCoach(learner, coach);
+    const wrong = lastAsk && !lastAsk.correct ? [{ item: lastAsk.id, lesson: lesson.id, prompt: lastAsk.prompt, chose: lastAsk.chose ?? "" }] : [];
+    this.tutor.putPersonal({ ...row, kind: "rewrite", status: "running", job: JSON.stringify({ ...job, target, approach, evidence, wrong, shared_key: job.note ? null : sharedKey }), pieces: "[]", provenance: null, approach });
+    return ref("rewrite", "running");
+  }
+
+  /** The slow part of a personal block (writer, fact check, image model). Never throws; a failure is recorded on the block. */
+  async continuePersonal(learner: string, id: string): Promise<void> {
+    const row = this.tutor.personal(id);
+    if (!row || row.learner !== learner || row.status !== "running") return;
+    const job = JSON.parse(row.job) as PersonalJob & { target?: Target; approach?: Approach; evidence?: Evidence; wrong?: DiagnosisResult["wrong"]; shared_key?: string | null };
+    const fail = (problems: string[]) => this.tutor.finishPersonal(id, { status: "failed", problems: JSON.stringify(problems.map((p) => this.redact(p)).slice(0, 5)) });
+    try {
+      const snapshot = this.releases.get(row.release)?.snapshot;
+      const found = snapshot && liveSection(snapshot, row.section);
+      if (!snapshot || !found) return void fail(["That section is no longer in the course"]);
+      const evidence = job.evidence ?? {};
+
+      if (job.kind === "rewrite") {
+        const record = this.studio();
+        const provider = await this.ownerProvider();
+        const result = await this.options.repairer!(
+          {
+            course: { course_id: record.id, title: record.title, ...(record.language && { language: record.language }) },
+            snapshot,
+            sources: this.sources.all(),
+            target: job.target!,
+            approach: job.approach!,
+            ...(job.note && { note: job.note }),
+            wrong: job.wrong ?? [],
+            sections: [row.section],
+            focus: `They are reading the section "${found.section.title}": write your personal version of that section.`,
+          },
+          provider.structured,
+        );
+        if (!result.ok) return void fail(["I couldn't ground that in the course's pages, so I'm not showing it.", ...result.problems]);
+        const pieces = piecesFromRepair(result.repair);
+        let doubts = result.repair.doubts;
+        if (this.options.tutor?.verifier && doubts.length === 0) {
+          // A second model family checks the final text once; its doubt is shown, its failure ignored.
+          const verdict = await this.options.tutor.verifier(provider, { sources: this.sources.all(), pieces }).catch(() => null);
+          if (verdict && !verdict.supported) doubts = verdict.unsupported.length > 0 ? verdict.unsupported : ["The independent check doubted a claim"];
+        }
+        const provenance: Provenance = { pages: pagesOf(pieces), fact_check: verdictOf(doubts), made_for: madeFor(evidence) };
+        if (job.shared_key) {
+          const served = [this.releases.live().version, ...(this.openTrial() ? [this.openTrial()!.version] : [])];
+          this.sharedRepairs.put(job.shared_key, row.release, { pieces, provenance: { ...provenance, made_for: undefined } }, this.now(), served);
+        }
+        this.tutor.finishPersonal(id, { status: "ready", pieces: JSON.stringify(pieces), provenance: JSON.stringify(provenance), ...(doubts.length > 0 && { problems: JSON.stringify(doubts.map((d) => this.redact(d))) }) });
+        return;
+      }
+
+      const makeImage = this.options.tutor?.images ?? metaImageMaker;
+      const images = makeImage(await this.metaConfig());
+      const cites = pagesOf(found.section.blocks.flatMap((b) => (!b.archived && isTextBlock(b) ? [{ kind: "text" as const, markdown: "", cites: b.cites ?? [] }] : [])));
+      if (job.kind === "diagram") {
+        const image = await this.generatedFor(learner, images, imagePrompt(found.section.title || found.lesson.title, job.description));
+        const pieces: PersonalPiece[] = [{ kind: "image", id: image, caption: plainText(job.description, 160) }];
+        const provenance: Provenance = { pages: cites, fact_check: "unchecked", made_for: madeFor(evidence) };
+        this.tutor.finishPersonal(id, { status: "ready", pieces: JSON.stringify(pieces), provenance: JSON.stringify(provenance) });
+        return;
+      }
+      if (job.kind === "storyboard") {
+        const provider = await this.tutorProvider();
+        const writer = this.options.tutor?.storyboard?.(provider) ?? storyboardModel(provider.structured);
+        const draft = await writeStoryboard(writer, sectionText(found.section));
+        const frames = [];
+        for (const f of draft.frames) {
+          let image: string | undefined;
+          if (f.picture && f.picture_description) image = await this.generatedFor(learner, images, imagePrompt(found.section.title, f.picture_description)).catch(() => undefined);
+          frames.push({ caption: f.caption, narration: f.narration, ...(image && { image }) });
+        }
+        const pieces: PersonalPiece[] = [{ kind: "storyboard", title: draft.title, frames }];
+        const provenance: Provenance = { pages: cites, fact_check: "unchecked", made_for: madeFor(evidence) };
+        this.tutor.finishPersonal(id, { status: "ready", pieces: JSON.stringify(pieces), provenance: JSON.stringify(provenance) });
+      }
+    } catch (error) {
+      fail([error instanceof Error ? error.message : String(error)]);
+    }
+  }
+
+  /** An image for a finished prompt: the cached one for the same prompt, or a new one (counted against the learner's day). */
+  private async generatedFor(learner: string, images: ImageMaker, prompt: string): Promise<string> {
+    const hash = await promptHash(prompt);
+    const cached = this.tutor.imageByPrompt(hash);
+    if (cached) return cached.id;
+    if (this.tutor.imagesSince(learner, this.now().slice(0, 10)) >= MAX_IMAGES_PER_DAY) throw new Error(`That's ${MAX_IMAGES_PER_DAY} generated pictures today`);
+    const image = await images(prompt);
+    const bytes = base64Bytes(image.base64);
+    if (bytes > MAX_IMAGE_BYTES) throw new Error(`The picture came back too large (${Math.round(bytes / 1000)} KB; the limit is ${MAX_IMAGE_BYTES / 1000} KB)`);
+    const id = hash.slice(0, 16);
+    this.tutor.putImage({ id, learner, prompt_hash: hash, mime: image.mime, data: image.base64, bytes, at: this.now() });
+    // Once a day: pictures older than the retention window that no live block shows are dropped.
+    const today = this.now().slice(0, 10);
+    if (this.meta.get<string>("images_pruned") !== today) {
+      this.meta.set("images_pruned", today);
+      this.tutor.pruneImages(new Date(Date.parse(this.now()) - RETAIN_DETAIL_DAYS * 86_400_000).toISOString());
+    }
+    return id;
+  }
+
+  /** A learner's live personal blocks on a lesson, without practice answers. */
+  personalBlocks(learner: string, lesson: unknown) {
+    this.requirePublished();
+    if (typeof lesson !== "string" || lesson.length > 200) throw new Error("Pick a lesson");
+    return this.tutor.livePersonal(learner, lesson).map((row) => toPersonalBlock(row));
+  }
+
+  /** Takes a personal block down for this learner (kept, archived). */
+  undoPersonal(learner: string, id: unknown) {
+    if (typeof id !== "string" || !this.tutor.archivePersonal(learner, id)) throw new Error("That block is already gone");
+    return { undone: id };
+  }
+
+  /** The learner's answer to a personal block's practice question: right or not, and why. */
+  answerPersonal(learner: string, id: unknown, option: unknown) {
+    const row = typeof id === "string" ? this.tutor.personal(id) : undefined;
+    if (!row || row.learner !== learner) throw new Error("That block is gone");
+    const check = (JSON.parse(row.pieces) as PersonalPiece[]).find((p) => p.kind === "check");
+    const picked = check && typeof option === "number" && Number.isInteger(option) ? check.check.options[option] : undefined;
+    if (!picked) throw new Error("Pick one of the options");
+    return { correct: picked.correct, feedback: picked.feedback };
+  }
+
+  /** A generated image, for the learner it was made for or anyone whose personal blocks show it. */
+  generatedImage(learner: string, id: unknown): { mime: string; base64: string } {
+    const image = typeof id === "string" && id.length <= 80 ? this.tutor.image(id) : undefined;
+    if (!image || (image.learner !== learner && !this.tutor.showsImage(learner, image.id))) throw new Error("No such picture");
+    return { mime: image.mime, base64: image.data };
+  }
+
+  /** For owners and editors: what the tutor suggested changing for everyone, newest first (at most 50). */
+  tutorSuggestions() {
+    this.requirePublished();
+    const live = this.releases.live().snapshot;
+    return this.tutor.suggestions(50).map((s) => ({ ...s, title: liveSection(live, s.section)?.section.title ?? s.section, learner: undefined }));
+  }
+
+  /** "Promote to the course": asks the course editor to rewrite the target's section the way that fixed learners. */
+  beginPromotion(key: unknown, by: string, onUpdate?: () => void): EditState {
+    const row = this.coachInsights().find((r) => r.key === key);
+    if (!row?.promote) throw new Error(`Nothing to promote there yet: an approach must fix at least ${PROMOTE_AFTER} learners first`);
+    return this.beginEdit(promotionRequest(row.label, row.promote), by, onUpdate);
+  }
+
+  // ─── Voice: the Worker proxies a learner's recording to Meta's transcription socket ──
+
+  /**
+   * Lets one recording start: a course member, one recording at a time, within the day's minutes. Returns
+   * how long it may last and the API settings for the Worker's upstream socket (never sent to a browser).
+   */
+  async voiceGrant(learner: string): Promise<{ seconds: number; meta: MetaClientConfig }> {
+    if (!this.tutorAvailable()) throw new Error("Voice needs Muse, which isn't available in this course yet");
+    const state = this.tutorState(learner);
+    const now = this.now();
+    const today = now.slice(0, 10);
+    if (state.voice_today.date !== today) state.voice_today = { date: today, seconds: 0 };
+    const left = MAX_VOICE_SECONDS_PER_DAY - state.voice_today.seconds;
+    if (left <= 0) throw new Error("That's today's voice allowance; type instead");
+    if (state.voice_today.active_until && state.voice_today.active_until > now) throw new Error("Another recording is still open");
+    state.voice_today.active_until = new Date(Date.parse(now) + (MAX_RECORDING_SECONDS + 15) * 1000).toISOString();
+    this.saveTutorState(learner, state);
+    return { seconds: Math.min(MAX_RECORDING_SECONDS, left), meta: await this.metaConfig() };
+  }
+
+  /** Ends a recording: its seconds count against the day. */
+  voiceDone(learner: string, seconds: number) {
+    const state = this.tutorState(learner);
+    const today = this.now().slice(0, 10);
+    if (state.voice_today.date !== today) state.voice_today = { date: today, seconds: 0 };
+    state.voice_today = { date: today, seconds: state.voice_today.seconds + Math.max(0, Math.min(MAX_RECORDING_SECONDS, Math.ceil(seconds))) };
+    this.saveTutorState(learner, state);
   }
 
   private targetLabel(snapshot: CourseSnapshot, t: Target): string {
@@ -2019,8 +2722,8 @@ export class CourseService {
 
   /** Models with the owner's key, opened just for this use. */
   private async ownerProvider(): Promise<ModelProvider> {
-    const { owner, apiKey, model } = await this.ownerKey();
-    return new ModelProvider({ ...owner.config, apiKey, models: { reasoning: model, fast: model } });
+    const { owner, apiKey, model, baseURL } = await this.ownerKey();
+    return new ModelProvider({ ...owner.config, baseURL, apiKey, models: { reasoning: model, fast: model } });
   }
 
   /** The owner's key, opened, with the Worker's model settings and the owner's chosen model. */
@@ -2033,7 +2736,9 @@ export class CourseService {
     if (!owner.choices.includes(stored.model)) throw new Error(`${stored.model} is no longer offered; pick another model`);
     const apiKey = await openSecret(stored.sealed, owner.secret, record.id);
     this.secrets.add(apiKey);
-    return { owner, apiKey, model: stored.model };
+    // The open-weights model has its own endpoint, and its key is for that host only.
+    const endpoint = owner.endpoints?.[stored.model];
+    return { owner, apiKey, model: stored.model, baseURL: endpoint ?? owner.config.baseURL, onMeta: !endpoint };
   }
 
   /**
@@ -2043,9 +2748,12 @@ export class CourseService {
   private async pageSeer(): Promise<PageSeer | undefined> {
     const pages = this.media.pagesWithImages();
     if (pages.length === 0) return undefined;
-    const { owner, apiKey, model } = await this.ownerKey();
-    const config: VisionConfig = { baseURL: owner.config.baseURL, apiKey, model, timeoutMs: 60_000, retries: 2 };
+    const { apiKey, model, baseURL, onMeta } = await this.ownerKey();
+    // Vision is the course's own model at its own endpoint. SAM exists only on Meta's API, so a course on
+    // another endpoint (open weights, whose key is for that host) gets Spark's boxes without SAM's refinement.
+    const config: VisionConfig = { baseURL, apiKey, model, timeoutMs: 60_000, retries: 2 };
     const reader = this.options.pageReader?.(config) ?? { read: (image: PageImage) => readPage(config, image), segment: (image: PageImage, prompt: string) => segment(config, image, prompt) };
+    const sam = onMeta ? reader.segment : undefined;
     return {
       pages,
       image: async (source, page) => {
@@ -2053,7 +2761,7 @@ export class CourseService {
         return image ? { mime: image.mime as PageImage["mime"], base64: image.base64 } : null;
       },
       read: reader.read,
-      ...(reader.segment && { segment: reader.segment }),
+      ...(sam && { segment: sam }),
     };
   }
 
