@@ -29,7 +29,7 @@ export interface FileChunk {
   base64: string;
 }
 
-/** A box on a page image, in pixels of that image. */
+/** A box on a page image, as fractions (0…1) of its width and height: x1,y1 top left, x2,y2 bottom right. */
 export interface Box {
   x1: number;
   y1: number;

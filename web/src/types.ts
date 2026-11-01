@@ -64,3 +64,7 @@ export interface MyCourses {
 
 /** Calls a method on the course's Durable Object. */
 export type Call = <T>(method: string, args?: unknown[]) => Promise<T>;
+
+// ─── stream A ───
+export type { Figure, StoredFile, FileChunk } from "../../src/storage/media.js";
+export type { PageImage, Provenance } from "../../src/media/contracts.js";

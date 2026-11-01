@@ -1,15 +1,11 @@
-import { marked } from "marked";
 import { type ReactNode, useEffect, useMemo, useState } from "react";
 import { shortName } from "../passage.js";
 import { interventionTracker, useLessonTimer } from "../tracking.js";
 import type { Block, Call, Certainty, CheckResult, CitedSource, CourseSnapshot, Exam, Intervention, QuizItem, QuizResult, Response } from "../types.js";
 import { InterventionView } from "./Interventions.js";
+import { Markdown } from "./Markdown.js";
 import { QuizFlow } from "./Quiz.js";
 import { plainPreview, type RailItem, SectionRail } from "./SectionRail.js";
-
-// Lesson Markdown is authored course content (agents can't write Markdown blocks, only templated
-// interventions, which render as plain text), so it is rendered as HTML.
-const html = (markdown: string) => ({ __html: marked.parse(markdown, { async: false }) as string });
 
 const TEMPLATE_NAME = { contrast: "Contrast card", practice: "Practice set", step_through: "Step-through player" } as const;
 
@@ -104,7 +100,8 @@ function BlockView({
   const track = useMemo(() => interventionTracker(call, block.id, "preview"), [call, block.id]);
   if (block.kind === "check") return <CheckView block={block} call={call} live={live} />;
   if (block.kind !== "intervention") {
-    const text = <div className={`block prose ${isNew ? "new" : ""} ${block.archived ? "archived" : ""}`} dangerouslySetInnerHTML={html(block.markdown)} />;
+    // Markdown with tables, formulas and figures (Markdown.tsx); generated text is sanitised before it is stored.
+    const text = <Markdown className={`block prose ${isNew ? "new" : ""} ${block.archived ? "archived" : ""}`} markdown={block.markdown} call={call} />;
     if (!citations || !block.cites?.length) return text;
     return (
       <>

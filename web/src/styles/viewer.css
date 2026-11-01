@@ -17,3 +17,19 @@
 .section-links { display: flex; flex-wrap: wrap; align-items: flex-start; gap: var(--s1); margin: calc(-1 * var(--s2)) 0 var(--s3); }
 .section-links .section-tools { margin: 0; }
 .copy-link { color: var(--muted); }
+
+/* Lesson Markdown (Markdown.tsx): its parts sit in the block as if they were one. */
+.md-part { display: contents; }
+.prose table { border-collapse: collapse; margin: var(--s3) 0; font-size: var(--t-sm); display: block; overflow-x: auto; max-width: 100%; }
+.prose th, .prose td { border: 1px solid var(--line-strong); padding: var(--s1) var(--s2); text-align: left; vertical-align: top; }
+.prose th { background: var(--surface); font-weight: 600; }
+.prose .katex-display { overflow-x: auto; overflow-y: hidden; padding: var(--s1) 0; }
+.math-pending { font-size: var(--t-sm); }
+
+/* Figures in lessons (AssetImage.tsx): a crop of the source page, or a whole image. */
+.asset { margin: var(--s4) 0; }
+.asset img { max-width: 100%; display: block; border-radius: var(--radius-sm); }
+.asset-crop { position: relative; overflow: hidden; width: 100%; max-width: 640px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: #fff; }
+.asset-crop img { position: absolute; max-width: none; border-radius: 0; }
+.asset figcaption { font-size: var(--t-sm); color: var(--muted); margin-top: var(--s2); }
+.asset-alt { display: block; font-style: italic; color: var(--muted); margin: var(--s3) 0; }

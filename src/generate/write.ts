@@ -22,39 +22,64 @@ export interface WrittenSection {
   check: CheckQuestion;
 }
 
-/** Inline code is left alone; elsewhere images become their alt text, links keep only http(s) targets, and `<` can't open a tag. */
-const cleanInline = (text: string) =>
+/** Which `fig:`/`gen:` pictures a block may keep; anything else becomes its alt text. */
+export type AssetCheck = (ref: string) => boolean;
+
+/** Inline code, and `$…$` / `$$…$$` formulas on one line (the same rule as the web app's extractMath). */
+const KEPT_SPANS = /(`[^`\n]*`|\$\$[^$\n]+\$\$|(?<![\\$])\$(?=[^\s$])[^$\n]*?[^\s\\]\$(?!\d))/;
+
+/** A formula as KaTeX reads it, with no `<` or `>` left for an HTML renderer to see. */
+const cleanMath = (tex: string) => tex.replace(/</g, "\\lt ").replace(/>/g, "\\gt ");
+
+/**
+ * Inline code is left alone and formulas keep their TeX (with `<`, `>` as \lt, \gt); elsewhere images
+ * become their alt text unless `asset` accepts their `fig:`/`gen:` ref, links keep only http(s) targets,
+ * and `<` can't open a tag.
+ */
+const cleanInline = (text: string, asset: AssetCheck) =>
   text
-    .split(/(`[^`\n]*`)/)
+    .split(KEPT_SPANS)
     .map((part, i) =>
       i % 2 === 1
-        ? part
+        ? part.startsWith("`")
+          ? part
+          : cleanMath(part)
         : part
-            .replace(/!\[([^\]]*)\]\([^)]*\)/g, "$1")
-            .replace(/\[([^\]]*)\]\(\s*([^)\s]*)[^)]*\)/g, (link, label: string, url: string) => (/^https?:\/\//i.test(url) ? link : label))
+            .replace(/!\[([^\]]*)\]\(\s*([^)\s]*)[^)]*\)/g, (_image, alt: string, ref: string) => (asset(ref) ? `![${alt.replace(/[[\]]/g, "")}](${ref})` : alt))
+            .replace(/(?<!!)\[([^\]]*)\]\(\s*([^)\s]*)[^)]*\)/g, (link: string, label: string, url: string) => (/^https?:\/\//i.test(url) ? link : label))
             .replace(/</g, "&lt;"),
     )
     .join("");
 
+const NO_ASSETS: AssetCheck = () => false;
+
 /**
  * Generated Markdown as the app may render it: headings become bold lines (a `## ` line would start a
- * new section when the lesson is rendered), no raw HTML, no images, links only to http(s). Fenced code
- * is kept as written; an unclosed fence is closed.
+ * new section when the lesson is rendered), no raw HTML, links only to http(s), and pictures only where
+ * `asset` accepts their `fig:`/`gen:` ref. Fenced code is kept as written; an unclosed fence is closed.
+ * Tables are ordinary lines and pass through; `$$` lines open and close a display formula, kept as TeX.
  */
-export function sanitizeMarkdown(markdown: string): string {
+export function sanitizeMarkdown(markdown: string, asset: AssetCheck = NO_ASSETS): string {
   const out: string[] = [];
   let inFence = false;
+  let inMath = false;
   for (const line of markdown.replace(/\r\n?/g, "\n").split("\n")) {
-    if (line.trimStart().startsWith("```")) {
+    if (!inMath && line.trimStart().startsWith("```")) {
       inFence = !inFence;
       out.push(line);
     } else if (inFence) {
       out.push(line);
+    } else if (line.trim() === "$$") {
+      inMath = !inMath;
+      out.push("$$");
+    } else if (inMath) {
+      out.push(cleanMath(line));
     } else {
-      out.push(cleanInline(line.replace(/^\s{0,3}#{1,6}\s+(.+?)[\s#]*$/, "**$1**")));
+      out.push(cleanInline(line.replace(/^\s{0,3}#{1,6}\s+(.+?)[\s#]*$/, "**$1**"), asset));
     }
   }
   if (inFence) out.push("```");
+  if (inMath) out.push("$$");
   return out.join("\n").trim();
 }
 
