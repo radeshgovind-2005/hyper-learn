@@ -9,6 +9,7 @@ import type { PlannedSection } from "../generate/plan.js";
 import { factCheckPrompt } from "../generate/review.js";
 import type { SectionDraft } from "../generate/schemas.js";
 import type { BuildInput } from "../generate/types.js";
+import type { Figure } from "../storage/media.js";
 import { sectionFromDraft, type WrittenSection, writerPrompt } from "../generate/write.js";
 import type { DiagnosisResult, Target } from "./diagnose.js";
 
@@ -48,6 +49,8 @@ export interface RepairInput {
   sections?: readonly string[];
   /** One more line for the writer about where the learner is (the tutor: the section they are reading). */
   focus?: string;
+  /** The figures on some pages (the "see" step's), so a rewrite can keep showing them. Absent: none. */
+  figuresOn?: (pages: readonly Citation[]) => Figure[];
 }
 
 export interface PersonalSection {
@@ -137,6 +140,7 @@ export async function writeRepair(input: RepairInput, models: Pick<BuilderModels
       .filter(Boolean)
       .join("\n");
     const course: BuildInput = { ...input.course, sources: [...input.sources] };
+    const figures = input.figuresOn?.(pages) ?? [];
 
     let draft: SectionDraft | undefined;
     let written: WrittenSection | undefined;
@@ -144,8 +148,8 @@ export async function writeRepair(input: RepairInput, models: Pick<BuilderModels
     for (let attempt = 0; attempt < 2 && !written; attempt++) {
       const room = calls.room("writer");
       const fix = attempt > 0 ? retryText("writer", "fix", draft, problems, room) : "";
-      draft = await calls.invoke(models.writer, "writer", writerPrompt({ input: course, sources: input.sources, lesson, section }, room, [request, fix].filter(Boolean).join("\n\n")));
-      const result = sectionFromDraft(draft, section);
+      draft = await calls.invoke(models.writer, "writer", writerPrompt({ input: course, sources: input.sources, lesson, section, figures }, room, [request, fix].filter(Boolean).join("\n\n")));
+      const result = sectionFromDraft(draft, section, figures);
       if (result.section) written = result.section;
       else problems = result.problems;
     }
@@ -158,7 +162,7 @@ export async function writeRepair(input: RepairInput, models: Pick<BuilderModels
       if (!verdict.supported) {
         doubts = verdict.unsupported.length > 0 ? verdict.unsupported : ["(the fact checker named no claim)"];
         const room = calls.room("writer");
-        const revised = sectionFromDraft(await calls.invoke(models.writer, "writer", writerPrompt({ input: course, sources: input.sources, lesson, section }, room, retryText("writer", "revise", draft, doubts, room))), section);
+        const revised = sectionFromDraft(await calls.invoke(models.writer, "writer", writerPrompt({ input: course, sources: input.sources, lesson, section, figures }, room, retryText("writer", "revise", draft, doubts, room))), section, figures);
         if (revised.section) {
           written = revised.section;
           const again = await calls.invoke(models.fact_checker, "fact_checker", factCheckPrompt(input.sources, lesson, section, written, calls.room("fact_checker")));

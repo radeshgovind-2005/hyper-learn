@@ -3,7 +3,7 @@ import type { Target } from "../coach/diagnose.js";
 import type { PersonalSection } from "../coach/repair.js";
 import type { CourseSnapshot } from "../course/compile.js";
 import type { Citation } from "../course/schema.js";
-import { ANSWER_OVERLAP_LIMIT, overlap, PROMPT_OVERLAP_LIMIT, quizTexts } from "../interventions/checks.js";
+import { ANSWER_OVERLAP_LIMIT, overlap, PROMPT_OVERLAP_LIMIT, quizTexts, widgetProblems as templateProblems } from "../interventions/checks.js";
 import { type Intervention, interventionQuestions, interventionTexts, InterventionSchema } from "../interventions/templates.js";
 import type { Provenance } from "../media/contracts.js";
 import type { PersonalRow } from "../storage/tutor.js";
@@ -99,6 +99,8 @@ export function widgetProblems(spec: unknown, quiz: readonly QuizItem[]): { widg
       if (f.highlight !== null && f.highlight >= f.messages.length) problems.push(`frame ${i + 1}: highlight out of range`);
     });
   }
+  // An explorer's ranges and formula, and a compare's numbers: valid by the schema isn't enough.
+  problems.push(...templateProblems(widget));
   return problems.length > 0 ? { problems: [...new Set(problems)] } : { widget, problems };
 }
 

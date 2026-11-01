@@ -1,13 +1,12 @@
-import { marked } from "marked";
 import { useState } from "react";
 import type { Call, EditPreset, EditRequest, EditState, EditSummaryItem } from "../types.js";
+import { Markdown } from "./Markdown.js";
 
 // Owner edits in the UI: ask for a change in your own words, tune one section with a preset, follow the
 // agents while they prepare it, then review the exact before/after and apply or discard it. The server
 // checks permissions and refuses a stale proposal; this only lays it out.
 
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
-const html = (markdown: string) => ({ __html: marked.parse(markdown, { async: false }) as string });
 
 /** The presets the server knows (src/edit/types.ts EDIT_PRESETS), with the evidence each rests on. */
 export const PRESETS: { id: EditPreset; label: string; why: string }[] = [
@@ -102,7 +101,7 @@ function describe(request: EditRequest, sourceName?: (id: string) => string | un
 
 const KIND_LABEL: Record<EditSummaryItem["kind"], string> = { rewrite: "Rewrite", new_section: "New section", new_lesson: "New lesson", new_questions: "New questions" };
 
-function Change({ item }: { item: EditSummaryItem }) {
+function Change({ call, item }: { call: Call; item: EditSummaryItem }) {
   const [open, setOpen] = useState(item.kind !== "new_lesson");
   return (
     <div className="change">
@@ -131,13 +130,13 @@ function Change({ item }: { item: EditSummaryItem }) {
           {item.before && (
             <div className="diff-side before">
               <div className="eyebrow">Now</div>
-              <div className="prose" dangerouslySetInnerHTML={html(item.before)} />
+              <Markdown className="prose" markdown={item.before} call={call} />
             </div>
           )}
           {item.after && (
             <div className="diff-side after">
               <div className="eyebrow">{item.before ? "Proposed" : "New"}</div>
-              <div className="prose" dangerouslySetInnerHTML={html(item.after)} />
+              <Markdown className="prose" markdown={item.after} call={call} />
             </div>
           )}
         </div>
@@ -199,7 +198,7 @@ export function EditStatus({ call, edit, published, sourceName }: { call: Call; 
         <div className="stack">
           {edit.proposal.reply && <p className="proposal-reply">{edit.proposal.reply}</p>}
           {edit.proposal.summary.map((item, i) => (
-            <Change key={i} item={item} />
+            <Change key={i} call={call} item={item} />
           ))}
           {edit.warnings && edit.warnings.length > 0 && (
             <ul className="small muted">

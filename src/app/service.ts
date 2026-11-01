@@ -8,7 +8,7 @@ import { type Grade, gradeItem } from "../assessment/grade.js";
 import { drawExam, examSeed } from "../assessment/exam.js";
 import type { Certainty, QuizItem, Response } from "../assessment/items.js";
 import { type CheckBlock, type CourseSnapshot, courseFromSnapshot, isTextBlock, type LiveIntervention, liveInterventions, liveObjectives } from "../course/compile.js";
-import type { Course } from "../course/schema.js";
+import type { Citation, Course } from "../course/schema.js";
 import { buildGraph, graphModels } from "../graph.js";
 import type { Embedder, Guard } from "../guards/guards.js";
 import { SimMeasurer } from "../measure/measure.js";
@@ -43,7 +43,7 @@ import { type Approach, approachFor, type PersonalSection, recheckItems, section
 import { chooseApproach } from "../coach/bandit.js";
 import { PROMOTE_AFTER, promotionFor, promotionRequest } from "../coach/promote.js";
 import { getSystemPrompt } from "../agents.js";
-import { noPageImages, type PageImages, type Provenance } from "../media/contracts.js";
+import type { PageImages, Provenance } from "../media/contracts.js";
 import type { MetaClientConfig } from "../meta/client.js";
 import { base64Bytes, type ImageMaker, imagePrompt, MAX_IMAGE_BYTES, metaImageMaker, plainText, promptHash } from "../meta/image.js";
 import type { Invokable } from "../models.js";
@@ -431,7 +431,7 @@ export interface TutorOptions {
   images?: (config: MetaClientConfig) => ImageMaker;
   /** The storyboard writer (default: the course's model with structured output). */
   storyboard?: (provider: ModelProvider) => Invokable<StoryboardDraft>;
-  /** Source pages as pictures for a learner (stream A's; default: none, the tutor reads page text). */
+  /** Source pages as pictures for a learner (default: the stored page pictures of files their release cites). */
   pageImages?: (learner: string) => PageImages;
   /** An independent second fact check of a personal rewrite (Muse Wonder), if configured. */
   verifier?: Verifier;
@@ -1062,20 +1062,31 @@ export class CourseService {
     });
   }
 
-  /** What the coach page shows: the latest diagnosis and repair, with their questions. */
-  coachState(learner: string) {
+  /**
+   * What the coach page shows: the latest diagnosis and repair, with their questions. With `view`, as a
+   * learner's browser gets it: questions through learnerItem and the practice check without its key
+   * (answerCoachCheck grades it); submitDiagnosis and submitRecheck must then be told so too.
+   */
+  coachState(learner: string, view = false) {
     this.requirePublished();
     const state = this.coach(learner);
+    const salt = view ? this.itemSalt() : "";
     const resolve = (release: string, qs?: readonly CoachQuestion[]) => {
       try {
-        return qs ? this.resolve(release, qs) : undefined;
+        return qs ? this.resolve(release, qs).map((q) => (view ? { ...q, item: learnerItem(q.item, salt) } : q)) : undefined;
       } catch {
         return undefined;
       }
     };
+    const lesson = state.repair?.lesson;
+    const check = lesson?.section.check;
     return {
       diagnosis: state.diagnosis && { ...state.diagnosis, questions: resolve(state.diagnosis.release, state.diagnosis.questions) ?? [] },
-      repair: state.repair && { ...state.repair, recheck: resolve(state.repair.release, state.repair.recheck) },
+      repair: state.repair && {
+        ...state.repair,
+        ...(lesson && view && { lesson: { ...lesson, section: { ...lesson.section, check: { prompt: check!.prompt, options: check!.options.map((o) => ({ text: o.text })) } } } }),
+        recheck: resolve(state.repair.release, state.repair.recheck),
+      },
       fixed: state.fixed,
       repairs_left: MAX_REPAIRS_PER_DAY - (state.repairs_today.date === this.now().slice(0, 10) ? state.repairs_today.count : 0),
       /** Whether the coach can write new lessons here (a studio course with a usable key). */
@@ -1109,14 +1120,15 @@ export class CourseService {
     return this.coachState(learner);
   }
 
-  /** Scores the diagnostic and says what to repair first. */
-  submitDiagnosis(learner: string, id: unknown, answers: unknown) {
+  /** Scores the diagnostic and says what to repair first. `view`: the answers were given on coachState's learner view. */
+  submitDiagnosis(learner: string, id: unknown, answers: unknown, view = false) {
     const state = this.coach(learner);
     const d = state.diagnosis;
     if (!d || d.id !== id || d.status !== "open") throw new Error("This diagnosis is over; start a new one");
     if (!Array.isArray(answers)) throw new Error("Send the answers as a list");
     const questions = this.resolve(d.release, d.questions);
-    const result = scoreDiagnostic(this.releases.get(d.release)!.snapshot, d.lesson, questions, answers as Response[]);
+    const responses = view ? this.fromView(questions, answers as Response[]) : (answers as Response[]);
+    const result = scoreDiagnostic(this.releases.get(d.release)!.snapshot, d.lesson, questions, responses);
     state.diagnosis = { ...d, status: "done", result };
     state.seen = [...new Set([...state.seen, ...d.questions.map((q) => q.item_id)])];
     this.saveCoach(learner, state);
@@ -1128,7 +1140,22 @@ export class CourseService {
       data: { type: "diagnosis", priority: targetKey(result.priority), target: result.priority, score: result.score, gaps: result.gaps, misconceptions: result.misconceptions.map((m) => m.id) },
       at: this.now(),
     });
-    return this.coachState(learner);
+    return this.coachState(learner, view);
+  }
+
+  /** Answers given on learnerItem's view, in the authored order the graders expect. */
+  private fromView(questions: readonly { item: QuizItem }[], answers: readonly Response[]): Response[] {
+    const salt = this.itemSalt();
+    return answers.map((answer, i) => (questions[i] ? fromLearnerResponse(questions[i]!.item, answer, salt) : answer));
+  }
+
+  /** The practice question of the learner's personal lesson: whether the pick is right, and its feedback. */
+  answerCoachCheck(learner: string, id: unknown, option: unknown): { correct: boolean; feedback: string } {
+    const repair = this.coach(learner).repair;
+    if (!repair || repair.id !== id || !repair.lesson) throw new Error("That lesson is gone; open the coach again");
+    const picked = typeof option === "number" && Number.isInteger(option) ? repair.lesson.section.check.options[option] : undefined;
+    if (!picked) throw new Error("Pick one of the options");
+    return { correct: picked.correct, feedback: picked.feedback };
   }
 
   /**
@@ -1213,6 +1240,7 @@ export class CourseService {
           approach: repair.approach,
           ...(note && { note }),
           wrong,
+          figuresOn: this.figuresOn,
         },
         provider.structured,
       );
@@ -1229,14 +1257,15 @@ export class CourseService {
     }
   }
 
-  /** Grades the re-check after a repair: fixed when every answer is right and the mix-up didn't show. */
-  submitRecheck(learner: string, id: unknown, answers: unknown) {
+  /** Grades the re-check after a repair: fixed when every answer is right and the mix-up didn't show. `view` as in submitDiagnosis. */
+  submitRecheck(learner: string, id: unknown, answers: unknown, view = false) {
     const state = this.coach(learner);
     const repair = state.repair;
     if (!repair || repair.id !== id || repair.status !== "ready" || !repair.recheck) throw new Error("There is nothing to check right now");
     if (!Array.isArray(answers) || answers.length !== repair.recheck.length) throw new Error(`Answer all ${repair.recheck.length} questions`);
     const questions = this.resolve(repair.release, repair.recheck);
-    const grades = questions.map((q, i) => gradeItem(q.item, answers[i] as Response, q.lesson));
+    const responses = view ? this.fromView(questions, answers as Response[]) : (answers as Response[]);
+    const grades = questions.map((q, i) => gradeItem(q.item, responses[i]!, q.lesson));
     const target = repair.target;
     const fixed = grades.every((g) => g.correct) && !(target.kind === "misconception" && grades.some((g) => g.errors.some((e) => e.misconception === target.id)));
     const key = targetKey(target);
@@ -1257,7 +1286,7 @@ export class CourseService {
     const remaining = [state.diagnosis?.result?.priority, ...(state.diagnosis?.result?.next ?? [])].filter(
       (t): t is Target => Boolean(t) && t!.kind !== "ready" && !state.fixed.includes(targetKey(t!)),
     );
-    return { fixed, grades: grades.map((g) => ({ correct: g.correct })), next: remaining[0] ?? null, state: this.coachState(learner) };
+    return { fixed, grades: grades.map((g) => ({ correct: g.correct })), next: remaining[0] ?? null, state: this.coachState(learner, view) };
   }
 
   /**
@@ -1498,7 +1527,7 @@ export class CourseService {
       lesson: lesson.id,
       cited,
       readPage: pageText,
-      pageImages: this.options.tutor?.pageImages?.(learner) ?? noPageImages,
+      pageImages: this.options.tutor?.pageImages?.(learner) ?? this.pageImages(learner),
       ask: (section) => this.askLearner(learner, release, lesson.id, section, pending),
       rewrite: (section, note) => {
         if (this.fixed || !this.options.repairer) throw new Refused("Personal rewrites need a course built from its own pages; explain from the section instead");
@@ -1754,6 +1783,7 @@ export class CourseService {
             wrong: job.wrong ?? [],
             sections: [row.section],
             focus: `They are reading the section "${found.section.title}": write your personal version of that section.`,
+            figuresOn: this.figuresOn,
           },
           provider.structured,
         );
@@ -2662,6 +2692,9 @@ export class CourseService {
     return figure;
   }
 
+  /** The figures on some pages (a section's), for a writer that rewrites the section: one query per page. */
+  private readonly figuresOn = (pages: readonly Citation[]): Figure[] => pages.flatMap((p) => this.media.figuresOn(p.source, p.page));
+
   /** A build's figures replace the previous build's, page by page: every page with a picture is reread. */
   private storeFigures(figures: readonly Figure[]) {
     for (const { source, page } of this.media.pagesWithImages()) {
@@ -2932,6 +2965,7 @@ export class CourseService {
         },
         snapshot,
         sources: this.sources.all(),
+        figuresOn: this.figuresOn,
       };
       const result = await this.options.editor!(edit.request, context, provider.structured, (step) => {
         edit.steps.push({ ...step, ...(step.detail && { detail: this.redact(step.detail) }) });

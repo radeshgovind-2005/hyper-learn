@@ -109,7 +109,6 @@
 .personal .prose p:last-child { margin-bottom: var(--s2); }
 .personal .personal-check { background: var(--canvas); margin: var(--s3) 0 0; }
 .provenance { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); margin-top: var(--s3); color: var(--ink-2); }
-.provenance-chips { display: inline-flex; gap: var(--s2); align-items: center; }
 
 /* ─── Generated pictures ── */
 .gen-figure { margin: var(--s2) 0 0; }

@@ -63,7 +63,7 @@ const ARGS = {
       .string()
       .max(6_000)
       .describe(
-        'One widget as JSON. Either {"template":"contrast","targets":"<misconception-slug>","belief":"…","why_it_seems_right":"…","what_actually_happens":"…","check":{"prompt":"…","options":[{"text":"…","correct":true|false,"misconception":null,"feedback":"…"}]}}, or {"template":"practice","targets":"<slug>","questions":[2–3 check objects]}, or {"template":"step_through","targets":"<slug>","title":"…","frames":[3–8 of {"caption":"…","messages":[{"role":"user|model|harness|tool","text":"…"}],"highlight":null}]}',
+        'One widget as JSON. Either {"template":"contrast","targets":"<misconception-slug>","belief":"…","why_it_seems_right":"…","what_actually_happens":"…","check":{"prompt":"…","options":[{"text":"…","correct":true|false,"misconception":null,"feedback":"…"}]}}, or {"template":"practice","targets":"<slug>","questions":[2–3 check objects]}, or {"template":"step_through","targets":"<slug>","title":"…","frames":[3–8 of {"caption":"…","messages":[{"role":"user|model|harness|tool","text":"…"}],"highlight":null}]}, or {"template":"explorer","targets":"<slug>","title":"…","formula":"1 / ((1 - p) + p / N)","result_label":"…","parameters":[1–4 of {"name":"N","label":"…","min":1,"max":64,"step":1,"value":8}],"plot":"N","takeaway":"…"} (a formula to play with: + - * / ^ ( ) min max log sqrt exp abs), or {"template":"compare","targets":"<slug>","title":"…","cases":[2 of {"label":"…","points":[1–5 strings],"figure":{"label":"…","value":100,"unit":"ns"} or null}],"takeaway":"…"}',
       ),
   }),
   storyboard: z.object({ section: id }),
@@ -82,7 +82,7 @@ const DESCRIPTIONS: Record<ToolName, string> = {
   rewrite_for_me:
     "Write a personal version of a section for this learner only (grounded in the section's pages and fact-checked; it appears under the section in about a minute). Only after a diagnostic question or a quiz showed what they are missing.",
   draw_it: "Generate a labelled diagram for a section, shown under it for this learner only.",
-  interact: "Add one interactive widget under a section for this learner only: a contrast card, a practice set or a step-through.",
+  interact: "Add one interactive widget under a section for this learner only: a contrast card, a practice set, a step-through, an explorer (sliders over a formula) or a compare (two cases side by side).",
   storyboard: "Make a short narrated storyboard (4–6 frames) explaining a section, for this learner only.",
   suggest_for_everyone: "Tell the course's editors that a section should change for everyone, and why.",
 };

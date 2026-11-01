@@ -1,7 +1,7 @@
-import { marked } from "marked";
 import { useCallback, useEffect, useState } from "react";
 import { InterventionView } from "../components/Interventions.js";
 import type { Citations } from "../components/LessonView.js";
+import { Markdown } from "../components/Markdown.js";
 import { QuizFlow } from "../components/Quiz.js";
 import { shortName } from "../passage.js";
 import type { Call, Certainty, CourseSnapshot, Response } from "../types.js";
@@ -12,7 +12,6 @@ import type { Call, Certainty, CourseSnapshot, Response } from "../types.js";
 // this page walks the learner through it. Personal state is fetched (and polled while a lesson is
 // written), never broadcast.
 
-const html = (markdown: string) => ({ __html: marked.parse(markdown, { async: false }) as string });
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 interface Target {
@@ -47,7 +46,7 @@ export interface CoachView {
     attempt: number;
     status: "running" | "ready" | "failed" | "fixed" | "not_yet";
     shared?: boolean;
-    lesson?: { title: string; section: { blocks: { markdown: string; cites: { source: string; page: number }[] }[]; check: { prompt: string; options: { text: string; correct: boolean; feedback: string }[] } }; doubts: string[] };
+    lesson?: { title: string; section: { blocks: { markdown: string; cites: { source: string; page: number }[] }[]; check: { prompt: string; options: { text: string }[] } }; doubts: string[] };
     fallback?: { kind: "intervention"; block_id: string } | { kind: "review"; lesson: string; section_id: string };
     problems?: string[];
     recheck?: Question[];
@@ -82,15 +81,16 @@ function targetTitle(snapshot: CourseSnapshot, t: Target): string {
   return lesson;
 }
 
-/** The personal lesson: its text with the pages it cites, and a practice question with feedback. */
-function PersonalLesson({ lesson, citations }: { lesson: NonNullable<NonNullable<CoachView["repair"]>["lesson"]>; citations?: Citations | undefined }) {
+/** The personal lesson: its text with the pages it cites, and a practice question graded on the server (no key here). */
+function PersonalLesson({ call, repairId, lesson, citations }: { call: Call; repairId: string; lesson: NonNullable<NonNullable<CoachView["repair"]>["lesson"]>; citations?: Citations | undefined }) {
   const [picked, setPicked] = useState<number | null>(null);
+  const [result, setResult] = useState<{ correct: boolean; feedback: string } | null>(null);
   const check = lesson.section.check;
   return (
     <div className="personal stack">
       {lesson.section.blocks.map((b, i) => (
         <div key={i}>
-          <div className="prose" dangerouslySetInnerHTML={html(b.markdown)} />
+          <Markdown className="prose" markdown={b.markdown} call={call} />
           {citations && b.cites.length > 0 && (
             <div className="cites">
               {b.cites.map((c) => {
@@ -110,15 +110,25 @@ function PersonalLesson({ lesson, citations }: { lesson: NonNullable<NonNullable
         <div className="prompt">{check.prompt}</div>
         <div className="options" role="radiogroup">
           {check.options.map((o, i) => (
-            <button key={i} className={`option ${picked === i ? "picked" : ""}`} role="radio" aria-checked={picked === i} onClick={() => setPicked(i)}>
+            <button
+              key={i}
+              className={`option ${picked === i ? "picked" : ""}`}
+              role="radio"
+              aria-checked={picked === i}
+              onClick={() => {
+                setPicked(i);
+                setResult(null);
+                void call<{ correct: boolean; feedback: string }>("answerCoachCheck", [repairId, i]).then(setResult, () => setResult(null));
+              }}
+            >
               <span className="mark" aria-hidden />
               <span>{o.text}</span>
             </button>
           ))}
         </div>
-        {picked !== null && (
-          <div className={`check-feedback ${check.options[picked]!.correct ? "right" : "wrong"}`} role="status">
-            <strong>{check.options[picked]!.correct ? "Right." : "Not quite."}</strong> {check.options[picked]!.feedback}
+        {picked !== null && result && (
+          <div className={`check-feedback ${result.correct ? "right" : "wrong"}`} role="status">
+            <strong>{result.correct ? "Right." : "Not quite."}</strong> {result.feedback}
           </div>
         )}
       </div>
@@ -315,7 +325,7 @@ export function Coach({
                         {repair.attempt > 0 ? ` · try ${repair.attempt + 1}` : ""}
                       </span>
                     </div>
-                    {repair.lesson && <PersonalLesson lesson={repair.lesson} citations={citations} />}
+                    {repair.lesson && <PersonalLesson call={call} repairId={repair.id} lesson={repair.lesson} citations={citations} />}
                     {repair.fallback?.kind === "intervention" &&
                       (() => {
                         const block = snapshot.lessons.flatMap((l) => l.sections.flatMap((s) => s.blocks)).find((b) => b.id === (repair.fallback as { block_id: string }).block_id);

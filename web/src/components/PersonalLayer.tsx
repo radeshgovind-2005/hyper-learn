@@ -1,19 +1,14 @@
-import { marked } from "marked";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { shortName } from "../passage.js";
-import type { Call, Citation, CitedSource, PersonalBlock, Provenance, PublicPiece } from "../types.js";
+import type { Call, CitedSource, PersonalBlock, PublicPiece } from "../types.js";
 import { InterventionView } from "./Interventions.js";
+import { Markdown } from "./Markdown.js";
+import { ProvenanceChip } from "./ProvenanceChip.js";
 import { Storyboard } from "./Storyboard.js";
 import "../styles/tutor.css";
 
 // What the tutor made for this learner, under the section it is for, marked "Made for you". It never
-// changes the course for anyone else. Rendered with a private PersonalMarkdown until the join swaps in
-// stream A's Markdown (KaTeX, figures); the personal writer's Markdown has no images or HTML.
-
-/** Personal block Markdown: the writer's output, already sanitised on the server (no HTML, no images). */
-function PersonalMarkdown({ markdown }: { markdown: string }) {
-  return <div className="prose" dangerouslySetInnerHTML={{ __html: marked.parse(markdown, { async: false }) as string }} />;
-}
+// changes the course for anyone else. Text renders like the lesson's (KaTeX, `fig:` figures of the
+// section's pages); where it comes from is one ProvenanceChip per card.
 
 /** A generated picture (gen:<id>), fetched once per id and kept for the page's life. */
 const pictures = new Map<string, Promise<string>>();
@@ -40,29 +35,6 @@ export function GenImage({ call, id, alt }: { call: Call; id: string; alt: strin
 
 const KIND_LABEL = { rewrite: "Explained for you", diagram: "Diagram", widget: "Try it", storyboard: "Storyboard" } as const;
 const APPROACH_LABEL: Record<string, string> = { refute: "untangling the mix-up", worked_example: "a worked example", smaller_steps: "smaller steps" };
-
-function Verdict({ provenance }: { provenance: Provenance }) {
-  if (provenance.fact_check === "supported") return <span className="chip green">fact-checked ✓</span>;
-  if (provenance.fact_check === "doubted") return <span className="chip amber">a claim was doubted</span>;
-  return null;
-}
-
-function PageChips({ pages, sources, open }: { pages: readonly Citation[]; sources: ReadonlyMap<string, CitedSource>; open?: ((s: CitedSource, page: number) => void) | undefined }) {
-  const chips = pages.flatMap((c) => {
-    const source = sources.get(c.source);
-    return source ? [{ source, page: c.page }] : [];
-  });
-  if (chips.length === 0) return null;
-  return (
-    <>
-      {chips.map(({ source, page }) => (
-        <button key={`${source.id}:${page}`} className="chip cite" onClick={() => open?.(source, page)} title={`Open ${source.name}, page ${page}`}>
-          {shortName(source.name)} · p.{page}
-        </button>
-      ))}
-    </>
-  );
-}
 
 function PracticeCheck({ call, blockId, piece }: { call: Call; blockId: string; piece: Extract<PublicPiece, { kind: "check" }> }) {
   const [picked, setPicked] = useState<number | null>(null);
@@ -97,19 +69,10 @@ function PracticeCheck({ call, blockId, piece }: { call: Call; blockId: string; 
   );
 }
 
-function Piece({ call, block, piece, sources, open }: { call: Call; block: PersonalBlock; piece: PublicPiece; sources: ReadonlyMap<string, CitedSource>; open?: ((s: CitedSource, page: number) => void) | undefined }) {
+function Piece({ call, block, piece }: { call: Call; block: PersonalBlock; piece: PublicPiece }) {
   switch (piece.kind) {
     case "text":
-      return (
-        <>
-          <PersonalMarkdown markdown={piece.markdown} />
-          {piece.cites.length > 0 && (
-            <div className="cites">
-              <PageChips pages={piece.cites} sources={sources} open={open} />
-            </div>
-          )}
-        </>
-      );
+      return <Markdown className="prose" markdown={piece.markdown} call={call} />;
     case "check":
       return <PracticeCheck call={call} blockId={block.id} piece={piece} />;
     case "image":
@@ -146,14 +109,12 @@ function PersonalCard({ call, block, sources, open, onUndo }: { call: Call; bloc
         </div>
       )}
       {block.status === "failed" && <div className="personal-failed small">{block.problems[0] ?? "This couldn't be made just now."}</div>}
-      {block.status === "ready" && block.pieces.map((piece, i) => <Piece key={i} call={call} block={block} piece={piece} sources={sources} open={open} />)}
+      {block.status === "ready" && block.pieces.map((piece, i) => <Piece key={i} call={call} block={block} piece={piece} />)}
       {block.status === "ready" && block.provenance && (
         <div className="provenance small">
+          <ProvenanceChip provenance={block.provenance} sources={sources} open={(source, page) => open?.(source, page)} />
           {block.provenance.made_for && <span>Made for you because {block.provenance.made_for}.</span>}
-          <span className="provenance-chips">
-            <Verdict provenance={block.provenance} />
-            {block.provenance.fact_check === "doubted" && block.problems.length > 0 && <span className="muted" title={block.problems.join("\n")}>(why?)</span>}
-          </span>
+          {block.provenance.fact_check === "doubted" && block.problems.length > 0 && <span className="muted" title={block.problems.join("\n")}>(why was it doubted?)</span>}
         </div>
       )}
     </div>

@@ -361,35 +361,44 @@ export class CourseAgent extends Agent<Env, CourseAgentState> {
 
   @callable()
   coachState() {
-    const { userId } = this.actor("learn");
-    return this.app.coachState(userId);
+    const identity = this.actor("learn");
+    return this.app.coachState(identity.userId, !this.seesAnswers(identity));
   }
 
   @callable()
   startDiagnosis(lesson: string, note?: string) {
-    const { userId } = this.actor("learn");
-    return this.app.startDiagnosis(userId, lesson, note);
+    const identity = this.actor("learn");
+    this.app.startDiagnosis(identity.userId, lesson, note);
+    return this.app.coachState(identity.userId, !this.seesAnswers(identity));
   }
 
+  /** Learners answer on coachState's view without keys. */
   @callable()
   submitDiagnosis(id: string, answers: unknown) {
-    const { userId } = this.actor("learn");
-    return this.app.submitDiagnosis(userId, id, answers);
+    const identity = this.actor("learn");
+    return this.app.submitDiagnosis(identity.userId, id, answers, !this.seesAnswers(identity));
   }
 
   /** Repairs a target from the diagnosis (default: its priority); `again` tries the next approach. */
   @callable()
   startRepair(target?: string, again?: boolean) {
+    const identity = this.actor("learn");
+    const { write } = this.app.beginRepair(identity.userId, target, again === true);
+    if (write) this.background(() => this.app.continueRepair(identity.userId));
+    return this.app.coachState(identity.userId, !this.seesAnswers(identity));
+  }
+
+  /** The personal lesson's practice question, graded here: learners' copies carry no key. */
+  @callable()
+  answerCoachCheck(repair: string, option: number) {
     const { userId } = this.actor("learn");
-    const { state, write } = this.app.beginRepair(userId, target, again === true);
-    if (write) this.background(() => this.app.continueRepair(userId));
-    return state;
+    return this.app.answerCoachCheck(userId, repair, option);
   }
 
   @callable()
   submitRecheck(id: string, answers: unknown) {
-    const { userId } = this.actor("learn");
-    return this.app.submitRecheck(userId, id, answers);
+    const identity = this.actor("learn");
+    return this.app.submitRecheck(identity.userId, id, answers, !this.seesAnswers(identity));
   }
 
   /** What learners keep needing repaired (owners, editors, instructors). */
